@@ -79,3 +79,26 @@ def test_skill_text_is_client_neutral(path):
     for line in path.read_text(encoding="utf-8").splitlines():
         if "Claude Code" in line:
             assert re.search(r"\bor\b", line), "%s: Claude Code without an alternative: %s" % (path.parent.name, line)
+
+
+WRITING_SKILLS = ["xray-setup", "import-tests", "import-results", "predict-affected-tests"]
+
+
+@pytest.mark.parametrize("name", WRITING_SKILLS)
+def test_skills_say_relay_needs_answer(name):
+    text = (SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8")
+    assert "needs_answer" in text, name
+    lowered = text.lower()
+    assert "relay" in lowered and "never answer" in lowered, name
+
+
+def test_readme_settings_says_optional():
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    m = re.search(r"^## Settings\n(.*?)(?=^## )", text, re.S | re.M)
+    assert m, "README has no Settings section"
+    section = m.group(1).lower()
+    assert "optional" in section
+    assert "no setup" in section
+    assert "all projects" in section
+    assert "revokeproject" in section.replace("`", "")
+    assert "asks you directly" in text and "the agent asks you" in text

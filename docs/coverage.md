@@ -253,3 +253,17 @@ that every named tool is registered.
 | REST `import/execution*` (JUnit, TestNG, NUnit, Robot, Cucumber, Behave, Xray JSON, with `/multipart`) | tool: import_execution_results |
 | REST `import/feature` | tool: import_feature_file |
 | REST `export/cucumber` | tool: export_cucumber_features |
+
+## Client support for MCP elicitation
+
+The server asks for write approval and missing required fields by MCP elicitation when the client declares the capability at initialize. Otherwise it returns `needs_answer` and the agent asks. Checked 2026-11-24 against each client's official documentation:
+
+| Client | Elicitation | Source |
+|---|---|---|
+| Claude Code | yes (interactive dialog in terminal sessions; not in `claude -p` runs) | https://code.claude.com/docs/en/mcp (section "Respond to MCP elicitation requests") |
+| Cursor | yes | https://cursor.com/docs/context/mcp (protocol support table: Elicitation) |
+| VS Code (Copilot agent) | yes (form and URL, during an active turn) | https://code.visualstudio.com/docs/copilot/guides/mcp-developer-guide |
+| OpenAI Codex | unknown: the official MCP page does not mention elicitation | https://developers.openai.com/codex/mcp |
+| Gemini CLI | unknown: the official MCP page does not mention elicitation | https://geminicli.com/docs/tools/mcp-server/ |
+
+Where a client's documentation is silent the README says "the agent asks you"; behaviour can differ by version, and some clients have open bug reports about prompts not showing (for example in specific windows or platforms). The server falls back to `needs_answer` when the client does not declare the capability.
