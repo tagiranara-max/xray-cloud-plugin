@@ -2,10 +2,17 @@
 then remembered values, then required fields discovered from Jira create-meta (with the Jira
 token). A required field with no value is asked: by elicitation when the client supports it
 and every missing field fits a flat form, else by needs_answer. Answers are remembered per
-user, site, project, item type and field, when the write goes ahead (commit)."""
+user, site, project, item type and field, when the write goes ahead (commit).
+
+Without the token nothing is discovered up front: the create is tried, and when Jira rejects
+it for missing required fields (Xray creates nothing then), the fields are parsed from the
+error and learned for the server run (`creating`), and the registry runs the call once more,
+which asks for them like discovered ones."""
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Tuple
+import re
+from contextlib import contextmanager
+from typing import Any, Callable, Dict, Iterable, Iterator, List, NamedTuple, Optional, Tuple
 
 from .config import FieldSpec, ProjectSettings
 from .errors import NeedsAnswer, ToolError
@@ -21,6 +28,25 @@ _FORM_TYPES = frozenset({"string", "number", "date", "datetime", "option", "prio
                          "version", "component", "securitylevel", "resolution"})
 _NAME_TYPES = frozenset({"priority", "version", "component", "securitylevel", "resolution"})
 _FORM_SPEC_TYPES = frozenset({"string", "number", "option", "version"})
+# Shapes of system fields Jira may name as required, for converting answers without create-meta
+_SYSTEM_SHAPES = {"components": ("array", "component"), "fixVersions": ("array", "version"),
+                  "versions": ("array", "version"), "labels": ("array", "string"),
+                  "priority": ("priority", None), "duedate": ("date", None),
+                  "environment": ("string", None), "assignee": ("user", None)}
+_SYSTEM_NAMES = {"components": "components", "component/s": "components",
+                 "fix versions": "fixVersions", "fix version/s": "fixVersions",
+                 "affects versions": "versions", "affects version/s": "versions",
+                 "labels": "labels", "priority": "priority", "due date": "duedate",
+                 "environment": "environment", "assignee": "assignee"}
+# Jira's create error, as Xray returns it (recorded live): "Create issue failed! -
+# components: Components is required., Components: Components is required." Each entry is
+# "<field id or name>: <name> is required."; an entry may repeat the name as its key.
+_REQUIRED_ENTRY = re.compile(r"(?:^|(?<=- |, ))((?:(?! - )[^:,])+?): ([^:,]+?) is required\.")
+
+
+class RequiredFieldsRejected(ToolError):
+    """Jira refused a create for missing required fields and nothing was created; the fields
+    are learned for the server run, so the registry runs the call once more to ask for them."""
 
 
 class Resolution(NamedTuple):
@@ -51,6 +77,84 @@ def _meta(ctx: Any, pk: str, item_type: str) -> Optional[List[dict]]:
             return None
         cache[key] = [f for f in meta or [] if isinstance(f, dict) and f.get("id")]
     return cache[key]
+
+
+def parse_required_error(message: str) -> List[dict]:
+    """Required fields named in a Jira create error -> create-meta-like entries
+    {"id", "name", "required", "schemaType"[, "schemaItems"]}, one per field."""
+    by_name: Dict[str, dict] = {}
+    for key, name in _REQUIRED_ENTRY.findall(str(message or "")):
+        key, name = key.strip(), name.strip()
+        entry = by_name.get(name.casefold())
+        if key != name or entry is None:  # an id beats the name repeated as the key
+            by_name[name.casefold()] = {"id": key, "name": name}
+    out = []
+    for f in by_name.values():
+        if f["id"] == f["name"]:  # only the name was given: a known system field's id
+            f["id"] = _SYSTEM_NAMES.get(f["id"].casefold(), f["id"])
+        shape = _SYSTEM_SHAPES.get(f["id"])
+        entry = {"id": f["id"], "name": f["name"], "required": True,
+                 "schemaType": shape[0] if shape else None, "allowedValues": []}
+        if shape and shape[1]:
+            entry["schemaItems"] = shape[1]
+        out.append(entry)
+    return out
+
+
+def _learned(ctx: Any, pk: str, item_type: str) -> List[dict]:
+    return list((getattr(ctx, "reported_fields", None) or {}).get((pk, item_type)) or [])
+
+
+def learn(ctx: Any, pk: str, item_type: str, found: List[dict]) -> None:
+    """Remember for the server run that Jira requires `found` on new items of the type, and
+    drop the cached create-meta (it missed them or is stale)."""
+    reported = getattr(ctx, "reported_fields", None)
+    if reported is None:
+        reported = ctx.reported_fields = {}
+    known = {f["id"]: f for f in reported.get((pk, item_type)) or []}
+    for f in found:
+        known.setdefault(f["id"], f)
+    reported[(pk, item_type)] = list(known.values())
+    cache = getattr(ctx, "create_meta_cache", None)
+    if cache:
+        cache.pop((pk, item_type), None)
+
+
+@contextmanager
+def creating(ctx: Any, pk: str, item_type: str) -> Iterator[None]:
+    """Wraps the create mutation of a new item: a Jira error naming required fields becomes
+    RequiredFieldsRejected (the fields learned, see learn); other errors pass unchanged."""
+    try:
+        yield
+    except NeedsAnswer:
+        raise
+    except ToolError as e:
+        found = parse_required_error(e.message)
+        if not found:
+            raise
+        learn(ctx, pk, item_type, found)
+        tname = ITEM_TYPE_NAMES.get(item_type, item_type)
+        raise RequiredFieldsRejected(
+            "Jira did not create the new %s in %s: the required field(s) %s have no value. "
+            "Nothing was created. Call again with `fields` set to {field id or name: value} "
+            "(values as Jira expects them; see the field-ids guide)."
+            % (tname, pk, ", ".join("%s (%s)" % (f["name"], f["id"]) for f in found)),
+            projectKey=pk, itemType=item_type, jiraError=e.message,
+            missingFields=[{"name": f["name"], "id": f["id"]} for f in found]) from None
+
+
+def _discovered(meta: Optional[List[dict]], learned: List[dict]) -> Optional[List[dict]]:
+    """create-meta plus the fields Jira reported as required (marked required)."""
+    if not learned:
+        return meta
+    out = [dict(f) for f in meta or []]
+    by_id = {f["id"]: f for f in out}
+    for f in learned:
+        if f["id"] in by_id:
+            by_id[f["id"]]["required"] = True
+        else:
+            out.append(dict(f))
+    return out
 
 
 def _xray_owned(f: dict) -> bool:
@@ -171,7 +275,8 @@ def compute(ctx: Any, project: ProjectSettings, item_type: str,
     """The fields of a new item, without asking. `provided`: ids the tool sets itself."""
     pk = project.key
     specs = project.fields.get(item_type) or {}
-    meta = _meta(ctx, pk, item_type)
+    create_meta = _meta(ctx, pk, item_type)
+    meta = _discovered(create_meta, _learned(ctx, pk, item_type))
     by_id = {s.id: s for s in specs.values() if s.id}
     call: Dict[str, Any] = {}
     unknown = []
@@ -195,8 +300,8 @@ def compute(ctx: Any, project: ProjectSettings, item_type: str,
                 if s.id and s.default is not None}
     remembered = {k: v for k, v in _remembered(ctx, pk, item_type).items()
                   if k not in SYSTEM_FIELDS}
-    if meta is not None:  # a field no longer on the create screen would fail the create
-        ids = {f["id"] for f in meta} | set(by_id)
+    if create_meta is not None:  # a field no longer on the create screen would fail it
+        ids = {f["id"] for f in meta or []} | set(by_id)
         remembered = {k: v for k, v in remembered.items() if k in ids}
     answers = (_pending(ctx).get((pk, item_type)) or {}).get("values") or {}
     out = dict(remembered)
@@ -355,7 +460,18 @@ def ask(ctx: Any, project: ProjectSettings, missing: Dict[str, dict],
         "account ids for users); never answer it yourself. Nothing was written."
         % (what, pk, names, params),
         [q for t, p, fs in groups for q in questions(project, t, fs, p, multi)],
-        projectKey=pk, missingFields=missing_data)
+        projectKey=pk, missingFields=missing_data, **_untyped_hint(every))
+
+
+def _untyped_hint(fields: List[dict]) -> Dict[str, str]:
+    """Fields Jira named in an error, without create-meta: their type is unknown."""
+    names = [f["name"] for f in fields if f["spec"] is None and not f["type"]]
+    if not names:
+        return {}
+    return {"hint": "The type of %s is unknown without the Jira API token: pass each value "
+                    "in the JSON shape Jira expects for it (for example {\"value\": ...} for "
+                    "a select list, {\"name\": ...} for a component); see the field-ids "
+                    "guide." % ", ".join(names)}
 
 
 class Collector:

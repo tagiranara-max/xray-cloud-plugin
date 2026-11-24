@@ -274,7 +274,8 @@ def register(kind: Kind, with_sets: bool) -> None:
         if args.get("description") is not None:
             jira_fields["description"] = args["description"]
         jira_fields.update(extra)
-        data = ctx.xray.graphql(kind.q(_CREATE), {"jira": {"fields": jira_fields}})
+        with requiredfields.creating(ctx, pk, kind.item):
+            data = ctx.xray.graphql(kind.q(_CREATE), {"jira": {"fields": jira_fields}})
         node = (data.get("create" + cap) or {}).get(kind.item) or {}
         key = _key(node)
         if not key:

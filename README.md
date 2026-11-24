@@ -167,7 +167,7 @@ No setup is needed: install the plugin, add your credentials and start. A settin
 ### What gets asked
 
 - **First write to a project.** If the project is not listed in a settings file and you have not approved it yet, you are asked once: "All projects" (every project on this Xray site, pre-selected), "This project only" or "No". The answer is remembered for your user and for that Xray site, so switching to a different Xray site asks again. Read-only mode still blocks every write.
-- **Required Jira fields.** With the optional Jira token, required fields are discovered from Jira and asked once, then remembered per field; created items list `appliedDefaults`. Without the token, the plugin asks when Jira reports a missing required field.
+- **Required Jira fields.** With the optional Jira token, required fields are discovered from Jira and asked once, then remembered per field; created items list `appliedDefaults`. Without the token, the plugin tries the create; when Jira refuses it for missing required fields, nothing is created and the plugin asks for those fields (by field id; give values in the shape Jira expects for custom fields, see [docs/field-ids.md](docs/field-ids.md)), then creates the item and remembers the answers.
 - **Who asks.** In clients that support MCP elicitation (see the table below) the client asks you directly with a form. In other clients the tool returns `needs_answer` and the agent asks you, then repeats the call with your answer. The agent never answers for you.
 - **Reads** work on approved projects, on projects listed in a settings file, and on any project when there is no settings file (or it lists no projects).
 

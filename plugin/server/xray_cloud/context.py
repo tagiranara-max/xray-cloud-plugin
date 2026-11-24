@@ -49,6 +49,9 @@ class ServerContext:
         self.call_args: Dict[str, Any] = {}
         # Jira create-meta per (project, item type) for this server run (requiredfields).
         self.create_meta_cache: Dict[Any, Any] = {}
+        # Required fields Jira named in a refused create, per (project, item type), for this
+        # server run (requiredfields.learn); used without the token, where create-meta is not read.
+        self.reported_fields: Dict[Any, Any] = {}
         # Required-field answers of the current call, remembered on requiredfields.commit.
         self.pending_fields: Dict[Any, Any] = {}
 

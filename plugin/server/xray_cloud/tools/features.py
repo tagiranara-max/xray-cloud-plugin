@@ -108,8 +108,9 @@ class _Run:
         jira: Dict[str, Any] = {"fields": fields}
         if a.requirement_keys:
             jira["update"] = {"issuelinks": _link_update(a.requirement_keys)}
-        data = self.gql(_CREATE_TEST, {"jira": jira, "testType": {"name": CUCUMBER},
-                                       "gherkin": a.definition})
+        with requiredfields.creating(self.ctx, self.pk, "test"):
+            data = self.gql(_CREATE_TEST, {"jira": jira, "testType": {"name": CUCUMBER},
+                                           "gherkin": a.definition})
         res = data.get("createTest") or {}
         test = res.get("test") or {}
         key = (test.get("jira") or {}).get("key")
@@ -170,9 +171,10 @@ class _Run:
             labels = _merge_labels(a.labels, extra)
             fields.update(extra)
             fields["labels"] = labels
-            data = self.gql(_CREATE_PRECONDITION, {
-                "jira": {"fields": fields}, "preconditionType": {"name": CUCUMBER},
-                "definition": a.definition, "testIssueIds": ids})
+            with requiredfields.creating(self.ctx, self.pk, "precondition"):
+                data = self.gql(_CREATE_PRECONDITION, {
+                    "jira": {"fields": fields}, "preconditionType": {"name": CUCUMBER},
+                    "definition": a.definition, "testIssueIds": ids})
             res = data.get("createPrecondition") or {}
             key = ((res.get("precondition") or {}).get("jira") or {}).get("key")
             if not key:
@@ -219,7 +221,8 @@ class _Run:
             fields.update(extra)
             if labels:
                 fields["labels"] = labels
-            data = self.gql(SET.q(_CREATE), {"jira": {"fields": fields}})
+            with requiredfields.creating(self.ctx, self.pk, "testSet"):
+                data = self.gql(SET.q(_CREATE), {"jira": {"fields": fields}})
             node = (data.get("createTestSet") or {}).get("testSet") or {}
             key = (node.get("jira") or {}).get("key")
             if not key:

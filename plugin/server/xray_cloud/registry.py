@@ -158,7 +158,13 @@ class Registry:
                 ctx.call_args = {"allowProject": clean.pop("allowProject", None)}
             requiredfields.reset(ctx)  # answers of an earlier call never leak into this one
             try:
-                result = tool.handler(ctx, clean)
+                try:
+                    result = tool.handler(ctx, clean)
+                except requiredfields.RequiredFieldsRejected:
+                    # Jira named required fields and nothing was created: they are learned
+                    # now, so running the call again asks for them (once).
+                    requiredfields.reset(ctx)
+                    result = tool.handler(ctx, clean)
             except ToolError as e:
                 if tool.write and is_permission_error(e):
                     raise permission_denied(e, action="run %s" % name,

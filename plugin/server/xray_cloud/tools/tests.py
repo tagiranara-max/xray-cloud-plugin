@@ -350,7 +350,8 @@ def create_test(ctx, args):
     if args.get("steps"):
         variables["steps"] = [{"action": s["action"], "data": s.get("data", ""),
                                "result": s.get("result", "")} for s in args["steps"]]
-    data = ctx.xray.graphql(_CREATE_TEST, variables)
+    with requiredfields.creating(ctx, pk, "test"):
+        data = ctx.xray.graphql(_CREATE_TEST, variables)
     test = (data.get("createTest") or {}).get("test") or {}
     key = (test.get("jira") or {}).get("key")
     if not key:

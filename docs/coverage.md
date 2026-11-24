@@ -160,6 +160,28 @@ passed steps, the test run's `results[].backgrounds` was **empty**. The Backgrou
 as the run's Pre-Condition (`preconditions.definition = "Given the app is running"`). This
 matches the forum report: Background steps are not shown as run steps.
 
+## Required Jira fields without the Jira token
+
+Probed live on 2026-11-24 with Xray credentials only (no Jira token in the probing process).
+Components was made required, temporarily, for the Test issue type of a throwaway project;
+the project had no components.
+
+| `createTest` with | Result |
+|---|---|
+| no `components` | GraphQL error `Create issue failed! - components: Components is required., Components: Components is required.`; **nothing created** (JQL by the unique summary: 0 issues) |
+| `"components": []` (by field id, empty) | `Create issue failed! - components: Components is required.`; nothing created |
+| `"Components": [{"name": ...}]` (by field name) | `Create issue failed! - Components: Field 'Components' cannot be set. It is not on the appropriate screen, or unknown.`; nothing created |
+| `"components": [{"name": "<new name>"}]` (by field id, a component that did not exist) | **created**, and Jira **created the component** on the fly (the probing user administers the project); the test was deleted at once and the component left for the owner to remove |
+
+So Jira's "X is required" error reaches the caller through Xray, names each field by id (and
+again by name), and nothing is created; `jira.fields` takes field ids only, not names. The
+plugin therefore parses the field ids and names from the error (`<id>: <Name> is required.`),
+learns them for the server run, drops the cached create-meta of that project and item type,
+and runs the call once more, which asks for them like discovered fields (elicitation for
+simple fields, otherwise `needs_answer`); the answers are converted for known system fields
+(`components`, `fixVersions`, `priority`, ...) and remembered per field. A component name
+that does not exist yet may be created by Jira when the user can administer the project.
+
 ## Notes
 
 - Xray answered with HTTP 502 or a connection reset a few times during the runs. When it

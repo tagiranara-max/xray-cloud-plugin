@@ -429,3 +429,150 @@ def test_system_fields_never_come_from_remembered_or_get_remembered(tmp_path):
     requiredfields._add_pending(ctx, "PROJ", "test", {"summary": "X"}, True, asked=True)
     requiredfields.commit(ctx)
     assert remembered(ctx)["summary"] == "BAD"  # untouched, never re-stored
+
+
+# -- without the token: Jira's error names the required fields ---------------
+
+# Recorded live (Xray Cloud createTest, Components required on the Test issue type, no value)
+JIRA_REQUIRED = ("Create issue failed! - components: Components is required., "
+                 "Components: Components is required.")
+# Recorded live: a field given by name in jira.fields
+JIRA_BY_NAME = ("Create issue failed! - Components: Field 'Components' cannot be set. It is "
+                "not on the appropriate screen, or unknown.")
+
+
+def rejecting(required, key="PROJ-1", error=JIRA_REQUIRED):
+    """CreateTest that fails like Jira while any of `required` has no value."""
+    def respond(v):
+        fields = v["jira"]["fields"]
+        if any(not fields.get(r) for r in required):
+            raise ToolError(error, graphqlErrors=[{"message": error, "path": ["createTest"]}])
+        return created(key)["CreateTest"]
+    return {"CreateTest": respond}
+
+
+def creates(ctx):
+    return [v for op, v in ctx.xray.calls if op == "CreateTest"]
+
+
+def test_jira_required_error_parsed_to_fields():
+    assert requiredfields.parse_required_error(JIRA_REQUIRED) == [
+        {"id": "components", "name": "Components", "required": True, "schemaType": "array",
+         "schemaItems": "component", "allowedValues": []}]
+    custom = ("Create issue failed! - customfield_12345: Team is required., Team: Team is "
+              "required., priority: Priority is required.")
+    assert [(f["id"], f["name"], f["schemaType"])
+            for f in requiredfields.parse_required_error(custom)] == [
+        ("customfield_12345", "Team", None), ("priority", "Priority", "priority")]
+    # only the name given: a known system field's id
+    assert requiredfields.parse_required_error(
+        "Create issue failed! - Fix versions: Fix versions is required.")[0]["id"] == \
+        "fixVersions"
+    assert requiredfields.parse_required_error(
+        "Create issue failed! - Sprint goal: Sprint goal is required.")[0]["id"] == \
+        "Sprint goal"
+    assert requiredfields.parse_required_error(
+        "Create issue failed! - Components: Components is required.")[0]["id"] == "components"
+    for other in (JIRA_BY_NAME, "Xray request failed with HTTP 500: oops", "", None):
+        assert requiredfields.parse_required_error(other) == []
+
+
+def test_no_token_create_failure_asks_and_retry_succeeds(tmp_path):
+    ctx = make(tmp_path, responses=rejecting(["components"]))
+    assert ctx.jira is None
+    res, err = call(ctx, "create_test", projectKey="PROJ", summary="S", aiLabel="",
+                    allowDuplicates=True)
+    assert not err and res["status"] == "needs_answer", res
+    q = res["questions"][0]
+    assert (q["id"], q["name"], q["type"], q["param"]) == \
+        ("components", "Components", "array of component", "fields")
+    assert res["missingFields"] == [{"name": "Components", "id": "components"}]
+    assert len(creates(ctx)) == 1  # the refused try; the second run asked before writing
+    assert remembered(ctx) == {}
+    # the answer by field name: converted, created, remembered
+    res, err = call(ctx, "create_test", projectKey="PROJ", summary="S", aiLabel="",
+                    allowDuplicates=True, fields={"Components": "Backend"})
+    assert not err and res["created"] is True, res
+    assert creates(ctx)[-1]["jira"]["fields"]["components"] == [{"name": "Backend"}]
+    assert remembered(ctx) == {"components": [{"name": "Backend"}]}
+    # a new server run uses the remembered value without asking and reports it
+    ctx2 = make(tmp_path, responses=rejecting(["components"], "PROJ-2"))
+    res, err = call(ctx2, "create_test", projectKey="PROJ", summary="T", aiLabel="",
+                    allowDuplicates=True)
+    assert not err and res["key"] == "PROJ-2"
+    assert res["appliedDefaults"] == {"test": {"components": [{"name": "Backend"}]}}
+    assert len(creates(ctx2)) == 1
+
+
+def test_no_token_formable_field_elicited_and_created_in_one_call(tmp_path):
+    err_text = "Create issue failed! - priority: Priority is required."
+    ch = FakeChannel({"priority": "High"})
+    ctx = make(tmp_path, channel=ch, responses=rejecting(["priority"], error=err_text))
+    res, err = call(ctx, "create_test", projectKey="PROJ", summary="S", aiLabel="",
+                    allowDuplicates=True)
+    assert not err and res["created"] is True, res
+    assert len(ch.asked) == 1 and "Priority" in ch.asked[0][0]
+    assert [c["jira"]["fields"].get("priority") for c in creates(ctx)] == \
+        [None, {"name": "High"}]
+    assert remembered(ctx) == {"priority": {"name": "High"}}
+
+
+def test_no_token_unknown_type_needs_answer_with_hint_even_with_elicitation(tmp_path):
+    err_text = "Create issue failed! - customfield_12345: Team is required."
+    ch = FakeChannel({"customfield_12345": "x"})
+    ctx = make(tmp_path, channel=ch, responses=rejecting(["customfield_12345"],
+                                                          error=err_text))
+    res, err = call(ctx, "create_test", projectKey="PROJ", summary="S", aiLabel="",
+                    allowDuplicates=True)
+    assert not err and res["status"] == "needs_answer" and ch.asked == []
+    assert "Team" in res["hint"] and "field-ids" in res["hint"]
+    res, err = call(ctx, "create_test", projectKey="PROJ", summary="S", aiLabel="",
+                    allowDuplicates=True, fields={"customfield_12345": {"value": "Backend"}})
+    assert not err and res["created"] is True
+    assert creates(ctx)[-1]["jira"]["fields"]["customfield_12345"] == {"value": "Backend"}
+
+
+def test_create_failure_naming_a_field_drops_the_createmeta_cache(tmp_path):
+    ctx = make(tmp_path, meta=[META[0]], responses=rejecting(["components"]))
+    requiredfields.resolve(ctx, project(ctx), "test", None, None, False)
+    assert ctx.jira.calls == [("PROJ", "Test")]
+    ctx.jira.meta = COMPONENTS  # the field became required after create-meta was read
+    res, err = call(ctx, "create_test", projectKey="PROJ", summary="S", aiLabel="",
+                    allowDuplicates=True)
+    assert not err and res["status"] == "needs_answer"
+    assert ctx.jira.calls == [("PROJ", "Test"), ("PROJ", "Test")]  # read again
+    assert res["questions"][0]["choices"] == ["Backend"]  # allowed values from fresh meta
+
+
+def test_other_create_errors_pass_through_and_retry_happens_once(tmp_path):
+    ctx = make(tmp_path, responses=rejecting(["components"], error=JIRA_BY_NAME))
+    res, err = call(ctx, "create_test", projectKey="PROJ", summary="S", aiLabel="",
+                    allowDuplicates=True)
+    assert err and res["error"] == JIRA_BY_NAME and len(creates(ctx)) == 1
+    # Jira keeps naming the field although a value is sent: one retry, then the error
+    def always(v):
+        raise ToolError(JIRA_REQUIRED)
+    (tmp_path / "b").mkdir()
+    ctx = make(tmp_path / "b", responses={"CreateTest": always})
+    res, err = call(ctx, "create_test", projectKey="PROJ", summary="S", aiLabel="",
+                    allowDuplicates=True, rawFields={"components": [{"name": "Backend"}]})
+    assert err and res["jiraError"] == JIRA_REQUIRED and "Nothing was created" in res["error"]
+    assert res["missingFields"] == [{"name": "Components", "id": "components"}]
+    assert len(creates(ctx)) == 2
+
+
+def test_no_token_container_create_failure_asks_for_its_item_type(tmp_path):
+    def respond(v):
+        if not v["jira"]["fields"].get("components"):
+            raise ToolError(JIRA_REQUIRED)
+        return {"createTestSet": {"testSet": {"issueId": "9", "jira": {"key": "PROJ-9"}},
+                                  "warnings": []}}
+    ctx = make(tmp_path, responses={"CreateTestSet": respond})
+    res, err = call(ctx, "create_test_set", projectKey="PROJ", summary="Set")
+    assert not err and res["status"] == "needs_answer", res
+    assert res["questions"][0]["context"]["itemType"] == "testSet"
+    res, err = call(ctx, "create_test_set", projectKey="PROJ", summary="Set",
+                    fields={"components": ["Backend"]})
+    assert not err and res["key"] == "PROJ-9", res
+    assert remembered(ctx, "testSet") == {"components": [{"name": "Backend"}]}
+    assert remembered(ctx, "test") == {}

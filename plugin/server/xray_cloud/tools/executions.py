@@ -151,8 +151,9 @@ def create_test_execution(ctx, args):
         jira_fields["description"] = args["description"]
     jira_fields.update(extra)
     requiredfields.commit(ctx)
-    data = ctx.xray.graphql(_CREATE, {"jira": {"fields": jira_fields},
-                                      "testEnvironments": args.get("environments") or None})
+    with requiredfields.creating(ctx, pk, "testExecution"):
+        data = ctx.xray.graphql(_CREATE, {"jira": {"fields": jira_fields},
+                                          "testEnvironments": args.get("environments") or None})
     node = (data.get("createTestExecution") or {}).get("testExecution") or {}
     key = _key(node)
     if not key:
