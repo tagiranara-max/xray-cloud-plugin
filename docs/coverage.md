@@ -20,6 +20,9 @@ schema (introspection): fields, arguments, variable types and required arguments
 | Feature import, non-English outlines | a `Beispiele:` block left the test as `scenarioType: scenario` | the stored definition uses the English `Examples:` keyword (Xray's own import of a `# language: de` file does the same) |
 | Run defects | – | `TestRun.defects` returns Jira issue ids, not keys (tool description says so) |
 | Permissions | a missing Delete Issues permission surfaced as a raw Xray message | clear `permission_denied` errors (see README "Permissions") |
+| Result import response | read `testExecIssue {id, key}` (Xray Server/DC shape): `testExecKey` came back null and the run summary was never read | Xray Cloud answers `{"id", "key", "self"}` on the plain and the multipart endpoints (both shapes are accepted) |
+| Result import multipart | Cucumber/Behave sent the results part as `result` | every format's part is `results` (`result` gets HTTP 400 "Unexpected field (result)"); `info` holds the Test Execution fields |
+| Cucumber results into an existing execution | refused | Xray Cloud's Cucumber endpoints always create a new execution (`info.xrayFields.testExecKey` -> HTTP 400 "invalid fields: testExecKey"; a `testExecKey` query parameter and `info.key` are ignored). The tool converts the report to Xray JSON with `testExecutionKey` (one status per `@TEST_<KEY>` scenario, outline rows as example statuses, failures as comment); untagged scenarios are refused before upload. Behave into an existing execution is refused |
 
 ## Verified behaviour
 
@@ -64,6 +67,25 @@ file and temp `CLAUDE_PLUGIN_DATA`, so remembered answers start empty):
 | `get_status` with `check=true` | ok: credentials `configured: true` (no values), Jira reachable via `/myself`, preferences file in the temp data dir, all five choices unanswered; no credential value appears in the output |
 | `set_preferences` | unit tests only (the live tests remember answers through the import itself) |
 
+## Plan 2: results, native import/export, analysis
+
+Verified live with `tests/live/test_live_plan2.py` (temp settings and `CLAUDE_PLUGIN_DATA`;
+everything created, including the tests Xray creates for JUnit test cases, deleted in teardown):
+
+| Item | Outcome |
+|---|---|
+| `import_execution_results` JUnit, new execution with `summary` | ok: multipart `import/execution/junit/multipart` with parts `info` (Jira fields, summary applied) and `results`; response `{id, key, self}`; runs and `byStatus` match the file |
+| `import_execution_results` Cucumber JSON into an existing execution | ok (sent as Xray JSON with `testExecutionKey`): same execution, one run per `@TEST_` key, failure message as run comment, Scenario Outline rows as `examples` statuses (`PASSED`, `FAILED`) |
+| `import_execution_results` Cucumber JSON, new execution with `testEnvironments` | ok: multipart with `info.xrayFields.environments`; the execution carries the environment |
+| `import_execution_results` Xray JSON (plain `import/execution`) | ok: new execution, `byStatus` from `getTestRuns` |
+| `import_feature_file` on `regression/sample.feature` (run-id prefixed copy) | ok: multipart part `file` (with `projectKey` query parameter); response keys `updatedOrCreatedTests`, `updatedOrCreatedPreconditions` (`[{id, key, self}]`) and `errors`; 2 tests (scenario, scenario outline) and 1 Pre-Condition. A re-import of the same file updates the same keys (Xray matches by name). `testInfo` / `precondInfo` parts are as documented; not exercised live (the test project needs no extra fields) |
+| `export_cucumber_features` of those keys | ok: one `.feature` file (Xray names it `1_<KEY>,<KEY>.feature`), parses with the vendored parser, `@TEST_` tags and `#@PRECOND_` comment present, Feature name empty; a second export into the same directory is refused (no overwrite) |
+| `get_test_runs` | ok: GraphQL `getTestRuns(testIssueIds)` with `status { name }`, `startedOn`, `finishedOn`, `defects`, `testExecution { testEnvironments jira(fields: ["key"]) }` all valid; newest first, `lastStatus`, `flaky` true with PASSED and FAILED, environments per run |
+| `get_requirement_coverage` | ok: the Jira link type is `Test` (inward "is tested by", outward "tests"), so `issue in linkedIssues("<KEY>", "is tested by")` finds the covering tests; latest status per test via `getTestRuns(testIssueIds) { test { issueId } ... }` |
+| `coverageStatus` | available: `getCoverableIssues(jql) { results { status { name description } } }` (`CoverableIssue.status(environment, isFinal, version, testPlan)`) gave `NOTRUN` before any run and `OK` after a passed run; an issue that is not a requirement type returns no rows (`coverageStatus: null`). Added to `get_requirement_coverage` |
+| `find_related_tests` | ok: the created test is found by label, by term and by issue key (`matchedBy` `labels`, `terms`, `issueKeys`); all three at once give one row with all three kinds and the latest status |
+| `dev/parity_audit.py` | ok: 66 mutations, 30 queries; every mutation has a row in "API parity" below |
+
 ## Comparison with Xray's native import
 
 `regression/sample.feature` imported with `create_tests_from_feature` and with
@@ -103,7 +125,8 @@ matches the forum report: Background steps are not shown as run steps.
 
 Every GraphQL mutation the server uses and every REST import/export endpoint, with the tool
 that exposes it. `dev/parity_audit.py` lists the mutations and queries of the live schema (read-only,
-needs credentials); mutations of the live schema not listed here are not yet audited. A cell is
+needs credentials). Completed from its output on the live tenant (Plan 2, Task 8): every mutation
+of the live schema has a row, which `tests/live/test_live_plan2.py` checks. A cell is
 `tool: <name>[, <name>...]` or `not exposed: <reason>`; `tests/unit/test_parity_doc.py` checks
 that every named tool is registered.
 
@@ -114,8 +137,8 @@ that every named tool is registered.
 | `updateGherkinTestDefinition` | tool: edit_test |
 | `deleteTest` | tool: delete_test |
 | `addTestStep` | tool: add_test_steps, move_test_step |
-| `updateTestStep` | tool: edit_test_step, move_test_step |
-| `removeTestStep` | tool: remove_test_step |
+| `updateTestStep` | tool: edit_test_step, move_test_step, add_test_steps |
+| `removeTestStep` | tool: remove_test_step, move_test_step, add_test_steps |
 | `createTestSet` | tool: create_test_set, create_tests_from_feature |
 | `addTestsToTestSet` | tool: add_tests_to_test_set |
 | `removeTestsFromTestSet` | tool: remove_tests_from_test_set |
@@ -144,6 +167,37 @@ that every named tool is registered.
 | `moveFolder` | tool: move_folder |
 | `deleteFolder` | tool: delete_folder |
 | `addTestsToFolder` | tool: add_tests_to_folder |
+| `removeAllTestSteps` | not exposed: remove_test_step removes one step; the tail rebuild removes steps one by one |
+| `updateUnstructuredTestDefinition` | not exposed: Generic test definitions are set on create only |
+| `updateTestFolder` | not exposed: add_tests_to_folder (`addTestsToFolder`) moves tests between folders |
+| `updatePreconditionFolder` | not exposed: Pre-Conditions are not filed in folders by the plugin |
+| `addIssuesToFolder` | not exposed: the plugin files tests only (add_tests_to_folder) |
+| `removeIssuesFromFolder` | not exposed: the plugin files tests only |
+| `removeTestsFromFolder` | not exposed: tests are moved with add_tests_to_folder; delete_folder keeps them unfiled |
+| `deletePrecondition` | not exposed: no Pre-Condition delete tool yet (the live suite cleans up with it directly) |
+| `addPreconditionsToTest` | not exposed: create_tests_from_feature links Pre-Conditions from the Pre-Condition side (`addTestsToPrecondition`) |
+| `removePreconditionsFromTest` | not exposed: no unlink tool for Pre-Conditions yet |
+| `removeTestsFromPrecondition` | not exposed: no unlink tool for Pre-Conditions yet |
+| `addTestSetsToTest` | not exposed: covered from the Test Set side (add_tests_to_test_set) |
+| `removeTestSetsFromTest` | not exposed: covered from the Test Set side (remove_tests_from_test_set) |
+| `addTestPlansToTest` | not exposed: covered from the Test Plan side (add_tests_to_test_plan) |
+| `removeTestPlansFromTest` | not exposed: covered from the Test Plan side (remove_tests_from_test_plan) |
+| `addTestExecutionsToTest` | not exposed: covered from the execution side (add_tests_to_test_execution) |
+| `removeTestExecutionsFromTest` | not exposed: covered from the execution side (remove_tests_from_test_execution) |
+| `removeTestExecutionsFromTestPlan` | not exposed: no unlink tool for plan executions yet (only add_test_executions_to_test_plan) |
+| `updateTestRunComment` | not exposed: update_test_run sets the comment through `updateTestRun` |
+| `updateTestRunStepStatus` | not exposed: update_test_run sets step status through `updateTestRunStep` |
+| `updateTestRunStepComment` | not exposed: update_test_run sets step comments through `updateTestRunStep` |
+| `updateTestRunExampleStatus` | not exposed: example (outline row) statuses come from result imports (import_execution_results) |
+| `updateIterationStatus` | not exposed: data-driven iterations are not handled by the plugin |
+| `addDefectsToTestRunStep` | not exposed: defects are added at run level only (update_test_run) |
+| `addEvidenceToTestRunStep` | not exposed: evidence is added at run level only (update_test_run) |
+| `removeDefectsFromTestRun` | not exposed: update_test_run only adds defects |
+| `removeDefectsFromTestRunStep` | not exposed: step-level defects are not handled |
+| `removeEvidenceFromTestRun` | not exposed: update_test_run only adds evidence |
+| `removeEvidenceFromTestRunStep` | not exposed: step-level evidence is not handled |
+| `resetTestRun` | not exposed: destructive (clears a run's results); not offered to the agent |
+| `setTestRunTimer` | not exposed: timers are a UI feature; imports and update_test_run set start/finish |
 | REST `import/execution*` (JUnit, TestNG, NUnit, Robot, Cucumber, Behave, Xray JSON, with `/multipart`) | tool: import_execution_results |
 | REST `import/feature` | tool: import_feature_file |
 | REST `export/cucumber` | tool: export_cucumber_features |
