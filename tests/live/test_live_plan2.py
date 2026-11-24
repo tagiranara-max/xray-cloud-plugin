@@ -134,10 +134,13 @@ def step(kw: str, name: str, status: str, error: str = "") -> dict:
     return {"keyword": kw, "name": name, "line": 1, "match": {"location": "x"}, "result": res}
 
 
-def scenario(name: str, key: str, *steps: dict, outline: bool = False) -> dict:
+def scenario(name: str, key: str, *steps: dict, outline: bool = False,
+             tagged: bool = True) -> dict:
+    """A Cucumber JSON scenario; tagged=False leaves out the @TEST_ tag (matched by name)."""
     return {"id": "f;%s" % key.lower(), "keyword": "Scenario Outline" if outline else "Scenario",
             "name": name, "line": 5, "description": "", "type": "scenario",
-            "tags": [{"name": "@TEST_%s" % key, "line": 4}], "steps": list(steps)}
+            "tags": [{"name": "@TEST_%s" % key, "line": 4}] if tagged else [],
+            "steps": list(steps)}
 
 
 def cucumber(feature: str, *elements: dict) -> str:
@@ -166,12 +169,13 @@ def test_feature_import_export_results_and_run_history(fresh, results_log):
     lv.track("precondition", *imported["preconditions"])
     assert len(imported["tests"]) == 2 and len(imported["preconditions"]) == 1, imported
     assert imported["errors"] == [], imported
-    names = {}
+    names, summaries = {}, {}
     for key in imported["tests"]:
         row = lv.gql('query T($j: String!) { getTests(jql: $j, limit: 1) { results { '
                      'scenarioType jira(fields: ["key", "summary"]) } } }',
                      {"j": "issue = %s" % key})["getTests"]["results"][0]
         names[row["scenarioType"]] = key
+        summaries[key] = row["jira"]["summary"]
         assert RUN_ID in row["jira"]["summary"]
     scen_key, outline_key = names["scenario"], names["scenario_outline"]
     log["import_feature_file"] = ("ok: response keys updatedOrCreatedTests / "
@@ -204,36 +208,50 @@ def test_feature_import_export_results_and_run_history(fresh, results_log):
              '<testcase classname="xcl.%s" name="%s fails" time="0.2"><failure message="boom">'
              'trace</failure></testcase></testsuite></testsuites>'
              % (RUN_ID, lv.summary("junit"), RUN_ID, lv.summary("junit")))
+    # Neither case matches a test: nothing is uploaded until creation is allowed.
+    asked = lv.call("import_execution_results", format="junit", content=junit,
+                    summary=lv.summary("junit execution"))
+    assert asked["status"] == "needs_answer" and "testExecKey" not in asked, asked
+    assert sorted(asked["missing"]) == sorted("xcl.%s.%s %s" % (RUN_ID, lv.summary("junit"), s)
+                                              for s in ("passes", "fails")), asked
+    assert [q["id"] for q in asked["questions"]] == ["allowCreateTests"], asked
     res = lv.call("import_execution_results", format="junit", content=junit,
-                  summary=lv.summary("junit execution"), detail=True)
+                  summary=lv.summary("junit execution"), detail=True, allowCreateTests=True)
     ex = res["testExecKey"]
     assert ex, res
     lv.track("testExecution", ex)
     runs = track_run_tests(lv, ex, 2)
     assert res["created"] is True and "warnings" not in res, res
+    assert sorted(res["createdTests"]) == sorted(r["test"]["jira"]["key"] for r in runs), res
+    assert "AI label" in res["note"], res
     assert sorted(res["response"]) == ["id", "key", "self"], res["response"]
     assert res["summary"] == {"total": 2, "byStatus": {"PASSED": 1, "FAILED": 1}}, res
     got = exec_runs(lv, ex)
     assert got["jira"]["summary"] == lv.summary("junit execution")
     assert sorted((r["test"]["jira"]["summary"], r["status"]["name"]) for r in runs) == [
         (lv.summary("junit") + " fails", "FAILED"), (lv.summary("junit") + " passes", "PASSED")]
-    log["junit multipart"] = ("ok: parts info + results; response {id, key, self} (no "
-                              "testExecIssue); summary from info applied; runs and byStatus "
-                              "match the file")
+    log["junit multipart"] = ("ok: unmatched cases -> needs_answer (missing = Generic "
+                              "definitions, nothing created); with allowCreateTests: parts info "
+                              "+ results; response {id, key, self} (no testExecIssue); summary "
+                              "from info applied; runs and byStatus match the file; the two "
+                              "new tests listed in createdTests")
 
     # -- Cucumber JSON into that existing execution -------------------------------------------
+    # The outline rows carry no @TEST_ tag: they are matched by the outline test's summary.
+    outline_name = summaries[outline_key]
     report = cucumber(lv.summary("native Login"),
                       scenario("Successful login", scen_key, step("Then ", "I am logged in",
                                                                   "passed")),
-                      scenario("Failed login", outline_key, step("Then ", "I see error", "passed"),
-                               outline=True),
-                      scenario("Failed login", outline_key,
+                      scenario(outline_name, outline_key,
+                               step("Then ", "I see error", "passed"), outline=True,
+                               tagged=False),
+                      scenario(outline_name, outline_key,
                                step("Then ", "I see error", "failed", "expected X"),
-                               outline=True))
+                               outline=True, tagged=False))
     res = lv.call("import_execution_results", format="cucumber", content=report,
                   testExecKey=ex)
     assert res["testExecKey"] == ex and res["created"] is False, res
-    assert "converted from cucumber" in res["sentAs"], res
+    assert "converted from cucumber" in res["sentAs"] and "createdTests" not in res, res
     assert res["summary"] == {"total": 4, "byStatus": {"PASSED": 2, "FAILED": 2}}, res
     by_key = {r["test"]["jira"]["key"]: r for r in exec_runs(lv, ex)["testRuns"]["results"]}
     assert by_key[scen_key]["status"]["name"] == "PASSED"
@@ -244,24 +262,28 @@ def test_feature_import_export_results_and_run_history(fresh, results_log):
         "ok: Xray Cloud's Cucumber endpoints always create a new execution (multipart "
         "info.xrayFields.testExecKey -> HTTP 400 invalid field; testExecKey query parameter and "
         "info.key ignored); the tool sends Xray JSON with testExecutionKey: same execution, "
-        "statuses per @TEST_ key, failure as comment, outline examples %s" % examples)
+        "untagged outline rows matched by the test's summary, statuses per test, failure as "
+        "comment, outline examples %s" % examples)
     assert examples == ["PASSED", "FAILED"], by_key[outline_key]
 
     # -- Cucumber JSON into a new execution with an environment (multipart) ------------------
+    # Untagged, matched by summary: sent natively with an added @TEST_ tag.
     report2 = cucumber(lv.summary("native Login"),
-                       scenario("Successful login", scen_key,
-                                step("Then ", "I am logged in", "failed", "late")))
+                       scenario(summaries[scen_key], scen_key,
+                                step("Then ", "I am logged in", "failed", "late"),
+                                tagged=False))
     time.sleep(1)  # distinct run timestamps
     res2 = lv.call("import_execution_results", format="cucumber", content=report2,
                    testEnvironments=[ENV_NAME])
     ex2 = res2["testExecKey"]
     lv.track("testExecution", ex2)
     track_run_tests(lv, ex2, 1)
-    assert res2["created"] is True and ex2 != ex, res2
+    assert res2["created"] is True and ex2 != ex and "sentAs" not in res2, res2
     assert res2["summary"] == {"total": 1, "byStatus": {"FAILED": 1}}, res2
     assert exec_runs(lv, ex2)["testEnvironments"] == [ENV_NAME]
     log["cucumber new execution + environment"] = (
-        "ok: multipart (parts info + results), info.xrayFields.environments applied")
+        "ok: multipart (parts info + results), info.xrayFields.environments applied; an "
+        "untagged scenario matched by summary is sent natively with an added @TEST_ tag")
 
     # -- get_test_runs: newest first, lastStatus ------------------------------------------------
     hist = lv.call("get_test_runs", testKey=scen_key)
