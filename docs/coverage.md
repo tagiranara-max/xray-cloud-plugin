@@ -119,6 +119,22 @@ imported results to tests, so the tool's pre-check mirrors it:
 | Robot | Definition = `<suite name>.<test name>`, summary = test name; a tag equal to a test key maps to that test **and renames that test** to the Robot test's name |
 | Xray JSON `testInfo` (no `testKey`) | `type: Cucumber` takes the steps in `scenario` (`definition` gets HTTP 400 "Test of kind gherkin should not contain ... definition or steps") and always creates a new test, even when an identical one exists; `type: Generic` with `definition` reuses the Generic test with that definition **and overwrites its summary** with `testInfo.summary` |
 
+Second probe, 2026-11-24 (does an import change the existing test?):
+
+| Case | Result |
+|---|---|
+| Cucumber JSON (native, new execution) with `@TEST_<KEY>` on a Cucumber test and on a Manual test, other scenario names and steps | nothing changed: type, gherkin, summary and labels kept; runs created on both tests |
+| Xray JSON entry with `testKey` and `testInfo` (Generic, other summary and definition) | the test's **summary and definition were overwritten** from `testInfo` |
+| JUnit case with `test_key` (Manual test) and properties `test_summary`, `test_description`, `tags` | the test's **summary was overwritten and the tags added as labels** |
+| JUnit case matched by Generic definition with the same properties | same: **summary overwritten, labels added** |
+| GraphQL `getTests(jql: "issue in (...)")` with a key that does not exist (`ISO-8601`, an unused number) | no error: the key is just not in the results |
+
+So the tool sends known tests by `testKey` only (no `testInfo`), removes JUnit `test_summary` /
+`test_description` / `tags` (and the similar TestNG/NUnit names, unverified, as a precaution)
+from cases matched to existing tests, and asks (`allowRenameTests`) before a Robot key tag
+renames a test. Robot renaming by a definition match (without a key tag) was not observed for
+JUnit and is assumed not to happen.
+
 So, in the tool: Cucumber/Behave scenarios are matched by tag, the project's `testKeyTag`, or
 exact summary (the plugin's own rule; trimmed, case-sensitive), and the resolved key is sent as
 a `@TEST_<KEY>` tag (new execution, native import keeps step details) or as `testKey` in Xray

@@ -50,6 +50,14 @@ If the result has status `needs_answer`, nothing was uploaded. It lists `matched
 
 Pass `allowCreateTests: true` only after the user says yes to creating tests. Never pass it on your own. Then call the tool again with the same arguments plus the answers.
 
+Before the user answers about Cucumber or Behave, tell them what a created test holds: only the scenario's own steps, with no Background and no Examples table. Scenario Outline rows whose names have their values filled in (for example `Login as admin` from `Login as <role>`) do not match the outline's test, so they show up as missing. Map those rows to the outline's test with `testKeys` rather than creating one test per row.
+
+Result names are unique per result: when two features have a scenario with the same name, it is listed as `Feature: Scenario`; Xray JSON entries with the same summary are listed as `summary (definition)`. Use the names exactly as listed.
+
+For Robot results, a tag equal to a test key makes Xray rename that test to the Robot test's name. If any existing test would be renamed, the tool lists `renames` (key, current summary, new name) and asks `allowRenameTests`. Show the list, and pass `allowRenameTests: true` only after the user agrees; otherwise they can remove the tags or map the results differently.
+
+Existing tests are otherwise left as they are: the tool removes `testInfo` from Xray JSON entries that name a test, and summary, description and label properties (for example JUnit `test_summary` and `tags`) from cases matched to existing tests; the result's `warnings` say so.
+
 ## 6. Summarise
 
 Report the execution key and the counts in `byStatus` (for example PASSED, FAILED, TODO). Do not repeat the raw response unless asked; `detail` adds it. If `skipped` is present, say which results were left out.

@@ -173,7 +173,13 @@ When a result matches several tests (`ambiguous`) or none (`missing`), nothing i
 - `skipMissing: true` to leave unmatched results out;
 - `allowCreateTests: true`, only with the user's consent, to let new tests be created: Xray creates a Generic test per JUnit/TestNG/NUnit/Robot case (summary = the case name), and a Cucumber test named after each unmatched scenario. They are listed in `createdTests` and get no AI label (label them afterwards with `edit_test` or `set_lifecycle_label`, or create labelled tests first with `create_tests_from_feature`).
 
-Xray side effects to know: a Robot tag that maps a test renames that test to the Robot test's name, and an Xray JSON `testInfo` entry matched by definition overwrites that Generic test's summary.
+Existing tests are never changed without asking. Xray would change them in these cases (verified live), so the tool prevents it:
+
+- A Robot tag that maps a test renames that test to the Robot test's name. The tool lists those tests in `renames` (key, current summary, new name) and asks; pass `allowRenameTests: true` to go ahead.
+- `testInfo` overwrites a test's summary and definition, even next to a `testKey`. Entries whose test is known are sent with `testKey` only.
+- JUnit `test_summary` and `tags` properties overwrite the summary and labels of a test matched by key or definition. The tool removes them (and `test_description`; for TestNG and NUnit the similar names, as a precaution) from matched cases and says so in `warnings`. Cases for new tests keep them.
+
+A Robot tag counts as a test key only when the issue is a Test (requirement links and tags such as `ISO-8601` are left alone); a Test of another project is refused. Names that occur more than once are told apart: `Feature: Scenario` for Cucumber/Behave, `summary (definition)` for Xray JSON. Tests created from Cucumber hold only the scenario's steps (no Background, no Examples); outline rows with filled-in names show up as missing, so map them with `testKeys`.
 
 ## Analysis
 
