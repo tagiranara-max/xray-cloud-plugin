@@ -116,7 +116,7 @@ imported results to tests, so the tool's pre-check mirrors it:
 | JUnit | A `<testcase classname="a.B" name="c">` with no match creates a **Generic** test with summary `c` (the case name) and definition (`unstructured`) `a.B.c`. A second import of the same case reuses that test (matched by definition). An existing Generic test whose definition is `classname.name` is reused whatever its summary (the summary is kept). An existing Generic test with the same summary but another definition is **not** matched: a new test is created. `<property name="test_key" value="KEY"/>` maps the case to that test, of any type (Manual included), summary kept |
 | TestNG | Definition `<class name>.<test-method name>`, summary = method name; `<attributes><attribute name="test">KEY</attribute></attributes>` maps to that test |
 | NUnit 3 | Definition = `test-case@fullname`, summary = `name`; `<property name="Test" value="KEY"/>` maps to that test |
-| Robot | Definition = `<suite name>.<test name>`, summary = test name; a tag equal to a test key maps to that test **and renames that test** to the Robot test's name |
+| Robot | Definition = `<suite name>.<test name>`, summary = test name; a tag equal to a test key maps to that test **and renames that test** to the Robot test's name (the plugin prevents this, see below) |
 | Xray JSON `testInfo` (no `testKey`) | `type: Cucumber` takes the steps in `scenario` (`definition` gets HTTP 400 "Test of kind gherkin should not contain ... definition or steps") and always creates a new test, even when an identical one exists; `type: Generic` with `definition` reuses the Generic test with that definition **and overwrites its summary** with `testInfo.summary` |
 
 Second probe, 2026-11-24 (does an import change the existing test?):
@@ -128,8 +128,8 @@ Second probe, 2026-11-24 (does an import change the existing test?):
 | JUnit case with `test_key` (Manual test) and properties `test_summary`, `test_description`, `tags` | the test's **summary was overwritten and the tags added as labels** |
 | JUnit case matched by Generic definition with the same properties | same: **summary overwritten, labels added** |
 | GraphQL `getTests(jql: "issue in (...)")` with a key that does not exist (`ISO-8601`, an unused number) | no error: the key is just not in the results |
-| Robot test matched by Generic definition only (no key tag), with tags `smoke`, `rtagdef` and a `<doc>` | the test was **renamed** to the Robot test's name and the **tags were added as labels**; the description was kept |
-| Robot test matched by a key tag (Manual test), with tags `smoke`, `rtagkey` and a `<doc>` | **renamed**, **tags added as labels**; description kept |
+| Robot test matched by Generic definition only (no key tag), with tags `smoke`, `rtagdef` and a `<doc>` | the test was **renamed** to the Robot test's name and the **tags were added as labels**; the description was kept (the plugin prevents both, see below) |
+| Robot test matched by a key tag (Manual test), with tags `smoke`, `rtagkey` and a `<doc>` | **renamed**, **tags added as labels**; description kept (prevented by the plugin, see below) |
 | Robot test named exactly like the Generic test's summary, only its key tag, definition `Suite.<name>` equal to the test's | **nothing changed** (summary, definition, labels, type) |
 | Same, but the test's definition differs from the Robot `Suite.Test` path | **nothing changed**: the key tag wins and the definition is not overwritten |
 

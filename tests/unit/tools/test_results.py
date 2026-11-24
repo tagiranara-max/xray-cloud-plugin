@@ -905,3 +905,10 @@ def test_test_keys_must_be_existing_tests(tmp_path, fmt, content, name):
                     allowCreateTests=True)
     assert err and "PROJ-2" in out["error"] and "not" in out["error"], out
     assert ctx.xray.rest_calls == []
+
+
+def test_robot_match_without_a_readable_summary_refused_before_upload(tmp_path):
+    ctx = match_ctx(tmp_path, definitions=[("PROJ-5", "Old", "S.Login")])
+    ctx.xray.responses[KEYS] = rows_by([])  # summary of PROJ-5 cannot be read
+    out, err = call(ctx, format="robot", content=ROBOT_DEF, allowCreateTests=True)
+    assert err and "PROJ-5" in out["error"] and ctx.xray.rest_calls == [], out

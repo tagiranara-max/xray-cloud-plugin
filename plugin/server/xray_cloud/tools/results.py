@@ -410,6 +410,11 @@ def _robot_summaries(ctx, res: Resolution, summaries: Dict[str, str]) -> List[Op
     unknown = [k for k in res.keys if k and k not in summaries]
     if unknown:
         summaries = dict(summaries, **rm.existing_tests(ctx, unknown))
+    unreadable = sorted({k for k in res.keys if k and k not in summaries})
+    if unreadable:
+        raise ToolError("Cannot read the summary of %s, so Xray could rename it to the Robot "
+                        "test's name; nothing was imported" % ", ".join(unreadable),
+                        keys=unreadable)
     return [summaries.get(k) if k else None for k in res.keys]
 
 
