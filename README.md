@@ -173,7 +173,7 @@ No setup is needed: install the plugin, add your credentials and start. A settin
 
 | Client | Who asks | Basis |
 |---|---|---|
-| Claude Code | asks you directly | official docs describe an interactive elicitation dialog |
+| Claude Code | asks you directly in interactive sessions (headless runs fall back to the agent asking) | official docs describe an interactive elicitation dialog |
 | Cursor | asks you directly | official docs list Elicitation as supported |
 | VS Code (Copilot agent) | asks you directly | official docs: form and URL elicitation during a turn |
 | Codex | unknown: the agent asks you | official docs do not say |
@@ -347,7 +347,7 @@ Read-only tools for questions about test history and impact:
 
 Skills guide Claude through multi-step workflows on top of the tools:
 
-- **`xray-setup`**: create or update the settings file (projects, field IDs, defaults, import choices, tag rules) with you.
+- **`xray-setup`**: check your setup and, optionally, build a team settings file (field IDs, defaults, import choices, tag rules) from your answers.
 - **`import-results`**: import a test result file into Xray as a test execution and check for flaky tests.
 - **`import-tests`**: import tests from `.feature` files and from tabular or markdown sources.
 - **`predict-affected-tests`**: predict which tests a code change affects and optionally create an execution for the at-risk ones.
@@ -383,7 +383,7 @@ Each is asked once per project. When a tool answers `status: needs_answer` (or a
 
 Where a value comes from, first match wins: the call itself, then your settings file (the project's `featureImport` / `aiCreated`, then the top-level ones), then the remembered answer, then unanswered. A value in the settings file always wins, so a team can fix choices for everyone. A call value that differs from the remembered one applies to that call only, unless `remember: true` is passed.
 
-To change a remembered choice, tell Claude "change my import preferences" (it calls `set_preferences`), or edit the settings file. Remembered answers live in `${CLAUDE_PLUGIN_DATA}/preferences.json`, or `~/.config/xray-cloud/preferences.json` when that variable is not set; they are per user and survive plugin updates.
+To change a remembered choice, tell Claude "change my import preferences" (it calls `set_preferences`), or edit the settings file. Remembered answers live in `preferences.json` inside `XRAY_DATA_DIR` (which wins), else `${CLAUDE_PLUGIN_DATA}`, else `~/.config/xray-cloud`; they are per user and survive plugin updates.
 
 ```yaml
 # Optional, in your settings file; every key is optional (absent = asked or remembered)
@@ -445,7 +445,7 @@ Some things cannot be done without Jira: labels, fields or requirement links on 
 - **Settings file:** your own file, found in this order: the path from the plugin prompt; `.xray/settings.yml` in the project Claude Code is working in; `~/.config/xray-cloud/settings.yml`. The plugin ships no settings. A settings file committed in your team's project makes the choices team-wide.
 - **Import choices and tag rules:** ask Claude to "change my import preferences" (`set_preferences`), or edit the settings file. A settings-file value always wins over a remembered one.
 - **`get_status`:** shows the plugin's state without secrets: region, whether credentials are configured, the settings file in use and the locations searched, projects, Jira, and each project's effective choices with where each came from (call, settings, remembered, default or unanswered).
-- **Guided setup:** the `xray-setup` skill walks through all of this: it finds or creates the settings file, discovers field IDs (Jira token, Atlassian MCP, or manual steps), offers import choices, the AI-created label and tag rules, shows the diff, asks before saving and ends with `get_status`.
+- **Guided setup:** the `xray-setup` skill walks through all of this: it checks credentials, explains the first-use questions, and optionally builds a team settings file: discovers field IDs (Jira token, Atlassian MCP, or manual steps), offers import choices, the AI-created label and tag rules, shows the diff, asks before saving and ends with `get_status`.
 
 ## Limitations
 

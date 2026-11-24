@@ -78,7 +78,7 @@ Every call needs a project key. Take it, in this order:
 
 1. from the user's words;
 2. from keys in the input (a `@TEST_PROJ-12` tag, a story key, the branch name);
-3. if only one project is approved or listed in the settings file, that one (`get_status` shows them);
+3. if exactly one specific project is approved or listed in the settings file, that one (`get_status` shows them; with approve-all and no specific project, go on to the next step);
 4. otherwise ask the user. When working autonomously and you cannot ask, choose the most likely project and state the choice in your result.
 
 The first write to a project that is not in a settings file and not yet approved asks the user once (see below).

@@ -87,9 +87,10 @@ WRITING_SKILLS = ["xray-setup", "import-tests", "import-results", "predict-affec
 @pytest.mark.parametrize("name", WRITING_SKILLS)
 def test_skills_say_relay_needs_answer(name):
     text = (SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8")
-    assert "needs_answer" in text, name
-    lowered = text.lower()
-    assert "relay" in lowered and "never answer" in lowered, name
+    m = re.search(r"^## Questions from the tool \(`needs_answer`\)\n(.*?)(?=^## |\Z)", text, re.S | re.M)
+    assert m, name
+    section = m.group(1).lower()
+    assert "needs_answer" in section and "relay" in section and "never answer" in section, name
 
 
 def test_readme_settings_says_optional():
@@ -102,3 +103,10 @@ def test_readme_settings_says_optional():
     assert "all projects" in section
     assert "revokeproject" in section.replace("`", "")
     assert "asks you directly" in text and "the agent asks you" in text
+
+
+@pytest.mark.parametrize("path", [ROOT / "README.md"] + skill_files(), ids=lambda p: p.parent.name)
+def test_no_stale_allowlist_wording(path):
+    lowered = path.read_text(encoding="utf-8").lower()
+    for stale in ("allowlist", "projects claude may use"):
+        assert stale not in lowered, "%s still says %r" % (path, stale)

@@ -61,11 +61,11 @@ Every call needs a project key. Take it, in this order:
 
 1. from the user's words;
 2. from keys in the input (a `@TEST_PROJ-12` tag, a story key, the branch name);
-3. if only one project is approved or listed in the settings file, that one (`get_status` shows them);
+3. if exactly one specific project is approved or listed in the settings file, that one (`get_status` shows them; with approve-all and no specific project, go on to the next step);
 4. otherwise ask the user. When working autonomously and you cannot ask, choose the most likely project and state the choice in your result.
 
 The first write to a project that is not in a settings file and not yet approved asks the user once (see below).
 
 ## Questions from the tool (`needs_answer`)
 
-When a tool returns `status: needs_answer`, nothing was done. Relay the question to the user in plain words and wait for their answer. Never answer it yourself, and never pass `allowProject`, `allowCreateTests` or any other answer on your own. Then call the tool again with the answer. Some clients show the question to the user directly (an approval prompt with "All projects" pre-selected); in that case just wait for the result.
+When a tool returns `status: needs_answer`, nothing was done. Relay the question to the user in plain words and wait for their answer. Never answer it yourself, and never pass `allowProject` or any other answer on your own. Then call the tool again with the answer. Some clients show the question to the user directly (an approval prompt with "All projects" pre-selected); in that case just wait for the result.
