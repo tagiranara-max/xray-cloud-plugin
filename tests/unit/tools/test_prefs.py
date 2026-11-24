@@ -300,7 +300,27 @@ def test_get_status_shows_approvals_and_field_values_without_site_id(tmp_path):
     res, err = run(ctx, "get_status")
     assert not err
     per = res["perProject"]["P"]
-    assert per["approvals"] == {"approveAll": False, "approvedProjects": ["P"]}
+    assert "approvals" not in per
+    assert res["approvals"] == {"approveAll": False, "approvedProjects": ["P"]}
     assert per["fieldValues"] == {"test": {"customfield_12345": "Backend"}}
     assert site not in json.dumps(res)
     assert "SECRET" not in json.dumps(res)
+
+
+def test_get_status_zero_config_shows_approvals_and_unlisted_field_values(tmp_path):
+    ctx = make(tmp_path, yaml="")
+    ctx.env = dict(ctx.env, XRAY_CLIENT_ID="id-SECRET-111", XRAY_CLIENT_SECRET="sec-SECRET-222")
+    site = ctx.site
+    ctx.preferences.approve("global", site, "PROJ", False)
+    ctx.preferences.approve("global", site, None, True)
+    ctx.preferences.remember_fields("global", site, "PROJ", "test", {"customfield_12345": "Backend"})
+    res, err = run(ctx, "get_status")
+    assert not err
+    assert res["approvals"] == {"approveAll": True, "approvedProjects": ["PROJ"]}
+    assert res["perProject"]["PROJ"]["fieldValues"] == {"test": {"customfield_12345": "Backend"}}
+
+
+def test_clear_field_values_rejects_empty_item_type(tmp_path):
+    res, err = run(make(tmp_path), "set_preferences", projectKey="P",
+                   clearFieldValues={"itemType": ""})
+    assert err

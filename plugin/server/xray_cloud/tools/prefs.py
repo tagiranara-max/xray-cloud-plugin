@@ -101,9 +101,11 @@ def set_preferences(ctx, args):
     revoke_all = args.get("approveAll") is False
     clear_fv = args.get("clearFieldValues")
     if clear_fv is not None:
-        if not isinstance(clear_fv, dict) or set(clear_fv) - {"itemType"} or not isinstance(
-                clear_fv.get("itemType", ""), str):
-            raise ToolError("clearFieldValues must be an object with an optional itemType string")
+        it = clear_fv.get("itemType", "x") if isinstance(clear_fv, dict) else None
+        if not isinstance(clear_fv, dict) or set(clear_fv) - {"itemType"} or not (
+                isinstance(it, str) and it):
+            raise ToolError("clearFieldValues must be an object with an optional non-empty "
+                            "itemType string")
     if not values and not clear and revoke is None and not revoke_all and clear_fv is None:
         raise ToolError("Nothing to do: give at least one value to set or names to clear")
     region = choices.region_of(ctx)
@@ -113,7 +115,7 @@ def set_preferences(ctx, args):
     if values:
         ctx.preferences.update(region, pk, values, site)
     if clear_fv is not None:
-        ctx.preferences.clear_fields(region, site, pk, clear_fv.get("itemType") or None)
+        ctx.preferences.clear_fields(region, site, pk, clear_fv.get("itemType"))
     if revoke is not None or revoke_all:
         ctx.preferences.revoke(region, site, revoke, revoke_all)
     effective = choices.effective(ctx, pk)
@@ -173,7 +175,6 @@ def _project_status(ctx, pk: str) -> Dict[str, Any]:
     return {"featureImport": {n: eff[n] for n in _FEATURE_IMPORT},
             "aiCreated": {n: eff[n] for n in _AI_CREATED},
             "resultImport": {"testKeyTag": project.test_key_tag if project else None},
-            "approvals": ctx.preferences.approval(choices.region_of(ctx), ctx.site),
             "fieldValues": (ctx.preferences.get(choices.region_of(ctx), pk, ctx.site)
                             .get("fieldValues") or {}),
             "unanswered": [n for n, v in eff.items() if v["source"] == "unanswered"]}
@@ -204,14 +205,17 @@ def get_status(ctx, args):
         "credentials": {"configured": ctx.has_credentials},
         "settings": settings, "projects": projects, "readOnly": bool(ctx.read_only),
         "jira": _jira_status(ctx, bool(args.get("check"))),
-        "preferencesFile": str(ctx.preferences.path), "perProject": {}}
+        "preferencesFile": str(ctx.preferences.path), "perProject": {},
+        "approvals": {"approveAll": False, "approvedProjects": []}}
     try:
         groups = active_groups(ctx.env)
     except ToolError:  # startup already rejects this; stay readable
         groups = None
     out["toolGroups"] = list(GROUPS) if groups is None else groups
     try:
-        out["perProject"] = {pk: _project_status(ctx, pk) for pk in projects}
+        out["approvals"] = ctx.preferences.approval(region, ctx.site)
+        shown = sorted(set(projects) | set(ctx.preferences.projects_with_values(region, ctx.site)))
+        out["perProject"] = {pk: _project_status(ctx, pk) for pk in shown}
     except ToolError as exc:  # unreadable preferences file: report, keep the rest
         out["preferencesError"] = exc.message
     return out

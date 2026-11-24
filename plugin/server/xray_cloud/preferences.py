@@ -23,6 +23,9 @@ def site_id(env: Mapping[str, str]) -> str:
     return hashlib.sha256(creds.client_id.encode("utf-8")).hexdigest()[:12]
 
 
+_NO_SAVE = object()
+
+
 class PreferenceStore:
     """Remembered choices in one JSON file. Per project: "<region>/<site>/<PROJECT>" (choices
     and fieldValues; an older "<region>/<PROJECT>" entry is read once and migrated on the next
@@ -82,12 +85,26 @@ class PreferenceStore:
                 except OSError:
                     pass
 
+    def _raw(self) -> Optional[str]:
+        try:
+            return self.path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+
     def _mutate(self, fn: Callable[[Dict[str, Any]], Any]) -> Any:
-        """Re-read, apply fn to the fresh data, write atomically."""
-        data = self._load()
-        result = fn(data)
-        self._save(data)
-        return result
+        """Load, apply fn, and write atomically; if the file changed between the load and the
+        write (another client), reload and apply fn again so nothing is dropped. fn returning
+        _NO_SAVE means nothing to write."""
+        for _ in range(20):
+            before = self._raw()
+            data = self._load()
+            result = fn(data)
+            if result is _NO_SAVE:
+                return None
+            if self._raw() == before:
+                self._save(data)
+                return result
+        raise self._error("write")
 
     @staticmethod
     def _key(region: str, project: str, site: str = "") -> str:
@@ -98,10 +115,10 @@ class PreferenceStore:
         return "%s/%s" % (region, site)
 
     def _entry(self, data: Dict[str, Any], region: str, project: str, site: str) -> Dict[str, Any]:
-        entry = data.get(self._key(region, project, site))
-        if entry is None and site:  # one-time fallback to the pre-site key
-            entry = data.get(self._key(region, project))
-        return dict(entry or {})
+        entry = dict(data.get(self._key(region, project, site)) or {})
+        if site:  # one-time fallback to the pre-site key; the site entry wins
+            entry = dict(data.get(self._key(region, project)) or {}, **entry)
+        return entry
 
     def _store_entry(self, data: Dict[str, Any], region: str, project: str, site: str,
                      entry: Dict[str, Any]) -> None:
@@ -150,6 +167,8 @@ class PreferenceStore:
 
         def op(data):
             key = self._site_key(region, site)
+            if key not in data and not change.writes_missing:
+                return _NO_SAVE
             entry = dict(data.get(key) or {})
             state = {"all": entry.get("approveAll") is True,
                      "projects": set(p for p in (entry.get("approvedProjects") or [])
@@ -166,6 +185,7 @@ class PreferenceStore:
                 state["all"] = True
             if project_key:
                 state["projects"].add(project_key)
+        change.writes_missing = True
         self._write_approval(region, site, change)
 
     def revoke(self, region: str, site: str, project_key: Optional[str], all_: bool) -> None:
@@ -176,7 +196,13 @@ class PreferenceStore:
                 state["all"] = False
             if project_key:
                 state["projects"].discard(project_key)
+        change.writes_missing = False
         self._write_approval(region, site, change)
+
+    def projects_with_values(self, region: str, site: str) -> List[str]:
+        """Project keys that have an entry under "<region>/<site>/"."""
+        prefix = "%s/%s/" % (region, site)
+        return sorted(k[len(prefix):] for k in self._load() if site and k.startswith(prefix))
 
     # remembered field values: {itemType: {field: value}} under the project entry
 

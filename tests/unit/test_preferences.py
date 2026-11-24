@@ -176,13 +176,38 @@ def test_other_site_has_no_approval(tmp_path):
 
 def test_concurrent_write_merges_not_drops(tmp_path):
     a, b = _store(tmp_path), _store(tmp_path)
-    b.approval("global", "abc")  # stale read
-    a.approve("global", "abc", "PROJ", False)
+    real_load, state = b._load, {"fired": False}
+
+    def racing_load():  # A writes right after B loaded, before B saves
+        data = real_load()
+        if not state["fired"]:
+            state["fired"] = True
+            a.approve("global", "abc", "PROJ", False)
+        return data
+    b._load = racing_load
     b.approve("global", "abc", "BACK", False)
+    assert state["fired"]
     assert a.approval("global", "abc")["approvedProjects"] == ["BACK", "PROJ"]
-    a.remember_fields("global", "abc", "PROJ", "test", {"customfield_12345": "x"})
-    b.approve("global", "abc", "OTHER", False)
-    assert a.field_values("global", "abc", "PROJ", "test") == {"customfield_12345": "x"}
+
+
+def test_old_and_new_keys_both_present_are_merged(tmp_path):
+    s = _store(tmp_path)
+    s.path.parent.mkdir(parents=True)
+    s.path.write_text(json.dumps({"global/PROJ": {"createTestSet": True, "backgrounds": "inline"},
+                                  "global/abc/PROJ": {"backgrounds": "preconditions",
+                                                      "tagsAsLabels": False}}))
+    assert s.get("global", "PROJ", "abc") == {
+        "createTestSet": True, "backgrounds": "preconditions", "tagsAsLabels": False}
+    s.update("global", "PROJ", {"aiLabel": "x"}, "abc")
+    assert json.loads(s.path.read_text()) == {"global/abc/PROJ": {
+        "createTestSet": True, "backgrounds": "preconditions", "tagsAsLabels": False,
+        "aiLabel": "x"}}
+
+
+def test_revoke_without_entry_writes_nothing(tmp_path):
+    s = _store(tmp_path)
+    s.revoke("global", "abc", "PROJ", True)
+    assert not s.path.exists()
 
 
 def test_field_values_remember_clear(tmp_path):
