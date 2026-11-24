@@ -38,8 +38,13 @@ def _read_input(ctx, args: dict) -> bytes:
         raise ToolError("Provide exactly one of filePath or content",
                         filePath=has_file, content=has_content)
     if has_file:
-        return localfiles.read_local_file(ctx.env, args["filePath"], "Results file")[1]
+        data = localfiles.read_local_file(ctx.env, args["filePath"], "Results file")[1]
+        if not data:
+            raise ToolError("Results file is empty: %s" % args["filePath"])
+        return data
     data = args["content"].encode("utf-8")
+    if not data:
+        raise ToolError("Results content is empty")
     if len(data) > localfiles.MAX_FILE_BYTES:
         raise ToolError("Results content is too large: %.1f MB; the limit is %d MB"
                         % (len(data) / (1024 * 1024), localfiles.MAX_FILE_BYTES // (1024 * 1024)),
@@ -70,28 +75,78 @@ def _parse_json(data: bytes, fmt: str) -> Any:
         raise ToolError("The %s results are not valid UTF-8 JSON: %s" % (fmt, e)) from None
 
 
-def _with_target(report: Any, exec_key: Optional[str], plan_key: Optional[str],
-                 envs: List[str]) -> bytes:
-    """An Xray JSON report aimed at an existing execution / plan / environments."""
+def _key_in_project(value: Any, pk: str, where: str) -> None:
+    if not isinstance(value, str):
+        raise ToolError("The report's %s must be an issue key" % where, value=value)
+    check_issue_in_project(value, pk)
+
+
+def check_xray_report(report: Any, pk: str) -> Optional[str]:
+    """Refuse an Xray JSON report that points outside project `pk`: testExecutionKey,
+    info.testPlanKey, info.project, tests[].testKey and tests[].testInfo.projectKey must all
+    belong to it. Returns the report's testExecutionKey (None when absent)."""
     if not isinstance(report, dict):
         raise ToolError("Xray JSON results must be an object with a tests list")
-    report = dict(report)
+    info = report.get("info")
+    if info is not None and not isinstance(info, dict):
+        raise ToolError("The report's info must be an object")
+    tests = report.get("tests")
+    if tests is not None and not isinstance(tests, list):
+        raise ToolError("The report's tests must be a list")
+    exec_key = report.get("testExecutionKey")
+    if exec_key not in (None, ""):
+        _key_in_project(exec_key, pk, "testExecutionKey")
+    info = info or {}
+    if info.get("testPlanKey") not in (None, ""):
+        _key_in_project(info["testPlanKey"], pk, "info.testPlanKey")
+    if info.get("project") not in (None, "", pk):
+        raise ToolError("The report's info.project is %s, not %s" % (info["project"], pk),
+                        project=info["project"], projectKey=pk)
+    for t in tests or []:
+        if not isinstance(t, dict):
+            continue
+        if t.get("testKey") not in (None, ""):
+            _key_in_project(t["testKey"], pk, "testKey")
+        ti = t.get("testInfo")
+        if isinstance(ti, dict) and ti.get("projectKey") not in (None, "", pk):
+            raise ToolError("The report's testInfo.projectKey is %s, not %s"
+                            % (ti["projectKey"], pk), projectKey=pk)
+    return exec_key or None
+
+
+def _with_target(report: dict, exec_key: Optional[str], plan_key: Optional[str],
+                 envs: List[str], project: Optional[str] = None) -> Optional[dict]:
+    """The Xray JSON report aimed at an existing execution / plan / environments, with
+    info.project set when missing (if `project` is given); None when nothing changes."""
+    changed = dict(report)
     if exec_key:
         have = report.get("testExecutionKey")
         if have and have != exec_key:
             raise ToolError("The report names testExecutionKey %s, not %s" % (have, exec_key))
-        report["testExecutionKey"] = exec_key
-    if plan_key or envs:
-        info = dict(report.get("info") or {})
-        for name, value in (("testPlanKey", plan_key), ("testEnvironments", envs or None)):
-            if value is None:
-                continue
-            if info.get(name) not in (None, "", [], value):
-                raise ToolError("The report's info.%s differs from the %s argument"
-                                % (name, name), report=info.get(name), argument=value)
-            info[name] = value
-        report["info"] = info
-    return json.dumps(report).encode("utf-8")
+        changed["testExecutionKey"] = exec_key
+    info = dict(report.get("info") or {})
+    for name, value in (("testPlanKey", plan_key), ("testEnvironments", envs or None)):
+        if value is None:
+            continue
+        if info.get(name) not in (None, "", [], value):
+            raise ToolError("The report's info.%s differs from the %s argument"
+                            % (name, name), report=info.get(name), argument=value)
+        info[name] = value
+    if project and not info.get("project"):
+        info["project"] = project
+    if info != (report.get("info") or {}):
+        changed["info"] = info
+    return changed if changed != report else None
+
+
+def _check_envs(envs: Any) -> List[str]:
+    if not isinstance(envs, list):
+        raise ToolError("testEnvironments must be a list of environment names")
+    for e in envs:
+        if not isinstance(e, str) or not e.strip() or ";" in e:
+            raise ToolError("Environment names must be non-empty strings without ';': %r" % (e,),
+                            environment=e)
+    return list(envs)
 
 
 _TEST_TAG = re.compile(r"^@TEST_([A-Z][A-Z0-9_]*-[1-9][0-9]*)$")
@@ -224,14 +279,20 @@ def _exec_info(pk: str, summary: str, extra: Dict[str, Any], plan_key: Optional[
 @REGISTRY.tool(
     "import_execution_results",
     "Import test results into Xray. format: xray | cucumber | behave (JSON) or junit | testng | "
-    "nunit | robot (XML). Give exactly one of filePath (sent byte for byte, max 25 MB) or content. "
-    "Without testExecKey a new Test Execution is created (summary/fields/rawFields and the "
-    "project's testExecution field settings apply; required fields are checked before upload); "
-    "with testExecKey results go to that execution (cucumber: every scenario needs a @TEST_<KEY> "
-    "tag, and the results are sent as Xray JSON with one status per test; behave: not "
-    "supported, Xray always creates a new execution). testPlanKey and testEnvironments work "
-    "with every format. "
-    "Returns the execution key and a count of its runs by status; detail adds the raw response.",
+    "nunit | robot (XML). Give exactly one of filePath (sent byte for byte, max 25 MB) or content "
+    "(neither may be empty). "
+    "Without testExecKey a new Test Execution is created in projectKey (summary/fields/rawFields "
+    "and the project's testExecution field settings apply; required fields are checked before "
+    "upload); with testExecKey results go to that execution (cucumber: every scenario needs a "
+    "@TEST_<KEY> tag, and the results are sent as Xray JSON with one status per test; behave: "
+    "not supported, Xray always creates a new execution). An xray report is refused when its "
+    "testExecutionKey, info.testPlanKey, info.project or any testKey is outside projectKey; its "
+    "own testExecutionKey counts as an existing execution. testPlanKey and testEnvironments "
+    "(names without ';') work with every format. For junit, testng, nunit, robot and cucumber, "
+    "Xray may create Test issues for results it cannot match to an existing test; those tests "
+    "get no AI label (use create_tests_from_feature for labelled test creation). "
+    "Returns the execution key, created, and a count of its runs by status; detail adds the raw "
+    "response.",
     _schema({"format": {"type": "string", "enum": list(FORMATS)},
              "filePath": {"type": "string"}, "content": {"type": "string"},
              "testExecKey": {"type": "string"}, "testPlanKey": {"type": "string"},
@@ -245,48 +306,59 @@ def import_execution_results(ctx, args):
     if fmt not in FORMATS:
         raise ToolError("Unknown format '%s'" % fmt, formats=list(FORMATS))
     exec_key, plan_key = args.get("testExecKey"), args.get("testPlanKey")
-    envs = [e for e in (args.get("testEnvironments") or [])]
+    envs = _check_envs(args.get("testEnvironments") or [])
     for k in (exec_key, plan_key):
         if k:
             check_issue_in_project(k, pk)
+    data = _read_input(ctx, args)
+    report: Any = None
+    target_exec = exec_key
+    if fmt == "xray":
+        # Every key in the report must belong to the project, whatever the endpoint.
+        report = _parse_json(data, fmt)
+        report_exec = check_xray_report(report, pk)
+        if exec_key and report_exec and report_exec != exec_key:
+            raise ToolError("The report names testExecutionKey %s, not %s"
+                            % (report_exec, exec_key))
+        target_exec = exec_key or report_exec
     wants_fields = any(args.get(n) for n in ("summary", "fields", "rawFields"))
-    if exec_key and wants_fields:
+    if target_exec and wants_fields:
         raise ToolError("summary, fields and rawFields only apply when a new execution is "
                         "created; omit them or omit testExecKey")
-    data = _read_input(ctx, args)
     # Decide the endpoint and validate everything before the first Xray call.
     multipart = False
     info: Optional[dict] = None
     sent_as = fmt
-    if not exec_key and (wants_fields or (project.fields.get("testExecution") or {})):
+    if not target_exec and (wants_fields or (project.fields.get("testExecution") or {})
+                            or fmt in ("cucumber", "behave")):
+        # A new execution with Jira fields; Cucumber/Behave always come this way, because
+        # their plain endpoints take no project (the multipart info sets fields.project).
         extra = build_jira_fields(project, "testExecution", args.get("fields"),
                                   args.get("rawFields"))
         multipart = True
         info = _exec_info(pk, args.get("summary") or "Imported results (%s)" % fmt, extra,
                           plan_key, envs)
-    elif fmt == "behave" and exec_key:
+    elif fmt == "behave":
         raise ToolError("Behave results cannot go into an existing execution: Xray Cloud's "
                         "Behave endpoints always create a new Test Execution. Omit testExecKey.")
-    elif fmt == "cucumber" and exec_key:
+    elif fmt == "cucumber":
         # Xray Cloud's Cucumber endpoints always create a new Test Execution (the multipart
         # info rejects xrayFields.testExecKey; a testExecKey query parameter is ignored), so
         # the report is converted to Xray JSON, whose testExecutionKey targets the execution.
-        report = cucumber_to_xray(_parse_json(data, fmt), pk)
+        converted = cucumber_to_xray(_parse_json(data, fmt), pk)
         sent_as = "xray"
-        data = _with_target(report, exec_key, plan_key, envs)
-    elif fmt == "xray" and (exec_key or plan_key or envs):
-        sent_as = "xray"
-        data = _with_target(_parse_json(data, fmt), exec_key, plan_key, envs)
-    elif fmt in JSON_FORMATS and (plan_key or envs):
-        # The plain Cucumber/Behave endpoints take no parameters: a new execution through
-        # the multipart endpoint carries them in info.xrayFields.
-        multipart = True
-        info = _exec_info(pk, "Imported results (%s)" % fmt, {}, plan_key, envs)
+        data = json.dumps(_with_target(converted, exec_key, plan_key, envs) or converted) \
+            .encode("utf-8")
+    elif fmt == "xray":
+        # Bytes stay untouched unless the target or info.project must change.
+        changed = _with_target(report, exec_key, plan_key, envs, project=pk)
+        if changed is not None:
+            data = json.dumps(changed).encode("utf-8")
     ctype = "text/xml" if fmt in XML_FORMATS else "application/json"
     path = _endpoint(sent_as, multipart)
     if multipart:
-        # Verified live: every format's multipart part is "results" (Cucumber with "result"
-        # gets HTTP 400 "Unexpected field (result)").
+        # The results part is "results": verified live for JUnit and Cucumber (Cucumber with
+        # "result" gets HTTP 400 "Unexpected field (result)"); Behave follows the same docs.
         resp = ctx.xray.rest("POST", path, multipart={"fields": {}, "files": {
             "info": ("info.json", json.dumps(info).encode("utf-8"), "application/json"),
             "results": ("results", data, ctype)}})
@@ -309,8 +381,8 @@ def import_execution_results(ctx, args):
     resp_d = resp if isinstance(resp, dict) else {}
     issue = resp_d.get("testExecIssue") if isinstance(resp_d.get("testExecIssue"), dict) \
         else resp_d
-    key = issue.get("key") or exec_key
-    out: Dict[str, Any] = {"testExecKey": key, "created": not exec_key}
+    key = issue.get("key") or target_exec
+    out: Dict[str, Any] = {"testExecKey": key, "created": not target_exec}
     warnings: List[str] = []
     issue_id = issue.get("id")
     try:

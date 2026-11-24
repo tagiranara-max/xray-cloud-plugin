@@ -138,17 +138,97 @@ def test_non_utf8_xml_sent_untouched(tmp_path):
     assert ctx.xray.rest_calls[0][2]["data"] == raw
 
 
-def test_cucumber_and_xray_json_endpoints(tmp_path):
+def test_xray_json_plain_endpoint_bytes_untouched_when_project_set(tmp_path):
     ctx = make(tmp_path)
-    for fmt, path in (("cucumber", "import/execution/cucumber"),
-                      ("behave", "import/execution/behave"), ("xray", "import/execution")):
-        ctx.xray.rest_responses[("POST", path)] = {"id": "7", "key": "PROJ-7", "self": "https://x/rest/api/2/issue/7"}
-        out, err = call(ctx, format=fmt, content="[]")
-        assert not err, out
-        m, p, kw = ctx.xray.rest_calls[-1]
-        assert p == path and kw["data"] == b"[]" and kw["content_type"] == "application/json"
-        assert "params" not in kw or not kw["params"]
-        assert out["testExecKey"] == "PROJ-7"
+    ctx.xray.rest_responses[("POST", "import/execution")] = {"id": "7", "key": "PROJ-7"}
+    raw = '{"info": {"project": "PROJ"},  "tests": [{"testKey": "PROJ-1", "status": "PASSED"}]}'
+    out, err = call(ctx, format="xray", content=raw)
+    assert not err, out
+    m, p, kw = ctx.xray.rest_calls[-1]
+    assert p == "import/execution" and kw["data"] == raw.encode("utf-8")
+    assert kw["content_type"] == "application/json"
+    assert "params" not in kw or not kw["params"]
+    assert out["testExecKey"] == "PROJ-7" and out["created"] is True
+
+
+def test_xray_json_without_project_gets_info_project(tmp_path):
+    ctx = make(tmp_path)
+    ctx.xray.rest_responses[("POST", "import/execution")] = {"id": "7", "key": "PROJ-7"}
+    out, err = call(ctx, format="xray", content='{"tests": []}')
+    assert not err, out
+    body = json.loads(ctx.xray.rest_calls[-1][2]["data"])
+    assert body == {"tests": [], "info": {"project": "PROJ"}}
+    out, err = call(ctx, format="xray", content='{"info": {"summary": "s"}, "tests": []}')
+    body = json.loads(ctx.xray.rest_calls[-1][2]["data"])
+    assert body["info"] == {"summary": "s", "project": "PROJ"}
+
+
+@pytest.mark.parametrize("report,bad", [
+    ({"testExecutionKey": "OTHER-5", "tests": []}, "OTHER-5"),
+    ({"info": {"testPlanKey": "OTHER-6"}, "tests": []}, "OTHER-6"),
+    ({"info": {"project": "OTHER"}, "tests": []}, "OTHER"),
+    ({"tests": [{"testKey": "PROJ-1"}, {"testKey": "OTHER-7", "status": "PASSED"}]}, "OTHER-7"),
+    ({"tests": [{"testInfo": {"projectKey": "OTHER", "summary": "x"}, "status": "PASSED"}]},
+     "OTHER"),
+    ([], "object"),
+    ({"tests": {}}, "tests"),
+    ({"info": "x", "tests": []}, "info"),
+])
+def test_xray_json_keys_outside_project_refused_before_any_call(tmp_path, report, bad):
+    ctx = make(tmp_path)
+    out, err = call(ctx, format="xray", content=json.dumps(report))
+    assert err and bad in json.dumps(out), out
+    assert ctx.xray.rest_calls == [] and ctx.xray.calls == []
+
+
+def test_xray_json_report_execution_key_means_existing_execution(tmp_path):
+    ctx = make(tmp_path, YAML_REQ)  # required execution fields would force multipart for a new one
+    ctx.xray.rest_responses[("POST", "import/execution")] = {"id": "9", "key": "PROJ-9"}
+    raw = '{"testExecutionKey": "PROJ-9", "info": {"project": "PROJ"}, "tests": []}'
+    out, err = call(ctx, format="xray", content=raw)
+    assert not err, out
+    m, p, kw = ctx.xray.rest_calls[0]
+    assert p == "import/execution" and "multipart" not in kw and kw["data"] == raw.encode()
+    assert out["testExecKey"] == "PROJ-9" and out["created"] is False
+    out, err = call(ctx, format="xray", content=raw, summary="s")
+    assert err and len(ctx.xray.rest_calls) == 1
+    out, err = call(ctx, format="xray", content=raw, testExecKey="PROJ-9")
+    assert not err and out["created"] is False
+
+
+@pytest.mark.parametrize("fmt", ["cucumber", "behave"])
+def test_cucumber_behave_new_execution_always_multipart_with_project(tmp_path, fmt):
+    ctx = make(tmp_path)
+    ctx.xray.rest_responses[("POST", "import/execution/%s/multipart" % fmt)] = {
+        "id": "7", "key": "PROJ-7"}
+    out, err = call(ctx, format=fmt, content="[]")
+    assert not err, out
+    m, p, kw = ctx.xray.rest_calls[0]
+    assert p == "import/execution/%s/multipart" % fmt
+    files = kw["multipart"]["files"]
+    info = json.loads(files["info"][1])
+    assert info["fields"]["project"] == {"key": "PROJ"}
+    assert info["fields"]["issuetype"] == {"name": "Test Execution"}
+    assert "xrayFields" not in info
+    assert files["results"][1] == b"[]"
+    assert out["testExecKey"] == "PROJ-7" and out["created"] is True
+
+
+@pytest.mark.parametrize("envs", [[""], ["  "], ["a;b"], ["ok", 5]])
+def test_bad_environment_names_refused_before_any_call(tmp_path, envs):
+    ctx = make(tmp_path)
+    out, err = call(ctx, format="junit", content="<x/>", testEnvironments=envs)
+    assert err and "nvironment" in out["error"], out
+    assert ctx.xray.rest_calls == [] and ctx.xray.calls == []
+
+
+def test_empty_input_refused_before_any_call(tmp_path):
+    ctx = make(tmp_path)
+    out, err = call(ctx, format="junit", content="")
+    assert err and "empty" in out["error"]
+    out, err = call(ctx, format="junit", filePath=junit(tmp_path, b""))
+    assert err and "empty" in out["error"]
+    assert ctx.xray.rest_calls == [] and ctx.xray.calls == []
 
 
 def test_json_format_new_execution_with_envs_goes_multipart(tmp_path):
@@ -309,7 +389,7 @@ def test_xray_json_into_existing_execution_sets_testexecutionkey(tmp_path):
     assert not err, out
     body = json.loads(ctx.xray.rest_calls[0][2]["data"])
     assert body["testExecutionKey"] == "PROJ-9"
-    assert body["info"] == {"summary": "s", "testPlanKey": "PROJ-5"}
+    assert body["info"] == {"summary": "s", "testPlanKey": "PROJ-5", "project": "PROJ"}
     assert "sentAs" not in out
     clash = json.dumps({"testExecutionKey": "PROJ-8", "tests": []})
     out, err = call(ctx, format="xray", content=clash, testExecKey="PROJ-9")
