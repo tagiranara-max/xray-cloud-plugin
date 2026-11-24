@@ -447,7 +447,7 @@ def _test_extras(project: ProjectSettings, feature: ParsedFeature, analysis: Tag
                                     "Field values applied to created Pre-Conditions."},
              "testSetFields": {"type": "object", "description":
                                "Field values applied to created Test Sets."}},
-            ["featureFilePath"]))
+            ["featureFilePath"]), approval=True)
 # Registered read-only so the preview (apply=false, zero writes) works in read-only mode;
 # apply=true checks require_write itself.
 def create_tests_from_feature(ctx, args):

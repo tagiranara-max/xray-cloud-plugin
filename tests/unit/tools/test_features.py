@@ -968,3 +968,38 @@ def test_null_optional_answers_behave_like_omitted(project):
     a, err_a = call(ctx_for(project), "create_tests_from_feature", **base)
     b, err_b = call(ctx_for(project), "create_tests_from_feature", **nulls)
     assert (a, err_a) == (b, err_b)
+
+
+def _unlisted_ctx(project):
+    ctx = ctx_for(project, yaml="projects:\n  Q: {}\n")  # P is not listed
+    ctx.env.update(XRAY_CLIENT_ID="client-a", XRAY_CLIENT_SECRET="secret")
+    return ctx
+
+
+def test_feature_import_takes_allow_project():
+    schema = next(t["inputSchema"] for t in REGISTRY.list()
+                  if t["name"] == "create_tests_from_feature")
+    assert schema["properties"]["allowProject"]["enum"] == ["all", "project"]
+
+
+def test_apply_on_unlisted_project_asks_then_allow_project_all_applies(project):
+    ctx = _unlisted_ctx(project)
+    res, err = call(ctx, "create_tests_from_feature", projectKey="P", apply=True,
+                    featureFilePath="features/login flow.feature", **ans())
+    assert not err and res["status"] == "needs_answer", res
+    assert res["questions"][0]["id"] == "allowProject" and writes(ctx) == []
+    res, err = call(ctx, "create_tests_from_feature", projectKey="P", apply=True,
+                    allowProject="all", featureFilePath="features/login flow.feature", **ans())
+    assert not err, res
+    assert writes(ctx)[:2] == ["CreateTest", "CreateTest"]
+
+
+def test_preview_on_approved_unlisted_project(project):
+    ctx = _unlisted_ctx(project)
+    res, err = call(ctx, "create_tests_from_feature", projectKey="P",
+                    featureFilePath="features/login flow.feature")
+    assert err and res["error"] == "Unknown Xray project key" and "approval" in res["hint"]
+    ctx.preferences.approve("global", ctx.site, "P", False)
+    res, err = call(ctx, "create_tests_from_feature", projectKey="P",
+                    featureFilePath="features/login flow.feature")
+    assert not err and res["preview"] is True and writes(ctx) == []

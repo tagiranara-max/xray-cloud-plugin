@@ -257,3 +257,41 @@ def test_registry_agent_allow_project_ignored_with_elicitation(tmp_path):
     res, err = _call(reg, ctx, "write_thing", projectKey="PROJ", allowProject="all")
     assert err and "PROJ" in res["error"] and len(ch.asked) == 1
     assert nothing_remembered(ctx)
+
+
+def test_reads_allowed_when_listed_approved_or_no_projects_declared(tmp_path):
+    ctx = make(tmp_path, settings=SETTINGS)
+    assert require_project(ctx, "PROJ", write=False).key == "PROJ"
+    with pytest.raises(ToolError, match="Unknown Xray project key") as ei:
+        require_project(ctx, "OTHER", write=False)
+    assert ei.value.data["known"] == ["PROJ"] and "approval" in ei.value.data["hint"]
+    ctx.preferences.approve("global", ctx.site, "OTHER", False)
+    ps = require_project(ctx, "OTHER", write=False)
+    assert ps.key == "OTHER" and ps.fields == {}
+    with pytest.raises(ToolError, match="Unknown Xray project key"):
+        require_project(ctx, "THIRD", write=False)
+    ctx.preferences.approve("global", ctx.site, None, True)
+    assert require_project(ctx, "THIRD", write=False).key == "THIRD"
+
+
+def test_reads_allowed_when_file_declares_no_projects_or_is_missing(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    ctx = make(tmp_path / "a", settings="duplicateCheck: false\n")
+    assert require_project(ctx, "ANY", write=False).key == "ANY"
+    ctx = make(tmp_path / "b")
+    assert require_project(ctx, "ANY", write=False).key == "ANY"
+
+
+def test_reads_of_unlisted_project_without_credentials_still_unknown(tmp_path):
+    ctx = make(tmp_path, settings=SETTINGS, creds=False)
+    with pytest.raises(ToolError, match="Unknown Xray project key"):
+        require_project(ctx, "OTHER", write=False)
+
+
+def test_project_not_found_detected_by_reason_not_message(tmp_path):
+    from xray_cloud.context import resolve_project_id
+    ctx = make(tmp_path, responses=NOT_FOUND)
+    with pytest.raises(ToolError) as ei:
+        resolve_project_id(ctx, "NOPE")
+    assert ei.value.data["reason"] == "project_not_found"

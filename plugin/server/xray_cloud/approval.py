@@ -39,7 +39,7 @@ def _check_exists(ctx: Any, pk: str) -> None:
     try:
         resolve_project_id(ctx, pk)
     except ToolError as e:
-        if e.message.startswith("Could not determine the numeric Xray project id"):
+        if e.data.get("reason") == "project_not_found":
             raise ToolError("Project %s was not found in Xray; check the project key. Nothing "
                             "was written and nothing was remembered." % pk, projectKey=pk)
         raise ToolError("Could not check that project %s exists in Xray (%s); nothing was "
@@ -55,6 +55,15 @@ def _remember(ctx: Any, region: str, pk: str, answer: str) -> None:
         ctx.preferences.approve(region, ctx.site, None, True)
 
 
+def is_approved(ctx: Any, pk: str) -> bool:
+    """Whether the user approved `pk` (or all projects) on this Xray site."""
+    site = ctx.site
+    if not site:
+        return False
+    approved = ctx.preferences.approval(_region(ctx), site)
+    return approved["approveAll"] or pk in approved["approvedProjects"]
+
+
 def ensure_write_allowed(ctx: Any, pk: str, args: Mapping[str, Any]) -> None:
     """Returns when a write to project `pk` is allowed; raises NeedsAnswer (ask the user via
     the agent) or ToolError (refused). Order: read-only blocks; listed in the settings file;
@@ -68,8 +77,7 @@ def ensure_write_allowed(ctx: Any, pk: str, args: Mapping[str, Any]) -> None:
     if not site:
         raise ToolError(NO_CREDENTIALS_MESSAGE)
     region = _region(ctx)
-    approved = ctx.preferences.approval(region, site)
-    if approved["approveAll"] or pk in approved["approvedProjects"]:
+    if is_approved(ctx, pk):
         return
     question = _question_text(pk, region)
     channel = getattr(ctx, "channel", None)

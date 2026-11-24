@@ -17,6 +17,7 @@ class Tool:
     params: dict
     handler: Callable[[Any, dict], Any]
     write: bool = False
+    approval: bool = False  # takes allowProject (may write to a project); see Registry.tool
 
 
 _TYPE_CHECKS = {
@@ -114,13 +115,18 @@ class Registry:
         self._tools: Dict[str, Tool] = {}
         self.allowed: Optional[Set[str]] = None  # None = every tool (XRAY_TOOLS unset)
 
-    def tool(self, name: str, description: str, params: dict, write: bool = False):
-        if write:  # every write tool takes the user's answer to the project approval question
+    def tool(self, name: str, description: str, params: dict, write: bool = False,
+             approval: Optional[bool] = None):
+        """write: blocked in read-only mode before the handler runs. approval (default:
+        write): the tool can write to a project, so it takes allowProject, the user's answer
+        to the approval question; set it for a write=False tool that writes on some calls."""
+        approval = write if approval is None else approval
+        if approval:
             params = dict(params, properties=dict(params.get("properties") or {},
                                                   allowProject=ALLOW_PROJECT_PARAM))
 
         def decorator(fn):
-            self._tools[name] = Tool(name, description, params, fn, write)
+            self._tools[name] = Tool(name, description, params, fn, write, approval)
             return fn
 
         return decorator
@@ -146,7 +152,8 @@ class Registry:
             if tool.write:
                 require_write(ctx)
             # allowProject is read by require_project (via ctx.call_args), not by handlers.
-            if tool.write:
+            # ctx.call_args is per-context state: it relies on tool calls being handled serially.
+            if tool.approval:
                 ctx.call_args = {"allowProject": clean.pop("allowProject", None)}
             try:
                 result = tool.handler(ctx, clean)
@@ -156,7 +163,7 @@ class Registry:
                                             project_key=clean.get("projectKey")) from None
                 raise
             finally:
-                if tool.write:
+                if tool.approval:
                     ctx.call_args = {}
             return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]}
         except NeedsAnswer as e:  # a question, not an error: nothing was written

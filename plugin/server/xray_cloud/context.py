@@ -175,10 +175,10 @@ def require_write(ctx: ServerContext) -> None:
 
 
 def require_project(ctx: ServerContext, project_key: str, *, write: bool) -> ProjectSettings:
-    """Settings of a project. Writes go through approval (approval.ensure_write_allowed, with
-    the call's allowProject from ctx.call_args); a project the settings file does not list
-    gets empty settings. Reads need no settings file, but with one the project must be
-    listed."""
+    """Settings of a project; empty settings for a project the settings file does not list.
+    Writes go through approval (approval.ensure_write_allowed, with the call's allowProject
+    from ctx.call_args). Reads are allowed when there is no settings file, the file lists no
+    projects, the project is listed, or it is approved (or approve-all) on this site."""
     # Format first: on the no-settings-file read path the key goes raw into JQL.
     if not isinstance(project_key, str) or not PROJECT_KEY_RE.fullmatch(project_key):
         raise ToolError("Invalid project key", projectKey=project_key)
@@ -187,12 +187,18 @@ def require_project(ctx: ServerContext, project_key: str, *, write: bool) -> Pro
         from .approval import ensure_write_allowed
         ensure_write_allowed(ctx, project_key, getattr(ctx, "call_args", None) or {})
         return settings.projects.get(project_key) or ProjectSettings(project_key, fields={})
-    if settings.path is None:
-        return ProjectSettings(project_key, fields={})
     project = settings.projects.get(project_key)
-    if project is None:
-        raise ToolError("Unknown Xray project key", known=sorted(settings.projects))
-    return project
+    if project is not None:
+        return project
+    if settings.path is None or not settings.projects:
+        return ProjectSettings(project_key, fields={})
+    from .approval import is_approved
+    if is_approved(ctx, project_key):
+        return ProjectSettings(project_key, fields={})
+    raise ToolError("Unknown Xray project key", known=sorted(settings.projects),
+                    hint="%s is not listed in the settings file %s. Writing to it asks the user "
+                         "for approval; once approved it can be read too."
+                         % (project_key, settings.path))
 
 
 _JQL_ESCAPES = (("\\", "\\\\"), ('"', '\\"'), ("\t", "\\t"), ("\n", "\\n"), ("\r", "\\r"))
@@ -292,7 +298,7 @@ def resolve_project_id(ctx: ServerContext, project_key: str) -> str:
             pid = str(results[0]["projectId"])
     if pid is None:
         raise ToolError("Could not determine the numeric Xray project id for %s" % project_key,
-                        projectKey=project_key)
+                        projectKey=project_key, reason="project_not_found")
     ctx.project_ids[project_key] = pid
     return pid
 
