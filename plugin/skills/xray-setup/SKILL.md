@@ -36,6 +36,7 @@ projects:                          # the keys are the project allowlist
         version:
           name: Version
           required: false
+    # testKeyTag: issue            # optional: @issue=PROJ-12 names a scenario's test in result imports
 ```
 
 The README of the plugin's repository has more detail, including every optional key.

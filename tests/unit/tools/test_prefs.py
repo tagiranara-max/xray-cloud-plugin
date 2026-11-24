@@ -255,3 +255,11 @@ def test_set_preferences_repairs_an_invalid_remembered_value(tmp_path):
     res, err = run(ctx, "set_preferences", projectKey="P", createTestSet=False)
     assert not err, res
     assert resolve(ctx, "P", "createTestSet", None) == (False, "remembered")
+
+
+def test_status_lists_result_import_test_key_tag(tmp_path):
+    ctx = make(tmp_path, YAML.replace("  Q: {}", "  Q: {testKeyTag: issue}"))
+    res, err = run(ctx, "get_status")
+    assert not err, res
+    assert res["perProject"]["Q"]["resultImport"] == {"testKeyTag": "issue"}
+    assert res["perProject"]["P"]["resultImport"] == {"testKeyTag": None}

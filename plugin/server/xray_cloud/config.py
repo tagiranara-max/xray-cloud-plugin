@@ -110,6 +110,8 @@ class ProjectSettings:
     fields: Dict[str, Dict[str, FieldSpec]] = field(default_factory=dict)
     feature_import: Dict[str, Any] = field(default_factory=dict)
     ai_created: Dict[str, Any] = field(default_factory=dict)
+    # Result import: a scenario tag naming its test (@<tag>=KEY, @<tag>:KEY, @<tag>_KEY).
+    test_key_tag: Optional[str] = None
 
 
 @dataclass
@@ -291,6 +293,19 @@ def _parse_ai_created(path: Path, where: str, raw: Any) -> Dict[str, Any]:
     return out
 
 
+_TAG_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]*$")
+
+
+def _parse_test_key_tag(path: Path, where: str, raw: Any) -> Optional[str]:
+    """projects.<KEY>.testKeyTag: a tag name without '@' (letters, digits, '_', '.', '-')."""
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not _TAG_NAME.match(raw):
+        raise _fail(path, "%s must be a tag name without '@', e.g. issue (for @issue=PROJ-12),"
+                          " got %r" % (where, raw))
+    return raw
+
+
 def _parse(path: Path, data: Any) -> Settings:
     if data is None:
         data = {}
@@ -324,7 +339,9 @@ def _parse(path: Path, data: Any) -> Settings:
             feature_import=_parse_feature_import(path, "projects.%s.featureImport" % key,
                                                  praw.get("featureImport")),
             ai_created=_parse_ai_created(path, "projects.%s.aiCreated" % key,
-                                         praw.get("aiCreated")))
+                                         praw.get("aiCreated")),
+            test_key_tag=_parse_test_key_tag(path, "projects.%s.testKeyTag" % key,
+                                             praw.get("testKeyTag")))
     top = _parse_feature_import(path, "featureImport", data.get("featureImport"))
     union: set = set()
     for ps in projects.values():

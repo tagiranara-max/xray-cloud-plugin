@@ -141,8 +141,10 @@ def _jira_status(ctx, check: bool) -> Dict[str, Any]:
 
 def _project_status(ctx, pk: str) -> Dict[str, Any]:
     eff = choices.effective(ctx, pk)
+    project = ctx.settings_store.get().projects.get(pk)
     return {"featureImport": {n: eff[n] for n in _FEATURE_IMPORT},
             "aiCreated": {n: eff[n] for n in _AI_CREATED},
+            "resultImport": {"testKeyTag": project.test_key_tag if project else None},
             "unanswered": [n for n, v in eff.items() if v["source"] == "unanswered"]}
 
 
@@ -153,7 +155,8 @@ def _project_status(ctx, pk: str) -> Dict[str, Any]:
     "error), projects, read-only mode, Jira (configured, site; with check=true also "
     "reachable and user, using one Jira /myself call), the preferences file, and per project "
     "the effective import choices with their source (call, settings, remembered, default or "
-    "unanswered; `unanswered` lists the ones still to ask). To change a choice, call "
+    "unanswered; `unanswered` lists the ones still to ask) and the result-import testKeyTag "
+    "setting. To change a choice, call "
     "set_preferences or edit the user's settings file (a settings-file value always wins). "
     "Needs no projectKey. Contains no secrets.",
     {"type": "object", "properties": {"check": {"type": "boolean", "description":

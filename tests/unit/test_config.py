@@ -351,3 +351,19 @@ def test_bad_rules_fail_settings_load(tmp_path, rule):
     with pytest.raises(SettingsError) as ei:
         store_for(tmp_path, "featureImport: {tagRules: [%s]}" % rule).get()
     assert "featureImport.tagRules[0]" in ei.value.message
+
+
+# --- testKeyTag (result import) ------------------------------------------------------------
+
+def test_test_key_tag_parsed_per_project(tmp_path):
+    s = store_for(tmp_path, "projects:\n  P1: {testKeyTag: issue}\n  P2: {}\n").get()
+    assert s.projects["P1"].test_key_tag == "issue"
+    assert s.projects["P2"].test_key_tag is None
+
+
+@pytest.mark.parametrize("value", ["'@issue'", "'has space'", "5", "'a=b'", "''", "'x:y'"])
+def test_invalid_test_key_tag_refused(tmp_path, value):
+    store = store_for(tmp_path, "projects:\n  P1: {testKeyTag: %s}\n" % value)
+    with pytest.raises(SettingsError) as ei:
+        store.get()
+    assert "projects.P1.testKeyTag" in ei.value.message

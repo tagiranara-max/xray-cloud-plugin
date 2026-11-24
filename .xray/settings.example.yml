@@ -21,6 +21,9 @@ projects:                          # the keys are the project allowlist
         version:
           name: Version
           required: false
+    # Optional, result import: a scenario tag that names the scenario's test, besides
+    # @TEST_<KEY>. With `issue`: @issue=PROJ-12, @issue:PROJ-12 or @issue_PROJ-12.
+    # testKeyTag: issue
 lifecycleLabels: [ai-draft, needs-refinement, automation-candidate, automated, obsolete]
 duplicateCheck: true
 
