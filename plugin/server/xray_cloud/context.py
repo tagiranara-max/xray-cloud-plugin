@@ -42,6 +42,8 @@ class ServerContext:
         self._transport = transport or urllib_transport
         self._limiter = limiter or RateLimiter()
         self._xray = xray
+        # ClientChannel for server-to-client requests (elicitation); serve() attaches it.
+        self.channel: Optional[Any] = None
 
     @property
     def site(self) -> str:

@@ -4,6 +4,7 @@ import json
 import sys
 from typing import Any, Callable, Optional
 
+from .channel import EOF, PARSE_ERROR, ClientChannel, is_response
 from .errors import ToolError
 from .registry import Registry, _error_result
 
@@ -24,6 +25,9 @@ def _handle(registry: Registry, ctx_factory: Callable[[], Any], state: dict, msg
     id_ = msg["id"]
     params = msg.get("params") or {}
     if method == "initialize":
+        channel = state.get("channel")
+        if channel is not None:
+            channel.set_capabilities(params.get("capabilities"))
         asked = params.get("protocolVersion")
         version = asked if asked in SUPPORTED_VERSIONS else SUPPORTED_VERSIONS[0]
         result = {"protocolVersion": version, "capabilities": {"tools": {}}, "serverInfo": SERVER_INFO}
@@ -41,6 +45,9 @@ def _handle(registry: Registry, ctx_factory: Callable[[], Any], state: dict, msg
                 print("context creation failed: %r" % (e,), file=sys.stderr)
                 return {"jsonrpc": "2.0", "id": id_,
                         "result": _error_result({"error": "Server context failed: %s" % e})}
+            channel = state.get("channel")
+            if channel is not None and hasattr(state["ctx"], "channel"):
+                state["ctx"].channel = channel
         result = registry.call(state["ctx"], params.get("name"), params.get("arguments") or {})
     else:
         return _error(id_, -32601, "Method not found: %s" % method)
@@ -50,15 +57,16 @@ def _handle(registry: Registry, ctx_factory: Callable[[], Any], state: dict, msg
 def serve(registry: Registry, ctx_factory: Callable[[], Any], stdin=None, stdout=None) -> None:
     stdin = stdin if stdin is not None else sys.stdin
     stdout = stdout if stdout is not None else sys.stdout
-    state: dict = {}
-    for line in stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            msg = json.loads(line)
-        except ValueError:
+    channel = ClientChannel(stdin, stdout)  # one reader shared with server-to-client requests
+    state: dict = {"channel": channel}
+    while True:
+        msg = channel.next_message()  # requests queued during an elicitation come first
+        if msg is EOF:
+            break
+        if msg is PARSE_ERROR:
             resp = _error(None, -32700, "Parse error")
+        elif is_response(msg):
+            continue  # a client answer nothing is waiting for
         else:
             try:
                 resp = _handle(registry, ctx_factory, state, msg)
@@ -66,5 +74,4 @@ def serve(registry: Registry, ctx_factory: Callable[[], Any], stdin=None, stdout
                 print("protocol error: %r" % (e,), file=sys.stderr)
                 resp = _error(msg.get("id") if isinstance(msg, dict) else None, -32603, "Internal error")
         if resp is not None:
-            stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
-            stdout.flush()
+            channel.write(resp)
