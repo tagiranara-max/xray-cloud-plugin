@@ -75,6 +75,7 @@ duplicateCheck: true
 - `testRun` fields are Xray test-run custom fields, not Jira fields: give the Xray field `name` (or an `id`).
 - Escape hatch: create tools accept `rawFields` (`{"customfield_12345": <Jira JSON>}`), passed through untouched for fields not in the settings. `update_test_run` takes `rawFields` keyed by Xray run field name or id.
 - `lifecycleLabels` (default shown above) are the labels `set_lifecycle_label` may apply. `duplicateCheck` turns the pre-create duplicate search on or off.
+- `projects.<KEY>.testKeyTag` (optional): a scenario tag that names the scenario's test in result imports, besides `@TEST_<KEY>`. With `testKeyTag: issue`, `@issue=PROJ-12`, `@issue:PROJ-12` and `@issue_PROJ-12` all mean PROJ-12.
 
 ## Optional Jira token
 
@@ -151,10 +152,28 @@ Tools act with the permissions of the user behind the Xray API key (and, for Jir
 
 ## Results and native feature import/export
 
-- **`import_execution_results`** uploads a result file (JUnit, TestNG, NUnit, Robot, Cucumber JSON, Behave JSON or Xray JSON) into a new or existing test execution. The file is sent byte for byte (max 25 MB); give either `filePath` or `content`. Exceptions: Xray JSON for an existing execution, plan or environments gets `testExecutionKey`/`info` set; Cucumber JSON for an existing execution needs a `@TEST_<KEY>` tag on every scenario and is sent as Xray JSON (one status per test), because Xray's Cucumber import always creates a new execution; Behave JSON always creates a new execution. Every key in an Xray JSON report (`testExecutionKey`, `info.testPlanKey`, `info.project`, each `testKey`) must belong to `projectKey`, and `info.project` is set when missing; new Cucumber/Behave executions always go through the multipart endpoint so the project is set. For JUnit, TestNG, NUnit, Robot and Cucumber, Xray may create Test issues for results it cannot match; those tests get no AI label (use the `import-tests` skill or `create_tests_from_feature` for labelled creation).
+- **`import_execution_results`** uploads a result file (JUnit, TestNG, NUnit, Robot, Cucumber JSON, Behave JSON or Xray JSON) into a new or existing test execution (max 25 MB; give either `filePath` or `content`). It never lets tests be created without your consent (see Result matching below). Every key (`testExecKey`, `testPlanKey`, `testKeys`, and every key in the report) must belong to `projectKey`; an Xray JSON report gets `info.project` set when missing. Cucumber and Behave results for an existing execution, or with tests to create, are sent as Xray JSON (one status per test, failures as the run comment), because Xray's Cucumber and Behave imports always create a new execution and never create tests. New Cucumber/Behave executions go through the multipart endpoint so the project is set.
 - **`import_feature_file`** uses Xray's native importer for a `.feature` file or a `.zip` of them. It is faster and a good fit for bulk loads, but it does no duplicate check, asks no questions, applies no tag rules, adds no AI label and has no preview.
 - **`create_tests_from_feature`** is the plugin's own import (see Feature import below): duplicate check, import choices, tag rules, the AI label and a preview before anything is written. Use it for everyday imports; use `import_feature_file` when you want Xray's native result as is.
 - **`export_cucumber_features`** writes Cucumber tests (by key or saved filter) as `.feature` files into a local directory and refuses to overwrite existing files unless you ask.
+
+### Result matching
+
+Before any upload, `import_execution_results` works out which test of the project each result goes to:
+
+| Format | Matched by |
+|---|---|
+| Cucumber, Behave | a `@TEST_<KEY>` tag, else the project's `testKeyTag`, else the test whose summary is exactly the scenario name (trimmed, case-sensitive; outline rows use the outline's name). No tags needed |
+| JUnit, TestNG, NUnit, Robot | Xray's own rule: the key the file names (JUnit property `test_key`, TestNG attribute `test`, NUnit property `Test`, Robot tag equal to a Test key), else the Generic test with the same definition (JUnit `classname.name`, TestNG `class.method`, NUnit `fullname`, Robot `Suite.Test`). Xray does not match these by summary |
+| Xray JSON | `testKey`; an entry with only `testInfo` matches the Generic test with the same definition (Generic type only) |
+
+When a result matches several tests (`ambiguous`) or none (`missing`), nothing is uploaded: the tool answers `needs_answer` with both lists (50 each at most, with counts). Call it again with:
+
+- `testKeys: {name: KEY}` to send results to chosen tests (for XML formats the key is written into the file the way Xray reads it);
+- `skipMissing: true` to leave unmatched results out;
+- `allowCreateTests: true`, only with the user's consent, to let new tests be created: Xray creates a Generic test per JUnit/TestNG/NUnit/Robot case (summary = the case name), and a Cucumber test named after each unmatched scenario. They are listed in `createdTests` and get no AI label (label them afterwards with `edit_test` or `set_lifecycle_label`, or create labelled tests first with `create_tests_from_feature`).
+
+Xray side effects to know: a Robot tag that maps a test renames that test to the Robot test's name, and an Xray JSON `testInfo` entry matched by definition overwrites that Generic test's summary.
 
 ## Analysis
 

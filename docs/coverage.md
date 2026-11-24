@@ -21,8 +21,9 @@ schema (introspection): fields, arguments, variable types and required arguments
 | Run defects | – | `TestRun.defects` returns Jira issue ids, not keys (tool description says so) |
 | Permissions | a missing Delete Issues permission surfaced as a raw Xray message | clear `permission_denied` errors (see README "Permissions") |
 | Result import response | read `testExecIssue {id, key}` (Xray Server/DC shape): `testExecKey` came back null and the run summary was never read | Xray Cloud answers `{"id", "key", "self"}` on the plain and the multipart endpoints (both shapes are accepted) |
-| Result import multipart | Cucumber/Behave sent the results part as `result` | the part is `results`: verified live for JUnit and Cucumber (`result` gets HTTP 400 "Unexpected field (result)"); Behave multipart not run live (same documented shape); `info` holds the Test Execution fields |
-| Cucumber results into an existing execution | refused | Xray Cloud's Cucumber endpoints always create a new execution (`info.xrayFields.testExecKey` -> HTTP 400 "invalid fields: testExecKey"; a `testExecKey` query parameter and `info.key` are ignored). The tool converts the report to Xray JSON with `testExecutionKey` (one status per `@TEST_<KEY>` scenario, outline rows as example statuses, failures as comment); untagged scenarios are refused before upload. Behave into an existing execution is refused |
+| Result import multipart | Cucumber/Behave sent the results part as `result` | the part is `results`: verified live for JUnit, Cucumber, Behave and Xray JSON (`result` gets HTTP 400 "Unexpected field (result)"); `info` holds the Test Execution fields (Xray JSON multipart honours `info.xrayFields.environments` too) |
+| Cucumber results into an existing execution | refused | Xray Cloud's Cucumber endpoints always create a new execution (`info.xrayFields.testExecKey` -> HTTP 400 "invalid fields: testExecKey"; a `testExecKey` query parameter and `info.key` are ignored). The tool converts the report to Xray JSON with `testExecutionKey` (one status per test, outline rows as example statuses, failures as comment). Scenarios are matched to tests before upload (see "Result import matching"); no `@TEST_` tags are needed. Behave goes the same way |
+| Tests created silently by result imports | JUnit/TestNG/NUnit/Robot cases with no matching test became new Generic tests without asking | every result is matched before upload; ambiguous or unmatched results return `needs_answer` and nothing is uploaded until the user maps them (`testKeys`), leaves them out (`skipMissing`) or allows creation (`allowCreateTests`, created keys in `createdTests`) |
 
 ## Verified behaviour
 
@@ -74,9 +75,9 @@ everything created, including the tests Xray creates for JUnit test cases, delet
 
 | Item | Outcome |
 |---|---|
-| `import_execution_results` JUnit, new execution with `summary` | ok: multipart `import/execution/junit/multipart` with parts `info` (Jira fields, summary applied) and `results`; response `{id, key, self}`; runs and `byStatus` match the file |
-| `import_execution_results` Cucumber JSON into an existing execution | ok (sent as Xray JSON with `testExecutionKey`): same execution, one run per `@TEST_` key, failure message as run comment, Scenario Outline rows as `examples` statuses (`PASSED`, `FAILED`). The converter also counts a failed Background (Cucumber JSON emits it as its own element before each scenario) and failing scenario or step hooks as FAILED; repeated non-outline scenarios of one key keep the worst status (unit-tested) |
-| `import_execution_results` Cucumber JSON, new execution with `testEnvironments` | ok: multipart with `info.xrayFields.environments`; the execution carries the environment |
+| `import_execution_results` JUnit, new execution with `summary` | ok: with two unmatched cases the first call answers `needs_answer` (`missing` = the cases' Generic definitions) and creates nothing; with `allowCreateTests` multipart `import/execution/junit/multipart` with parts `info` (Jira fields, summary applied) and `results`; response `{id, key, self}`; runs and `byStatus` match the file; the two new tests are listed in `createdTests` |
+| `import_execution_results` Cucumber JSON into an existing execution | ok (sent as Xray JSON with `testExecutionKey`): same execution, untagged Scenario Outline rows matched by the test's summary, one run per test, failure message as run comment, Scenario Outline rows as `examples` statuses (`PASSED`, `FAILED`). The converter also counts a failed Background (Cucumber JSON emits it as its own element before each scenario) and failing scenario or step hooks as FAILED; repeated non-outline scenarios of one key keep the worst status (unit-tested) |
+| `import_execution_results` Cucumber JSON, new execution with `testEnvironments` | ok: multipart with `info.xrayFields.environments`; the execution carries the environment; an untagged scenario matched by summary is sent natively with an added `@TEST_<KEY>` tag and lands on that test |
 | `import_execution_results` Xray JSON (plain `import/execution`) | ok: new execution, `byStatus` from `getTestRuns` |
 | `import_feature_file` on `regression/sample.feature` (run-id prefixed copy) | ok: multipart part `file` (with `projectKey` query parameter); response keys `updatedOrCreatedTests`, `updatedOrCreatedPreconditions` (`[{id, key, self}]`) and `errors`; 2 tests (scenario, scenario outline) and 1 Pre-Condition. A re-import of the same file updates the same keys (Xray matches by name). `testInfo` / `precondInfo` parts are as documented; not exercised live (the test project needs no extra fields) |
 | `export_cucumber_features` of those keys | ok: one `.feature` file (Xray names it `1_<KEY>,<KEY>.feature`), parses with the vendored parser, `@TEST_` tags and `#@PRECOND_` comment present, Feature name empty; a second export into the same directory is refused (no overwrite) |
@@ -102,6 +103,30 @@ everything created, including the tests Xray creates for JUnit test cases, delet
   - The native import drops the Examples name (it stores a bare `Examples:`). The plugin keeps
     `Examples: <name>`, tags and descriptions.
   - Tests carry the Feature/Scenario tags as labels in both. The sample file has none.
+
+## Result import matching
+
+Probed live on 2026-11-24 (throwaway issues, all deleted afterwards) to find how Xray Cloud maps
+imported results to tests, so the tool's pre-check mirrors it:
+
+| Format | What Xray Cloud does |
+|---|---|
+| Cucumber JSON (multipart, new execution) | Only a `@TEST_<KEY>` tag maps a scenario. An untagged scenario whose name equals the summary of an existing Cucumber test is **not** matched, and **no test is created** for an untagged scenario: it is dropped silently when other scenarios are tagged, and a report with no tagged scenario fails with HTTP 400 "There are no valid tests imported" (no execution created) |
+| Behave JSON (multipart, new execution) | Same as Cucumber: tag `TEST_<KEY>` (Behave writes tags without `@`) maps; untagged scenarios are dropped silently |
+| JUnit | A `<testcase classname="a.B" name="c">` with no match creates a **Generic** test with summary `c` (the case name) and definition (`unstructured`) `a.B.c`. A second import of the same case reuses that test (matched by definition). An existing Generic test whose definition is `classname.name` is reused whatever its summary (the summary is kept). An existing Generic test with the same summary but another definition is **not** matched: a new test is created. `<property name="test_key" value="KEY"/>` maps the case to that test, of any type (Manual included), summary kept |
+| TestNG | Definition `<class name>.<test-method name>`, summary = method name; `<attributes><attribute name="test">KEY</attribute></attributes>` maps to that test |
+| NUnit 3 | Definition = `test-case@fullname`, summary = `name`; `<property name="Test" value="KEY"/>` maps to that test |
+| Robot | Definition = `<suite name>.<test name>`, summary = test name; a tag equal to a test key maps to that test **and renames that test** to the Robot test's name |
+| Xray JSON `testInfo` (no `testKey`) | `type: Cucumber` takes the steps in `scenario` (`definition` gets HTTP 400 "Test of kind gherkin should not contain ... definition or steps") and always creates a new test, even when an identical one exists; `type: Generic` with `definition` reuses the Generic test with that definition **and overwrites its summary** with `testInfo.summary` |
+
+So, in the tool: Cucumber/Behave scenarios are matched by tag, the project's `testKeyTag`, or
+exact summary (the plugin's own rule; trimmed, case-sensitive), and the resolved key is sent as
+a `@TEST_<KEY>` tag (new execution, native import keeps step details) or as `testKey` in Xray
+JSON (existing execution, or tests to create: those go as `testInfo` with `type: Cucumber`).
+XML cases mirror Xray's rule (file key, else Generic definition); Robot key tags count only when
+the issue is a Test. The Generic-definition lookup pages `getTests(jql, testType: {name:
+"Generic"})` (at most 5000 tests; past that, unmatched cases are reported with a note, and Xray
+may still reuse a test it finds).
 
 ## Background steps in Cucumber JSON result imports
 
