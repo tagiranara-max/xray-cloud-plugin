@@ -122,6 +122,7 @@ def _add_pending(ctx: Any, pk: str, item_type: str, values: Dict[str, Any],
     """Answers of this call: used by later resolutions of the call and remembered on commit.
     Asked answers are always remembered; call-supplied ones when `remember` or when nothing
     is remembered for the field yet."""
+    values = {k: v for k, v in values.items() if k not in SYSTEM_FIELDS}
     if not values:
         return
     entry = _pending(ctx).setdefault((pk, item_type), {"values": {}, "store": {}})
@@ -192,7 +193,8 @@ def compute(ctx: Any, project: ProjectSettings, item_type: str,
     call.update(raw_fields or {})
     defaults = {s.id: convert_value(s, s.default) for s in specs.values()
                 if s.id and s.default is not None}
-    remembered = _remembered(ctx, pk, item_type)
+    remembered = {k: v for k, v in _remembered(ctx, pk, item_type).items()
+                  if k not in SYSTEM_FIELDS}
     if meta is not None:  # a field no longer on the create screen would fail the create
         ids = {f["id"] for f in meta} | set(by_id)
         remembered = {k: v for k, v in remembered.items() if k in ids}
@@ -201,7 +203,8 @@ def compute(ctx: Any, project: ProjectSettings, item_type: str,
     out.update(defaults)
     out.update(answers)
     out.update(call)
-    own = set(provided)  # the tool's own values (e.g. description) always win
+    # the tool's own values (e.g. description; summary, project, ...) always win
+    own = set(provided) | SYSTEM_FIELDS
     out = {k: v for k, v in out.items() if k not in own}
     applied = {k: v for k, v in remembered.items()
                if k not in defaults and k not in answers and k not in call and k not in own}

@@ -416,3 +416,16 @@ def test_container_new_test_own_description_wins(tmp_path):
     assert not err, res
     sent = [v["jira"]["fields"]["description"] for v in ctx.xray.calls_of("CreateTest")]
     assert sent == ["MINE", "ASKED"] and len(ch.asked) == 1
+
+
+def test_system_fields_never_come_from_remembered_or_get_remembered(tmp_path):
+    ctx = make(tmp_path, meta=SEVERITY_ONLY, responses=created())
+    ctx.preferences.remember_fields("global", ctx.site, "PROJ", "test",
+                                    {"summary": "BAD", "customfield_3": {"value": "High"}})
+    res, err = call(ctx, "create_test", projectKey="PROJ", summary="Mine", aiLabel="",
+                    allowDuplicates=True, rawFields={"summary": "RAW"})
+    assert not err and res["appliedDefaults"] == {"test": {"customfield_3": {"value": "High"}}}
+    assert ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]["summary"] == "Mine"
+    requiredfields._add_pending(ctx, "PROJ", "test", {"summary": "X"}, True, asked=True)
+    requiredfields.commit(ctx)
+    assert remembered(ctx)["summary"] == "BAD"  # untouched, never re-stored

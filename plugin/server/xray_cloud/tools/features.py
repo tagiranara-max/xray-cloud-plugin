@@ -100,6 +100,7 @@ class _Run:
         fields: Dict[str, Any] = {"project": {"key": self.pk}, "summary": a.summary}
         if a.description:
             fields["description"] = a.description
+            extra.pop("description", None)  # the feature's own text wins
         labels = _merge_labels(a.labels, extra)
         fields.update(extra)
         if labels:
@@ -165,6 +166,7 @@ class _Run:
             fields: Dict[str, Any] = {"project": {"key": self.pk}, "summary": summary}
             if a.description:
                 fields["description"] = a.description
+                extra.pop("description", None)  # the Background's own text wins
             labels = _merge_labels(a.labels, extra)
             fields.update(extra)
             fields["labels"] = labels
@@ -212,6 +214,7 @@ class _Run:
             fields: Dict[str, Any] = {"project": {"key": self.pk}, "summary": a.summary}
             if a.description:
                 fields["description"] = a.description
+                extra.pop("description", None)  # the Feature's own text wins
             labels = _merge_labels(a.labels, extra)
             fields.update(extra)
             if labels:
@@ -389,6 +392,13 @@ def _per_test(plan: List[ImportAction]) -> List[dict]:
     return out
 
 
+def _own_description(items) -> List[str]:
+    """["description"] when every item (with a .description) has its own, else []."""
+    items = list(items)
+    return ["description"] if items and all(getattr(x, "description", "") for x in items) \
+        else []
+
+
 def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: TagAnalysis,
                  args: dict) -> Dict[int, dict]:
     """Jira fields per new test: the call's fields plus the rule fields of that test. A rule
@@ -396,9 +406,11 @@ def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: 
     required fields are collected only for scenarios that create a test, with their rule
     fields."""
     call_fields = dict(args.get("fields") or {})
-    base_creates = any(st.test_key is None and not st.outcome.fields
-                       for st in analysis.scenarios)
-    base = c("test", call_fields, args.get("rawFields"), required=base_creates)
+    base_users = [i for i, st in enumerate(analysis.scenarios)
+                  if st.test_key is None and not st.outcome.fields]
+    # description is not asked for tests whose scenario has its own
+    base = c("test", call_fields, args.get("rawFields"), required=bool(base_users),
+             provided=_own_description(feature.scenarios[i] for i in base_users))
     out: Dict[int, dict] = {}
     for i, st in enumerate(analysis.scenarios):
         rule_fields = st.outcome.fields
@@ -415,7 +427,8 @@ def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: 
                                feature.scenarios[i].name, feature.scenarios[i].line),
                             field=name)
         out[i] = c("test", dict(call_fields, **rule_fields), args.get("rawFields"),
-                   record=False)  # a rule value is never remembered
+                   record=False,  # a rule value is never remembered
+                   provided=_own_description([feature.scenarios[i]]))
     return out
 
 
@@ -494,9 +507,14 @@ def create_tests_from_feature(ctx, args):
     # -- fields for every item type that may be created: refuse the whole file first
     def build(c):
         tests = _test_extras(c, feature, analysis, args)
-        pre = (c("precondition", args.get("preconditionFields"), None, "preconditionFields")
+        pre = (c("precondition", args.get("preconditionFields"), None, "preconditionFields",
+                 provided=_own_description(feature.backgrounds))
                if feature.backgrounds and not opts.inline else {})
-        sets = (c("testSet", args.get("testSetFields"), None, "testSetFields")
+        # tag Test Sets have no description; the Feature Test Set has the Feature's
+        set_items = ([feature] if opts.create_test_set else []) + \
+            ([None] if analysis.tag_sets else [])
+        sets = (c("testSet", args.get("testSetFields"), None, "testSetFields",
+                  provided=_own_description(set_items))
                 if opts.create_test_set or analysis.tag_sets else {})
         return tests, pre, sets
 

@@ -1087,3 +1087,26 @@ def test_rule_fields_for_every_new_scenario_are_not_asked(tmp_path):
                                   "  Scenario: B\n    Given b\n", "b.feature")
     res = preview(ctx, path, **ans(createTestSet=False))
     assert [q["id"] for q in res["questions"]] == ["customfield_9"]
+
+
+class DescJira(RecJira):
+    def create_meta(self, pk, issue_type):
+        return [{"id": "description", "name": "Description", "required": True,
+                 "schemaType": "string", "allowedValues": []}] if issue_type == "Test" else []
+
+
+def test_scenario_description_wins_and_is_only_asked_for_scenarios_without(tmp_path):
+    ctx = ctx_for(tmp_path)
+    ctx.jira = DescJira()
+    ctx.channel = FormChannel({"description": "ASKED"})
+    own = feature_file(tmp_path, "Feature: F\n  Scenario: A\n    Own text\n    Given a\n"
+                                 "  Scenario: B\n    Own too\n    Given b\n", "own.feature")
+    assert preview(ctx, own, **ans(createTestSet=False))["questions"] == []
+    path = feature_file(tmp_path, "Feature: F\n  Scenario: A\n    Own text\n    Given a\n"
+                                  "  Scenario: B\n    Given b\n")
+    res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
+                    apply=True, **ans(createTestSet=False))
+    assert not err, res
+    sent = {v["jira"]["fields"]["summary"]: v["jira"]["fields"].get("description")
+            for v in ctx.xray.calls_of("CreateTest")}
+    assert sent == {"A": "Own text", "B": "ASKED"} and len(ctx.channel.asked) == 1
