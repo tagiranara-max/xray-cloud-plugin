@@ -29,7 +29,7 @@ DEFAULT_LIFECYCLE_LABELS = ["ai-draft", "needs-refinement", "automation-candidat
 
 # Jira project key: uppercase letter, then uppercase letters, digits or underscores.
 PROJECT_KEY_RE = re.compile(r"[A-Z][A-Z0-9_]*")
-_PLACEHOLDER = re.compile(r"^\$\{user_config\.[A-Za-z0-9_]+\}$")
+_PLACEHOLDER = re.compile(r"^\$\{[A-Za-z0-9_.:]+\}$")
 _CREDENTIAL_KEY = re.compile(r"secret|token|password|client_?id", re.IGNORECASE)
 
 
@@ -38,7 +38,7 @@ class SettingsError(ToolError):
 
 
 def _get(env: Mapping[str, str], key: str) -> Optional[str]:
-    """Env value, or None when unset, empty, or an unsubstituted userConfig placeholder."""
+    """Env value, or None when unset, empty, or an entirely unsubstituted ${...} placeholder."""
     value = env.get(key)
     if value is None:
         return None

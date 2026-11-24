@@ -389,3 +389,11 @@ def test_no_jira_fix_is_client_neutral():
     from xray_cloud.notdone import NO_JIRA_FIX
     for name in ("JIRA_SITE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"):
         assert name in NO_JIRA_FIX
+
+
+def test_unsubstituted_placeholders_are_ignored(monkeypatch):
+    from xray_cloud.config import project_dir
+    assert project_dir({"XRAY_PROJECT_DIR": "${workspacePath}", "CLAUDE_PROJECT_DIR": "/x/claude"}) == "/x/claude"
+    assert project_dir({"XRAY_PROJECT_DIR": "${workspacePath}"}) == os.getcwd()
+    assert project_dir({"XRAY_PROJECT_DIR": "${user_config.x}"}) == os.getcwd()
+    assert project_dir({"XRAY_PROJECT_DIR": "/a/${weird}/b"}) == "/a/${weird}/b"
