@@ -188,3 +188,22 @@ def test_export_not_blocked_by_read_only(tmp_path):
     out, err = call(ctx, "export_cucumber_features", directory=str(tmp_path / "o"),
                     keys=["PROJ-1"])
     assert not err
+
+
+def test_export_refuses_tests_of_other_projects_nothing_written(tmp_path):
+    z = make_zip({"a.feature": "@TEST_PROJ-1\nFeature: A\n  @REQ_STORY-3 @TEST_PROJ-2\n"
+                                "  Scenario: x\n",
+                  "b.feature": "Feature: B\n  @TEST_OTHER-4 @PRECOND_OTHER-9\n  Scenario: y\n"
+                               "  @TEST_OTHERX-5\n  Scenario: z\n"})
+    ctx = export_ctx(tmp_path, z)
+    d = tmp_path / "out"
+    out, err = call(ctx, "export_cucumber_features", directory=str(d), filter="123")
+    assert err and out["keys"] == ["OTHER-4", "OTHERX-5"], out
+    assert "OTHER-4" in out["error"] and "PROJ" in out["error"]
+    assert not d.exists() or list(d.iterdir()) == []
+
+
+def test_export_own_project_tags_pass(tmp_path):
+    ctx = export_ctx(tmp_path, b"Feature: S\n  @TEST_PROJ-1 @REQ_OTHER-2\n  Scenario: a\n")
+    out, err = call(ctx, "export_cucumber_features", directory=str(tmp_path / "o"), filter="1")
+    assert not err, out

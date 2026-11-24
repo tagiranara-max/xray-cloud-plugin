@@ -17,6 +17,18 @@ from .tests import _OBJ, _schema
 
 MAX_EXPORT_BYTES = 100 * 1024 * 1024  # total uncompressed size of an export zip
 _DRIVE = re.compile(r"^[A-Za-z]:")
+_TEST_TAG = re.compile(rb"(?<![^\s])@TEST_([A-Z][A-Z0-9_]*-[1-9][0-9]*)(?![^\s])")
+
+
+def _foreign_tests(entries: Dict[str, bytes], pk: str) -> List[str]:
+    """@TEST_<KEY> tags in the exported features whose key is not of project pk."""
+    found = set()
+    for data in entries.values():
+        for m in _TEST_TAG.finditer(data):
+            key = m.group(1).decode("ascii")
+            if key.rsplit("-", 1)[0] != pk:
+                found.add(key)
+    return sorted(found)
 
 
 @REGISTRY.tool(
@@ -132,7 +144,9 @@ def _plan(directory: str, body: bytes, overwrite: bool) -> Dict[str, bytes]:
     "Export Cucumber tests as .feature files into a local directory (created if missing). Give "
     "exactly one of keys (test keys in the project) or filter (an Xray saved-filter id). Existing "
     "files are never overwritten unless overwrite is true; every file is checked before the first "
-    "is written, so a refusal writes nothing. Returns the directory and the relative file paths.",
+    "is written, so a refusal writes nothing. A saved filter can hold tests of other projects: "
+    "when any exported @TEST_<KEY> tag is outside projectKey, the export is refused (nothing "
+    "written) naming those keys. Returns the directory and the relative file paths.",
     _schema({"directory": {"type": "string"},
              "keys": {"type": "array", "items": {"type": "string"}},
              "filter": {"type": "string"},
@@ -155,6 +169,10 @@ def export_cucumber_features(ctx, args):
         raise ToolError("directory is not a directory: %s" % args["directory"], path=directory)
     body = ctx.xray.rest_bytes("GET", "export/cucumber", params=params)
     entries = _plan(directory, body, bool(args.get("overwrite")))
+    foreign = _foreign_tests(entries, pk)
+    if foreign:
+        raise ToolError("The export holds tests outside project %s: %s; nothing was written"
+                        % (pk, ", ".join(foreign)), keys=foreign)
     written: List[str] = []
     try:
         for name, data in entries.items():
