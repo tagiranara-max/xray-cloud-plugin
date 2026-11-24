@@ -4,8 +4,10 @@ on:
   pull_request:
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest (26.04) has no Python 3.9 build.
+    runs-on: ubuntu-24.04
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.9", "3.13"]
     steps:
@@ -15,7 +17,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: pip install pytest
       - run: pytest -q -m "not live"
-      # Not --strict: strict mode fails on the missing `version` (deliberately absent) and `author`.
+      # Not --strict: strict mode fails on the missing `version` (deliberately absent).
       # Skipped when the claude CLI is not installed on the runner.
       - run: |
           if command -v claude >/dev/null; then
