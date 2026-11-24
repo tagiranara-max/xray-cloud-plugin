@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import json
-import re
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..context import check_issue_in_project, require_project
+from .. import resultmatch as rm
+from ..context import check_issue_in_project, dedupe, require_project
 from ..errors import ToolError
 from ..fields import build_jira_fields
 from .. import localfiles
@@ -21,7 +23,7 @@ _RUNS = """
 query GetTestExecutionRuns($testExecIssueIds: [String], $limit: Int!, $start: Int!) {
   getTestRuns(testExecIssueIds: $testExecIssueIds, limit: $limit, start: $start) {
     total
-    results { status { name } }
+    results { status { name } test { jira(fields: ["key"]) } }
   }
 }
 """
@@ -52,8 +54,10 @@ def _read_input(ctx, args: dict) -> bytes:
     return data
 
 
-def _status_summary(ctx, issue_id: str) -> Dict[str, Any]:
+def _run_summary(ctx, issue_id: str) -> Tuple[Dict[str, Any], List[str]]:
+    """({total, byStatus}, test keys in run order) of a test execution."""
     by_status: Dict[str, int] = {}
+    keys: List[str] = []
     total = start = 0
     while True:
         runs = (ctx.xray.graphql(_RUNS, {"testExecIssueIds": [issue_id], "limit": PAGE,
@@ -62,10 +66,13 @@ def _status_summary(ctx, issue_id: str) -> Dict[str, Any]:
         for r in rows:
             name = (r.get("status") or {}).get("name") or "UNKNOWN"
             by_status[name] = by_status.get(name, 0) + 1
+            key = ((r.get("test") or {}).get("jira") or {}).get("key")
+            if key:
+                keys.append(key)
         total += len(rows)
         start += len(rows)
         if not rows or start >= (runs.get("total") or 0):
-            return {"total": total, "byStatus": by_status}
+            return {"total": total, "byStatus": by_status}, keys
 
 
 def _parse_json(data: bytes, fmt: str) -> Any:
@@ -149,30 +156,33 @@ def _check_envs(envs: Any) -> List[str]:
     return list(envs)
 
 
-_TEST_TAG = re.compile(r"^@TEST_([A-Z][A-Z0-9_]*-[1-9][0-9]*)$")
 _FAILED = {"failed", "undefined", "ambiguous"}
-# cucumber-jvm / cucumber-js ids of Scenario Outline example rows end in ";<examples>;<row>"
-_EXAMPLE_ROW_ID = re.compile(r";[^;]*;\d+$")
 
 Result = Tuple[str, str, str]  # (status, label, error message)
 
 
+def _error_text(res: dict) -> str:
+    err = res.get("error_message")
+    if isinstance(err, list):  # Behave writes the message as a list of lines
+        return "\n".join(str(e) for e in err)
+    return str(err or "")
+
+
 def _results(element: dict) -> List[Result]:
-    """Every result of one Cucumber JSON element in run order: scenario hooks, and each step
-    with its own before/after hooks (as cucumber-jvm emits them)."""
+    """Every result of one Cucumber/Behave JSON element in run order: scenario hooks, and each
+    step with its own before/after hooks (as cucumber-jvm emits them)."""
     out: List[Result] = []
 
     def add(item: Any, label: str) -> None:
         res = (item.get("result") or {}) if isinstance(item, dict) else {}
-        out.append((str(res.get("status") or "").lower(), label,
-                    str(res.get("error_message") or "")))
+        out.append((str(res.get("status") or "").lower(), label, _error_text(res)))
 
     for hook in element.get("before") or []:
         add(hook, "Before hook")
     for st in element.get("steps") or []:
         if not isinstance(st, dict):
             continue
-        name = ("%s%s" % (st.get("keyword") or "", st.get("name") or "")).strip() or "step"
+        name = _step_text(st) or "step"
         for hook in st.get("before") or []:
             add(hook, "Before step hook (%s)" % name)
         add(st, name)
@@ -181,6 +191,10 @@ def _results(element: dict) -> List[Result]:
     for hook in element.get("after") or []:
         add(hook, "After hook")
     return out
+
+
+def _step_text(st: dict) -> str:
+    return ("%s %s" % (str(st.get("keyword") or "").strip(), st.get("name") or "")).strip()
 
 
 def _status(results: List[Result], has_steps: bool) -> Tuple[str, Optional[str]]:
@@ -194,71 +208,259 @@ def _status(results: List[Result], has_steps: bool) -> Tuple[str, Optional[str]]
     return "TODO", None
 
 
-def _is_background(el: dict) -> bool:
-    return el.get("type") == "background" or \
-        str(el.get("keyword") or "").strip().lower() == "background"
-
-
-def _is_outline_row(el: dict) -> bool:
-    keyword = str(el.get("keyword") or "").strip().lower()
-    return keyword in ("scenario outline", "scenario template") or \
-        bool(_EXAMPLE_ROW_ID.search(str(el.get("id") or "")))
-
-
 _RANK = {"FAILED": 2, "TODO": 1, "PASSED": 0}
 
 
-def cucumber_to_xray(report: Any, pk: str) -> dict:
-    """Convert a Cucumber JSON report to Xray JSON (tests by @TEST_<KEY> tag). Every scenario
-    must carry exactly one @TEST_ key of the project; otherwise nothing is sent. A Background
-    element's results count for the scenario that follows it. Scenario Outline rows of one key
-    give one example status per row; other repeats of a key keep the worst status."""
-    if not isinstance(report, list):
-        raise ToolError("Cucumber JSON results must be a list of features")
-    # key -> [(status, failure, is outline row)]
-    by_key: Dict[str, List[Tuple[str, Optional[str], bool]]] = {}
-    untagged: List[str] = []
-    for feature in report:
-        if not isinstance(feature, dict):
-            raise ToolError("Cucumber JSON results must be a list of feature objects")
-        background: List[Result] = []
-        for el in feature.get("elements") or []:
-            if not isinstance(el, dict):
-                continue
-            if _is_background(el):
-                background = _results(el)
-                continue
-            carried, background = background, []
-            keys = sorted({m.group(1) for m in (_TEST_TAG.match(str((t or {}).get("name") or ""))
-                                                for t in el.get("tags") or []) if m})
-            where = "%s / %s" % (feature.get("name") or feature.get("uri") or "?",
-                                 el.get("name") or "?")
-            if len(keys) != 1:
-                untagged.append(where)
-                continue
-            check_issue_in_project(keys[0], pk)
-            status, failure = _status(carried + _results(el), bool(el.get("steps")))
-            by_key.setdefault(keys[0], []).append((status, failure, _is_outline_row(el)))
-    if untagged:
-        raise ToolError("Cucumber results can go into an existing execution only when every "
-                        "scenario is tagged with one @TEST_<KEY> (Xray Cloud's Cucumber import "
-                        "always creates a new execution, so the results are sent as Xray JSON). "
-                        "Tag these scenarios or omit testExecKey: %s" % "; ".join(untagged[:20]),
-                        scenarios=untagged)
-    if not by_key:
-        raise ToolError("The Cucumber report has no scenarios")
+def scenarios_to_xray(cases: List[rm.ScenarioCase], keys: List[Optional[str]], pk: str,
+                      create: bool) -> dict:
+    """Xray JSON for Cucumber/Behave scenarios: one test per resolved key (a Background's
+    results count for the scenario after it; Scenario Outline rows of one key give one example
+    status per row; other repeats keep the worst status; failures become the comment). With
+    `create`, scenarios without a key become `testInfo` entries (a new Cucumber test named
+    after the scenario, its steps as the definition); otherwise they are left out."""
+    groups: Dict[Tuple[str, str], List[Tuple[str, Optional[str], bool]]] = {}
+    first: Dict[Tuple[str, str], rm.ScenarioCase] = {}
+    for c, key in zip(cases, keys):
+        if key is None and not create:
+            continue
+        gk = ("key", key) if key else ("new", c.name)
+        results: List[Result] = []
+        for bg in c.background:
+            results += _results(bg)
+        status, failure = _status(results + _results(c.element), bool(c.element.get("steps")))
+        groups.setdefault(gk, []).append((status, failure, c.outline))
+        first.setdefault(gk, c)
     tests: List[Dict[str, Any]] = []
-    for key, rows in by_key.items():
+    for gk, rows in groups.items():
         statuses = [st for st, _, _ in rows]
-        item: Dict[str, Any] = {"testKey": key,
-                                "status": max(statuses, key=lambda st: _RANK[st])}
+        if gk[0] == "key":
+            item: Dict[str, Any] = {"testKey": gk[1]}
+        else:
+            steps = [_step_text(st) for st in first[gk].element.get("steps") or []
+                     if isinstance(st, dict)]
+            item = {"testInfo": {"projectKey": pk, "summary": gk[1], "type": "Cucumber",
+                                 "scenario": "\n".join(s for s in steps if s)}}
+        item["status"] = max(statuses, key=lambda st: _RANK[st])
         comments = [c for _, c, _ in rows if c]
         if comments:
             item["comment"] = "\n".join(comments)[:4000]
-        if len(rows) > 1 and all(outline for _, _, outline in rows):
+        if gk[0] == "key" and len(rows) > 1 and all(outline for _, _, outline in rows):
             item["examples"] = statuses
         tests.append(item)
     return {"tests": tests}
+
+
+def _tag_scenarios(cases: List[rm.ScenarioCase], keys: List[Optional[str]], fmt: str) -> bool:
+    """Give each resolved scenario exactly one Test-key tag (@TEST_<KEY>; Behave: TEST_<KEY>),
+    which is the only thing Xray's Cucumber/Behave import maps by. True when a tag changed."""
+    changed = False
+    for c, key in zip(cases, keys):
+        if key is None:
+            continue
+        tags = list(c.element.get("tags") or [])
+        names = rm.tag_names(c.element, fmt)
+        want = "@TEST_" + key
+        keep = [t for t, n in zip(tags, names) if not rm.TEST_TAG.match(n) or n == want]
+        if not any(n == want for n in names):
+            keep.append(want[1:] if fmt == "behave" else {"name": want})
+        if keep != tags:
+            c.element["tags"] = keep
+            changed = True
+    return changed
+
+
+# ---- matching: which test each result goes to ---------------------------------------------
+
+CAP = 50  # list lengths in a needs_answer result
+
+
+@dataclass
+class Resolution:
+    keys: List[Optional[str]]             # per case: the test it goes to (None: unresolved)
+    ambiguous: Dict[str, List[str]]       # name -> candidate keys
+    missing: List[str]                    # names that match no test
+    matched: int                          # names resolved (plus pre-keyed Xray JSON entries)
+    notes: List[str] = field(default_factory=list)
+
+
+def _resolve(names: List[str], pre: List[List[str]], terms: List[Optional[str]],
+             lookup, explicit: Dict[str, str], extra_matched: int = 0) -> Resolution:
+    """Per case: an explicit testKeys entry, else the keys the report names (pre), else the
+    lookup of its term (summary or definition; None = nothing to look up). One key resolves
+    it; several make it ambiguous; none, missing."""
+    unknown = sorted(set(explicit) - set(names))
+    if unknown:
+        raise ToolError("testKeys names results that are not in the report: %s"
+                        % ", ".join(unknown[:20]), unknown=unknown[:CAP])
+    need = dedupe([t for n, p, t in zip(names, pre, terms)
+                   if n not in explicit and not p and t is not None])
+    found = lookup(need) if need else {}
+    keys: List[Optional[str]] = []
+    ambiguous: Dict[str, List[str]] = {}
+    missing: List[str] = []
+    for n, p, t in zip(names, pre, terms):
+        if n in explicit:
+            keys.append(explicit[n])
+            continue
+        cands = p or (found.get(t, []) if t is not None else [])
+        if len(cands) == 1:
+            keys.append(cands[0])
+            continue
+        keys.append(None)
+        if cands:
+            ambiguous.setdefault(n, list(cands))
+        elif n not in missing:
+            missing.append(n)
+    missing = [n for n in missing if n not in ambiguous]
+    matched = len(set(names) - set(ambiguous) - set(missing)) + extra_matched
+    return Resolution(keys, ambiguous, missing, matched)
+
+
+def _check_test_keys(value: Any, pk: str) -> Dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ToolError("testKeys must be an object {result name: test key}")
+    for name, key in value.items():
+        if not isinstance(key, str):
+            raise ToolError("testKeys values must be issue keys", name=name, value=key)
+        check_issue_in_project(key, pk)
+    return {str(n).strip(): k for n, k in value.items()}
+
+
+def _needs_answer(res: Resolution, fmt: str) -> dict:
+    questions = []
+    if res.ambiguous:
+        questions.append({"id": "testKeys", "question": (
+            "%d result(s) match more than one existing test. Which test should each go to? "
+            "Answer with testKeys {name: KEY}." % len(res.ambiguous)),
+            "context": {"ambiguous": len(res.ambiguous)}})
+    if res.missing:
+        what = ("Xray creates a Generic test for each (summary = the case name)"
+                if fmt in XML_FORMATS else "a new Cucumber test is created for each"
+                if fmt in ("cucumber", "behave") else "Xray creates a test for each")
+        questions.append({"id": "allowCreateTests", "question": (
+            "%d result(s) match no existing test. Create new Test issues for them (%s; they get "
+            "no AI label)? Or map them to existing tests with testKeys {name: KEY}, or leave "
+            "them out with skipMissing." % (len(res.missing), what)),
+            "options": [True, False], "context": {"missing": len(res.missing)}})
+    amb = [{"name": n, "candidates": c} for n, c in res.ambiguous.items()]
+    out: Dict[str, Any] = {"status": "needs_answer", "questions": questions,
+                           "matched": res.matched, "ambiguous": amb[:CAP],
+                           "ambiguousCount": len(amb), "missing": res.missing[:CAP],
+                           "missingCount": len(res.missing)}
+    if res.notes:
+        out["notes"] = res.notes
+    out["nothingImported"] = True
+    return out
+
+
+def _resolve_scenarios(ctx, pk: str, cases: List[rm.ScenarioCase],
+                       explicit: Dict[str, str]) -> Resolution:
+    names = [c.name for c in cases]
+    return _resolve(names, [c.tag_keys for c in cases], names,
+                    lambda ts: rm.find_by_summary(ctx, pk, ts), explicit)
+
+
+def _resolve_xml(ctx, pk: str, fmt: str, cases: List[rm.XmlCase],
+                 explicit: Dict[str, str]) -> Resolution:
+    pre = [c.report_keys for c in cases]
+    if fmt == "robot":
+        # A Robot tag that is an issue key maps the test only when that issue is a Test
+        # (other keys, e.g. requirements, are links).
+        tagged = [k for c in cases if c.name not in explicit for k in c.report_keys]
+        tests = rm.existing_tests(ctx, tagged) if tagged else set()
+        pre = [[k for k in p if k in tests] for p in pre]
+    notes: List[str] = []
+
+    def lookup(defs):
+        found, complete = rm.find_by_definition(ctx, pk, defs)
+        if not complete:
+            notes.append("The project has more than %d Generic tests; only those were checked "
+                         "for matching definitions, so some 'missing' results may already "
+                         "have a test (Xray then reuses it)." % (rm.MAX_DEFINITION_PAGES * rm.PAGE))
+        return found
+
+    names = [c.name for c in cases]
+    res = _resolve(names, pre, names, lookup, explicit)
+    res.notes = notes
+    return res
+
+
+def _xray_cases(report: dict) -> List[Tuple[int, str, Optional[str]]]:
+    """(index, name, definition to look up) of each Xray JSON entry that would make Xray create
+    or pick a test itself: no testKey, a testInfo. Generic entries are looked up by definition
+    (Xray reuses the Generic test with the same definition)."""
+    out = []
+    for i, t in enumerate(report.get("tests") or []):
+        if not isinstance(t, dict) or t.get("testKey") or not isinstance(t.get("testInfo"), dict):
+            continue
+        ti = t["testInfo"]
+        name = str(ti.get("summary") or ti.get("definition") or "test %d" % (i + 1)).strip()
+        generic = str(ti.get("type") or "").lower() == "generic" and \
+            isinstance(ti.get("definition"), str) and ti["definition"]
+        out.append((i, name, ti["definition"] if generic else None))
+    return out
+
+
+def _inject_xml_key(el, fmt: str, key: str, old: List[str]) -> None:
+    """Make the file name `key` as the case's test, the way Xray reads it."""
+    if fmt == "robot":
+        box = el.find("tags")
+        if box is None:
+            box = ET.Element("tags")
+            status = el.find("status")
+            el.insert(list(el).index(status) if status is not None else len(el), box)
+        for t in list(box):
+            if (t.text or "").strip() in old:
+                box.remove(t)
+        ET.SubElement(box, "tag").text = key
+        return
+    container, item, name, as_attr = {
+        "junit": ("properties", "property", "test_key", True),
+        "testng": ("attributes", "attribute", "test", False),
+        "nunit": ("properties", "property", "Test", True)}[fmt]
+    box = el.find(container)
+    if box is None:
+        box = ET.Element(container)
+        el.insert(0, box)
+    for p in list(box):
+        if p.tag == item and p.get("name") == name:
+            box.remove(p)
+    p = ET.SubElement(box, item, {"name": name})
+    if as_attr:
+        p.set("value", key)
+    else:
+        p.text = key
+
+
+def _apply_xml(root, fmt: str, cases: List[rm.XmlCase], res: Resolution,
+               explicit: Dict[str, str], skipped: set) -> bool:
+    parents = {child: parent for parent in root.iter() for child in parent}
+    changed = False
+    for c, key in zip(cases, res.keys):
+        if c.name in skipped:
+            parent = parents.get(c.element)
+            if parent is not None:
+                parent.remove(c.element)
+                changed = True
+        elif c.name in explicit and c.report_keys != [key]:
+            _inject_xml_key(c.element, fmt, key, c.report_keys)
+            changed = True
+    return changed
+
+
+_EXEC_ID = """
+query ResultExecId($jql: String!) { getTestExecutions(jql: $jql, limit: 1) { results { issueId } } }
+"""
+
+
+def _exec_test_keys(ctx, exec_key: str) -> List[str]:
+    rows = ((ctx.xray.graphql(_EXEC_ID, {"jql": "issue = %s" % exec_key})
+             .get("getTestExecutions") or {}).get("results")) or []
+    if not rows:
+        raise ToolError("Test execution not found: %s" % exec_key, testExecKey=exec_key)
+    return _run_summary(ctx, str(rows[0]["issueId"]))[1]
 
 
 def _exec_info(pk: str, summary: str, extra: Dict[str, Any], plan_key: Optional[str],
@@ -279,25 +481,38 @@ def _exec_info(pk: str, summary: str, extra: Dict[str, Any], plan_key: Optional[
 @REGISTRY.tool(
     "import_execution_results",
     "Import test results into Xray. format: xray | cucumber | behave (JSON) or junit | testng | "
-    "nunit | robot (XML). Give exactly one of filePath (sent byte for byte, max 25 MB) or content "
-    "(neither may be empty). "
-    "Without testExecKey a new Test Execution is created in projectKey (summary/fields/rawFields "
-    "and the project's testExecution field settings apply; required fields are checked before "
-    "upload); with testExecKey results go to that execution (cucumber: every scenario needs a "
-    "@TEST_<KEY> tag, and the results are sent as Xray JSON with one status per test; behave: "
-    "not supported, Xray always creates a new execution). An xray report is refused when its "
-    "testExecutionKey, info.testPlanKey, info.project or any testKey is outside projectKey; its "
-    "own testExecutionKey counts as an existing execution. testPlanKey and testEnvironments "
-    "(names without ';') work with every format. For junit, testng, nunit, robot and cucumber, "
-    "Xray may create Test issues for results it cannot match to an existing test; those tests "
-    "get no AI label (use create_tests_from_feature for labelled test creation). "
-    "Returns the execution key, created, and a count of its runs by status; detail adds the raw "
-    "response.",
+    "nunit | robot (XML). Give exactly one of filePath (max 25 MB) or content (neither may be "
+    "empty). Without testExecKey a new Test Execution is created in projectKey (summary/fields/"
+    "rawFields and the project's testExecution field settings apply; required fields are "
+    "checked before upload); with testExecKey results go to that execution. "
+    "Before any upload every result is matched to a test of projectKey: Cucumber/Behave "
+    "scenarios by a @TEST_<KEY> tag, else the project's testKeyTag setting, else the test whose "
+    "summary is exactly the scenario name; JUnit/TestNG/NUnit/Robot cases as Xray does it (the "
+    "key the file names, else the Generic test with the same definition); Xray JSON entries "
+    "without testKey by Generic definition. If a result matches several tests or none, nothing "
+    "is uploaded and the result has status needs_answer with `questions`, `matched`, "
+    "`ambiguous` [{name, candidates}] and `missing` [names]: show them to the user and call "
+    "again with testKeys {name: KEY} for chosen tests, skipMissing: true to leave unmatched "
+    "results out, or allowCreateTests: true (only after the user agreed) to let new Test issues "
+    "be created for them; created tests are listed in createdTests and get no AI label. "
+    "Every key (testExecKey, testPlanKey, testKeys, keys in the report) must belong to "
+    "projectKey. Cucumber/Behave results for an existing execution (or with tests to create) "
+    "are sent as Xray JSON, one status per test, failures as comment. testPlanKey and "
+    "testEnvironments (names without ';') work with every format. Returns the execution key, "
+    "created, and a count of its runs by status; detail adds the raw response.",
     _schema({"format": {"type": "string", "enum": list(FORMATS)},
              "filePath": {"type": "string"}, "content": {"type": "string"},
              "testExecKey": {"type": "string"}, "testPlanKey": {"type": "string"},
              "testEnvironments": {"type": "array", "items": {"type": "string"}},
              "summary": {"type": "string"}, "fields": _OBJ, "rawFields": _OBJ,
+             "testKeys": {"type": "object", "additionalProperties": {"type": "string"},
+                          "description": "Result name (scenario name, or the case definition "
+                                         "as listed in needs_answer) -> test key"},
+             "allowCreateTests": {"type": "boolean", "description":
+                                  "Let new Test issues be created for results that match no "
+                                  "test. Only with the user's consent. Default false."},
+             "skipMissing": {"type": "boolean", "description":
+                             "Leave results that match no test out of the import."},
              "detail": {"type": "boolean"}}, ["format"]),
     write=True)
 def import_execution_results(ctx, args):
@@ -310,6 +525,10 @@ def import_execution_results(ctx, args):
     for k in (exec_key, plan_key):
         if k:
             check_issue_in_project(k, pk)
+    explicit = _check_test_keys(args.get("testKeys"), pk)
+    allow_create, skip_missing = bool(args.get("allowCreateTests")), bool(args.get("skipMissing"))
+    if allow_create and skip_missing:
+        raise ToolError("Pass allowCreateTests or skipMissing, not both")
     data = _read_input(ctx, args)
     report: Any = None
     target_exec = exec_key
@@ -325,10 +544,24 @@ def import_execution_results(ctx, args):
     if target_exec and wants_fields:
         raise ToolError("summary, fields and rawFields only apply when a new execution is "
                         "created; omit them or omit testExecKey")
-    # Decide the endpoint and validate everything before the first Xray call.
+    # Parse the results into cases (keys checked against the project), before any call.
+    scen: List[rm.ScenarioCase] = []
+    xml_cases: List[rm.XmlCase] = []
+    xray_entries: List[Tuple[int, str, Optional[str]]] = []
+    root = None
+    if fmt in ("cucumber", "behave"):
+        report = _parse_json(data, fmt)
+        scen = rm.scenario_cases(report, fmt, pk, project.test_key_tag)
+        if not scen:
+            raise ToolError("The %s report has no scenarios" % fmt.capitalize())
+    elif fmt in XML_FORMATS:
+        root = rm.parse_xml(data, fmt)
+        xml_cases = rm.xml_cases(root, fmt, pk)
+    else:
+        xray_entries = _xray_cases(report)
+    # Decide the endpoint and validate the Jira fields before the first Xray call.
     multipart = False
     info: Optional[dict] = None
-    sent_as = fmt
     if not target_exec and (wants_fields or (project.fields.get("testExecution") or {})
                             or fmt in ("cucumber", "behave")):
         # A new execution with Jira fields; Cucumber/Behave always come this way, because
@@ -338,27 +571,71 @@ def import_execution_results(ctx, args):
         multipart = True
         info = _exec_info(pk, args.get("summary") or "Imported results (%s)" % fmt, extra,
                           plan_key, envs)
-    elif fmt == "behave":
-        raise ToolError("Behave results cannot go into an existing execution: Xray Cloud's "
-                        "Behave endpoints always create a new Test Execution. Omit testExecKey.")
-    elif fmt == "cucumber":
-        # Xray Cloud's Cucumber endpoints always create a new Test Execution (the multipart
-        # info rejects xrayFields.testExecKey; a testExecKey query parameter is ignored), so
-        # the report is converted to Xray JSON, whose testExecutionKey targets the execution.
-        converted = cucumber_to_xray(_parse_json(data, fmt), pk)
-        sent_as = "xray"
-        data = json.dumps(_with_target(converted, exec_key, plan_key, envs) or converted) \
-            .encode("utf-8")
-    elif fmt == "xray":
-        # Bytes stay untouched unless the target or info.project must change.
-        changed = _with_target(report, exec_key, plan_key, envs, project=pk)
-        if changed is not None:
-            data = json.dumps(changed).encode("utf-8")
+    # Match every result to a test (reads only).
+    if scen:
+        res = _resolve_scenarios(ctx, pk, scen, explicit)
+    elif fmt in XML_FORMATS:
+        res = _resolve_xml(ctx, pk, fmt, xml_cases, explicit)
+    else:
+        pre_keyed = sum(1 for t in (report.get("tests") or [])
+                        if isinstance(t, dict) and t.get("testKey"))
+        res = _resolve([n for _, n, _ in xray_entries], [[] for _ in xray_entries],
+                       [d for _, _, d in xray_entries],
+                       lambda ds: rm.find_by_definition(ctx, pk, ds)[0], explicit, pre_keyed)
+        # Entries Xray would match by definition itself stay as they are.
+    if res.ambiguous or (res.missing and not allow_create and not skip_missing):
+        return _needs_answer(res, fmt)
+    skipped = set(res.missing) if skip_missing else set()
+    creating = allow_create and bool(res.missing)
+    names = [c.name for c in scen] or [c.name for c in xml_cases] or \
+        [n for _, n, _ in xray_entries]
+    if skipped and all(n in skipped for n in names) and not (
+            fmt == "xray" and len(xray_entries) < len(report.get("tests") or [])):
+        raise ToolError("Nothing to import: no result matches a test of %s (skipMissing left "
+                        "them all out)" % pk, skipped=sorted(skipped)[:CAP])
+    # Build what is sent.
+    sent_as = fmt
+    warnings: List[str] = []
+    if scen:
+        if target_exec or creating:
+            # Xray Cloud's Cucumber/Behave endpoints always create a new execution and never
+            # create tests (verified live), so these go as Xray JSON.
+            converted = scenarios_to_xray(scen, res.keys, pk, creating)
+            if target_exec:
+                converted = _with_target(converted, exec_key, plan_key, envs) or converted
+            sent_as = "xray"
+            data = json.dumps(converted).encode("utf-8")
+        elif _tag_scenarios(scen, res.keys, fmt):
+            data = json.dumps(report).encode("utf-8")
+    elif fmt in XML_FORMATS:
+        if _apply_xml(root, fmt, xml_cases, res, explicit, skipped):
+            data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+            if fmt == "robot" and explicit:
+                warnings.append("Xray renames a test that a Robot tag maps to the Robot test's "
+                                "name.")
+    else:
+        tests = report.get("tests") or []
+        by_index = {i: n for i, n, _ in xray_entries}
+        new_tests = []
+        for i, t in enumerate(tests):
+            n = by_index.get(i)
+            if n in skipped:
+                continue
+            if n is not None and n in explicit:
+                t = {k: v for k, v in t.items() if k != "testInfo"}
+                t["testKey"] = explicit[n]
+            new_tests.append(t)
+        rewritten = dict(report, tests=new_tests) if new_tests != tests else report
+        changed = _with_target(rewritten, exec_key, plan_key, envs, project=pk)
+        if changed is not None or rewritten is not report:
+            data = json.dumps(changed or rewritten).encode("utf-8")
+    # Tests already in the execution, so the ones Xray creates can be told apart.
+    before: List[str] = _exec_test_keys(ctx, target_exec) if creating and target_exec else []
     ctype = "text/xml" if fmt in XML_FORMATS else "application/json"
     path = _endpoint(sent_as, multipart)
     if multipart:
-        # The results part is "results": verified live for JUnit and Cucumber (Cucumber with
-        # "result" gets HTTP 400 "Unexpected field (result)"); Behave follows the same docs.
+        # The results part is "results": verified live for JUnit, Cucumber and Xray JSON
+        # (Cucumber with "result" gets HTTP 400 "Unexpected field (result)").
         resp = ctx.xray.rest("POST", path, multipart={"fields": {}, "files": {
             "info": ("info.json", json.dumps(info).encode("utf-8"), "application/json"),
             "results": ("results", data, ctype)}})
@@ -383,20 +660,33 @@ def import_execution_results(ctx, args):
         else resp_d
     key = issue.get("key") or target_exec
     out: Dict[str, Any] = {"testExecKey": key, "created": not target_exec}
-    warnings: List[str] = []
     issue_id = issue.get("id")
+    run_keys: Optional[List[str]] = None
     try:
         if not issue_id:
             raise ToolError("Xray did not return the test execution id")
-        out["summary"] = _status_summary(ctx, str(issue_id))
+        out["summary"], run_keys = _run_summary(ctx, str(issue_id))
     except Exception as e:
         out["summary"] = None
         warnings.append("Results were imported but the run summary could not be read: %s" % e)
+    if creating:
+        known = set(before) | {k for k in res.keys if k}
+        if fmt == "xray":
+            known |= {t.get("testKey") for t in (report.get("tests") or [])
+                      if isinstance(t, dict) and t.get("testKey")}
+        out["createdTests"] = None if run_keys is None else \
+            dedupe([k for k in run_keys if k not in known])
+        out["note"] = ("Tests created by this import carry no AI label; label them with "
+                       "edit_test or mark_test_status if wanted.")
+    if skipped:
+        out["skipped"] = sorted(skipped)[:CAP]
+    if res.notes:
+        warnings.extend(res.notes)
     if warnings:
         out["warnings"] = warnings
     if sent_as != fmt:
-        out["sentAs"] = ("xray JSON converted from cucumber (one status per @TEST_ key, "
-                         "failures as comment)")
+        out["sentAs"] = ("xray JSON converted from %s (one status per test, failures as "
+                         "comment)" % fmt)
     if args.get("detail"):
         out["response"] = resp
     return out

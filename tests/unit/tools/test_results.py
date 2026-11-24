@@ -196,12 +196,19 @@ def test_xray_json_report_execution_key_means_existing_execution(tmp_path):
     assert not err and out["created"] is False
 
 
+TAGGED = json.dumps([{"name": "F", "elements": [
+    {"keyword": "Scenario", "name": "s", "tags": [{"name": "@TEST_PROJ-1"}], "steps": []}]}])
+TAGGED_BEHAVE = json.dumps([{"name": "F", "elements": [
+    {"keyword": "Scenario", "name": "s", "tags": ["TEST_PROJ-1"], "steps": []}]}])
+
+
 @pytest.mark.parametrize("fmt", ["cucumber", "behave"])
 def test_cucumber_behave_new_execution_always_multipart_with_project(tmp_path, fmt):
     ctx = make(tmp_path)
     ctx.xray.rest_responses[("POST", "import/execution/%s/multipart" % fmt)] = {
         "id": "7", "key": "PROJ-7"}
-    out, err = call(ctx, format=fmt, content="[]")
+    content = TAGGED if fmt == "cucumber" else TAGGED_BEHAVE
+    out, err = call(ctx, format=fmt, content=content)
     assert not err, out
     m, p, kw = ctx.xray.rest_calls[0]
     assert p == "import/execution/%s/multipart" % fmt
@@ -210,7 +217,7 @@ def test_cucumber_behave_new_execution_always_multipart_with_project(tmp_path, f
     assert info["fields"]["project"] == {"key": "PROJ"}
     assert info["fields"]["issuetype"] == {"name": "Test Execution"}
     assert "xrayFields" not in info
-    assert files["results"][1] == b"[]"
+    assert files["results"][1] == content.encode()
     assert out["testExecKey"] == "PROJ-7" and out["created"] is True
 
 
@@ -235,14 +242,14 @@ def test_json_format_new_execution_with_envs_goes_multipart(tmp_path):
     ctx = make(tmp_path)
     ctx.xray.rest_responses[("POST", "import/execution/cucumber/multipart")] = {
         "id": "7", "key": "PROJ-7"}
-    out, err = call(ctx, format="cucumber", content="[]", testEnvironments=["a"],
+    out, err = call(ctx, format="cucumber", content=TAGGED, testEnvironments=["a"],
                     testPlanKey="PROJ-5")
     assert not err, out
     m, path, kw = ctx.xray.rest_calls[0]
     assert path == "import/execution/cucumber/multipart"
     info = json.loads(kw["multipart"]["files"]["info"][1])
     assert info["xrayFields"] == {"testPlanKey": "PROJ-5", "environments": ["a"]}
-    assert kw["multipart"]["files"]["results"][1] == b"[]"
+    assert kw["multipart"]["files"]["results"][1] == TAGGED.encode()
 
 
 def _step(status, name="it works", error=None):
@@ -296,14 +303,15 @@ def test_cucumber_into_existing_execution_sent_as_xray_json(tmp_path):
     assert "converted from cucumber" in out["sentAs"]
 
 
-@pytest.mark.parametrize("tags", [[], ["@TEST_PROJ-1", "@TEST_PROJ-2"], ["@PROJ-1"]])
-def test_cucumber_into_existing_execution_needs_one_test_tag(tmp_path, tags):
+def test_cucumber_scenario_with_two_test_tags_is_ambiguous(tmp_path):
     ctx = make(tmp_path)
     report = cucumber_report(_scenario(["@TEST_PROJ-1"], _step("passed")),
-                             _scenario(tags, _step("passed")))
+                             _scenario(["@TEST_PROJ-1", "@TEST_PROJ-2"], _step("passed")))
     out, err = call(ctx, format="cucumber", content=report, testExecKey="PROJ-9")
-    assert err and "@TEST_" in out["error"] and out["scenarios"] == ["F / S %s" % tags]
-    assert ctx.xray.rest_calls == []
+    assert not err and out["status"] == "needs_answer", out
+    assert out["ambiguous"] == [{"name": "S ['@TEST_PROJ-1', '@TEST_PROJ-2']",
+                                 "candidates": ["PROJ-1", "PROJ-2"]}]
+    assert ctx.xray.rest_calls == [] and ctx.xray.calls == []
 
 
 def test_cucumber_into_existing_execution_refuses_other_project_and_bad_json(tmp_path):
@@ -373,12 +381,6 @@ def test_cucumber_failing_hooks_fail_the_test(tmp_path):
         {"testKey": "PROJ-2", "status": "FAILED", "comment": "Before hook: db down"}]
 
 
-def test_behave_into_existing_execution_refused(tmp_path):
-    ctx = make(tmp_path)
-    out, err = call(ctx, format="behave", content="[]", testExecKey="PROJ-9")
-    assert err and "new Test Execution" in out["error"] and ctx.xray.rest_calls == []
-
-
 def test_xray_json_into_existing_execution_sets_testexecutionkey(tmp_path):
     ctx = make(tmp_path)
     ctx.xray.rest_responses[("POST", "import/execution")] = {"id": "9", "key": "PROJ-9"}
@@ -400,7 +402,7 @@ def test_json_format_new_execution_with_fields_multipart(tmp_path):
     ctx = make(tmp_path)
     ctx.xray.rest_responses[("POST", "import/execution/cucumber/multipart")] = {
         "id": "7", "key": "PROJ-7", "self": "https://x/rest/api/2/issue/7"}
-    out, err = call(ctx, format="cucumber", content="[]", summary="S")
+    out, err = call(ctx, format="cucumber", content=TAGGED, summary="S")
     assert not err, out
     files = ctx.xray.rest_calls[0][2]["multipart"]["files"]
     assert "results" in files and "result" not in files and "info" in files
@@ -444,3 +446,317 @@ def test_server_dc_response_shape_still_read(tmp_path):
     out, err = call(ctx, format="junit", content="<x/>")
     assert not err and out["testExecKey"] == "PROJ-9" and out["summary"]["total"] == 3
     assert "warnings" not in out
+
+
+# ---- matching results to tests, never creating tests without consent -----------------------
+
+SUMMARIES, DEFINITIONS, KEYS = "ResultMatchSummaries", "ResultMatchDefinitions", "ResultMatchKeys"
+
+
+def rows_by(rows):
+    """getTests response for (key, summary, definition) rows (one page)."""
+    return {"getTests": {"total": len(rows), "results": [
+        {"issueId": str(100 + i), "unstructured": d, "jira": {"key": k, "summary": s}}
+        for i, (k, s, d) in enumerate(rows)]}}
+
+
+def run_tests_response(keys, statuses=None):
+    statuses = statuses or ["PASSED"] * len(keys)
+    return {"getTestRuns": {"total": len(keys), "results": [
+        {"status": {"name": s}, "test": {"jira": {"key": k}}} for k, s in zip(keys, statuses)]}}
+
+
+def match_ctx(tmp_path, summaries=(), definitions=(), yaml=YAML, runs=None, before=None):
+    """A context whose summary/definition lookups answer with these rows; `runs` are the test
+    keys of the execution after the import, `before` those already in it."""
+    ctx = make(tmp_path, yaml)
+    ctx.xray.responses[SUMMARIES] = rows_by(list(summaries))
+    ctx.xray.responses[DEFINITIONS] = rows_by(list(definitions))
+    state = {"uploaded": False}
+    for path in ("import/execution", "import/execution/multipart",
+                 "import/execution/cucumber/multipart", "import/execution/behave/multipart",
+                 "import/execution/junit", "import/execution/robot"):
+        def answer(kw, path=path):
+            state["uploaded"] = True
+            return {"id": "9", "key": "PROJ-9"}
+        ctx.xray.rest_responses[("POST", path)] = answer
+    ctx.xray.responses["ResultExecId"] = {"getTestExecutions": {"results": [{"issueId": "9"}]}}
+    ctx.xray.responses[RUNS] = lambda v: run_tests_response(
+        list(runs or []) if state["uploaded"] else list(before or []))
+    return ctx
+
+
+def untagged(name, *steps, **kw):
+    el = _scenario([], *(steps or (_step("passed"),)), **kw)
+    el["name"] = name
+    return el
+
+
+def test_untagged_cucumber_into_existing_execution_matched_by_summary(tmp_path):
+    ctx = match_ctx(tmp_path, summaries=[("PROJ-1", "Login works", None),
+                                         ("PROJ-2", "Logout works", None)])
+    report = cucumber_report(untagged("Login works"),
+                             untagged("  Logout works ", _step("failed", "x", "boom")))
+    out, err = call(ctx, format="cucumber", content=report, testExecKey="PROJ-9")
+    assert not err, out
+    body = json.loads(ctx.xray.rest_calls[0][2]["data"])
+    assert body["testExecutionKey"] == "PROJ-9"
+    assert body["tests"] == [{"testKey": "PROJ-1", "status": "PASSED"},
+                             {"testKey": "PROJ-2", "status": "FAILED",
+                              "comment": "Then x: boom"}]
+    assert "createdTests" not in out
+
+
+def test_unmatched_scenarios_need_an_answer_and_nothing_is_uploaded(tmp_path):
+    ctx = match_ctx(tmp_path, summaries=[("PROJ-1", "Login works", None),
+                                         ("PROJ-2", "Twin", None), ("PROJ-3", "Twin", None)])
+    report = cucumber_report(untagged("Login works"), untagged("Brand new"), untagged("Twin"),
+                             _scenario(["@TEST_PROJ-4"], _step("passed")))
+    out, err = call(ctx, format="cucumber", content=report, testExecKey="PROJ-9")
+    assert not err, out
+    assert out["status"] == "needs_answer" and ctx.xray.rest_calls == []
+    assert out["matched"] == 2
+    assert out["ambiguous"] == [{"name": "Twin", "candidates": ["PROJ-2", "PROJ-3"]}]
+    assert out["missing"] == ["Brand new"]
+    assert out["ambiguousCount"] == 1 and out["missingCount"] == 1
+    assert sorted(q["id"] for q in out["questions"]) == ["allowCreateTests", "testKeys"]
+
+
+def test_needs_answer_lists_are_capped(tmp_path):
+    ctx = match_ctx(tmp_path)
+    report = cucumber_report(*[untagged("new %d" % i) for i in range(60)])
+    out, err = call(ctx, format="cucumber", content=report, testExecKey="PROJ-9")
+    assert out["status"] == "needs_answer"
+    assert len(out["missing"]) == 50 and out["missingCount"] == 60
+    assert [q["id"] for q in out["questions"]] == ["allowCreateTests"]
+
+
+def test_test_keys_resolve_ambiguous_and_missing(tmp_path):
+    ctx = match_ctx(tmp_path, summaries=[("PROJ-2", "Twin", None), ("PROJ-3", "Twin", None)])
+    report = cucumber_report(untagged("Twin"), untagged("Brand new"))
+    out, err = call(ctx, format="cucumber", content=report, testExecKey="PROJ-9",
+                    testKeys={"Twin": "PROJ-3", "Brand new": "PROJ-7"})
+    assert not err and "status" not in out, out
+    body = json.loads(ctx.xray.rest_calls[0][2]["data"])
+    assert [t["testKey"] for t in body["tests"]] == ["PROJ-3", "PROJ-7"]
+
+
+@pytest.mark.parametrize("keys,needle", [({"Nope": "PROJ-1"}, "Nope"),
+                                         ({"Twin": "OTHER-1"}, "OTHER-1"),
+                                         ({"Twin": "nokey"}, "nokey"),
+                                         ("x", "testKeys")])
+def test_bad_test_keys_refused_before_any_call(tmp_path, keys, needle):
+    ctx = match_ctx(tmp_path)
+    out, err = call(ctx, format="cucumber", content=cucumber_report(untagged("Twin")),
+                    testExecKey="PROJ-9", testKeys=keys)
+    assert err and needle in json.dumps(out), out
+    assert ctx.xray.rest_calls == []
+
+
+def test_allow_create_sends_test_info_and_lists_created_tests(tmp_path):
+    ctx = match_ctx(tmp_path, summaries=[("PROJ-1", "Login works", None)],
+                    before=["PROJ-5"], runs=["PROJ-5", "PROJ-1", "PROJ-20"])
+    new = untagged("Brand new", _step("passed", "I log in"), _step("passed", "I see it"))
+    report = cucumber_report(untagged("Login works"), new)
+    out, err = call(ctx, format="cucumber", content=report, testExecKey="PROJ-9",
+                    allowCreateTests=True)
+    assert not err, out
+    body = json.loads(ctx.xray.rest_calls[0][2]["data"])
+    assert body["tests"] == [
+        {"testKey": "PROJ-1", "status": "PASSED"},
+        {"testInfo": {"projectKey": "PROJ", "summary": "Brand new", "type": "Cucumber",
+                      "scenario": "Then I log in\nThen I see it"}, "status": "PASSED"}]
+    assert out["createdTests"] == ["PROJ-20"]
+    assert "AI label" in out["note"]
+
+
+def test_skip_missing_leaves_unmatched_results_out(tmp_path):
+    ctx = match_ctx(tmp_path, summaries=[("PROJ-1", "Login works", None)])
+    report = cucumber_report(untagged("Login works"), untagged("Brand new"))
+    out, err = call(ctx, format="cucumber", content=report, testExecKey="PROJ-9",
+                    skipMissing=True)
+    assert not err, out
+    body = json.loads(ctx.xray.rest_calls[0][2]["data"])
+    assert body["tests"] == [{"testKey": "PROJ-1", "status": "PASSED"}]
+    assert out["skipped"] == ["Brand new"]
+    out, err = call(ctx, format="cucumber", content=cucumber_report(untagged("Brand new")),
+                    testExecKey="PROJ-9", skipMissing=True)
+    assert err and "nothing" in out["error"].lower() and len(ctx.xray.rest_calls) == 1
+    out, err = call(ctx, format="cucumber", content=report, testExecKey="PROJ-9",
+                    skipMissing=True, allowCreateTests=True)
+    assert err and len(ctx.xray.rest_calls) == 1
+
+
+def test_test_key_tag_setting_names_the_test(tmp_path):
+    yaml = "projects:\n  PROJ: {testKeyTag: issue}\n"
+    ctx = match_ctx(tmp_path, yaml=yaml)
+    report = cucumber_report(_scenario(["@issue=PROJ-4"], _step("passed")),
+                             _scenario(["@issue:PROJ-5"], _step("passed")))
+    out, err = call(ctx, format="cucumber", content=report, testExecKey="PROJ-9")
+    assert not err, out
+    body = json.loads(ctx.xray.rest_calls[0][2]["data"])
+    assert [t["testKey"] for t in body["tests"]] == ["PROJ-4", "PROJ-5"]
+    assert ctx.xray.calls_of(SUMMARIES) == []  # no lookup needed
+
+
+def test_new_execution_tagged_cucumber_bytes_untouched(tmp_path):
+    ctx = match_ctx(tmp_path)
+    report = cucumber_report(_scenario(["@TEST_PROJ-1"], _step("passed")))
+    out, err = call(ctx, format="cucumber", content=report)
+    assert not err, out
+    m, p, kw = ctx.xray.rest_calls[0]
+    assert p == "import/execution/cucumber/multipart"
+    assert kw["multipart"]["files"]["results"][1] == report.encode()
+    assert ctx.xray.calls_of(SUMMARIES) == []
+
+
+def test_new_execution_cucumber_matched_by_summary_gets_test_tags(tmp_path):
+    """Xray's Cucumber import maps scenarios by @TEST_ tag only (verified live), so a
+    scenario matched by summary is sent with that tag; step details stay native."""
+    ctx = match_ctx(tmp_path, summaries=[("PROJ-1", "Login works", None)])
+    report = cucumber_report(untagged("Login works"),
+                             _scenario(["@TEST_PROJ-2", "@TEST_PROJ-3"], _step("passed")))
+    out, err = call(ctx, format="cucumber", content=report,
+                    testKeys={"S ['@TEST_PROJ-2', '@TEST_PROJ-3']": "PROJ-3"})
+    assert not err, out
+    m, p, kw = ctx.xray.rest_calls[0]
+    assert p == "import/execution/cucumber/multipart"
+    sent = json.loads(kw["multipart"]["files"]["results"][1])
+    tags = [[t["name"] for t in el.get("tags", [])] for el in sent[0]["elements"][1:]]
+    assert tags == [["@TEST_PROJ-1"], ["@TEST_PROJ-3"]]
+    assert "sentAs" not in out
+
+
+def test_new_execution_cucumber_with_created_tests_goes_as_xray_json(tmp_path):
+    ctx = match_ctx(tmp_path, runs=["PROJ-30"])
+    out, err = call(ctx, format="cucumber", content=cucumber_report(untagged("Brand new")),
+                    allowCreateTests=True, testEnvironments=["chrome"])
+    assert not err, out
+    m, p, kw = ctx.xray.rest_calls[0]
+    assert p == "import/execution/multipart"
+    files = kw["multipart"]["files"]
+    assert json.loads(files["info"][1])["xrayFields"] == {"environments": ["chrome"]}
+    body = json.loads(files["results"][1])
+    assert body["tests"][0]["testInfo"]["summary"] == "Brand new"
+    assert out["createdTests"] == ["PROJ-30"] and "converted from cucumber" in out["sentAs"]
+
+
+def test_behave_matched_by_summary_into_existing_execution(tmp_path):
+    ctx = match_ctx(tmp_path, summaries=[("PROJ-1", "Login", None)])
+    report = json.dumps([{"keyword": "Feature", "name": "F", "tags": [], "elements": [
+        {"keyword": "Scenario Outline", "name": "Login -- @1.1 Users", "tags": [], "steps": [
+            {"keyword": "Given", "name": "a", "result": {"status": "passed"}}]},
+        {"keyword": "Scenario Outline", "name": "Login -- @1.2 Users", "tags": [], "steps": [
+            {"keyword": "Given", "name": "a", "result": {"status": "failed",
+                                                         "error_message": ["bad", "x"]}}]}]}])
+    out, err = call(ctx, format="behave", content=report, testExecKey="PROJ-9")
+    assert not err, out
+    body = json.loads(ctx.xray.rest_calls[0][2]["data"])
+    assert body["tests"] == [{"testKey": "PROJ-1", "status": "FAILED",
+                              "comment": "Given a: bad\nx", "examples": ["PASSED", "FAILED"]}]
+    assert "converted from behave" in out["sentAs"]
+
+
+def test_behave_new_execution_gets_plain_test_tags(tmp_path):
+    ctx = match_ctx(tmp_path, summaries=[("PROJ-1", "Login", None)])
+    report = json.dumps([{"keyword": "Feature", "name": "F", "elements": [
+        {"keyword": "Scenario", "name": "Login", "tags": ["smoke"], "steps": []}]}])
+    out, err = call(ctx, format="behave", content=report)
+    assert not err, out
+    sent = json.loads(ctx.xray.rest_calls[0][2]["multipart"]["files"]["results"][1])
+    assert sent[0]["elements"][0]["tags"] == ["smoke", "TEST_PROJ-1"]
+
+
+JUNIT_CASES = ('<testsuites><testsuite name="s"><testcase classname="a.B" name="known"/>'
+               '<testcase classname="a.B" name="fresh"/></testsuite></testsuites>')
+
+
+def test_junit_unmatched_case_needs_an_answer(tmp_path):
+    ctx = match_ctx(tmp_path, definitions=[("PROJ-1", "known", "a.B.known")])
+    out, err = call(ctx, format="junit", content=JUNIT_CASES)
+    assert not err, out
+    assert out["status"] == "needs_answer" and ctx.xray.rest_calls == []
+    assert out["matched"] == 1 and out["missing"] == ["a.B.fresh"]
+    assert "Generic" in out["questions"][0]["question"]
+
+
+def test_junit_allow_create_sends_bytes_untouched_and_lists_created(tmp_path):
+    ctx = match_ctx(tmp_path, definitions=[("PROJ-1", "known", "a.B.known")],
+                    runs=["PROJ-1", "PROJ-40"])
+    out, err = call(ctx, format="junit", content=JUNIT_CASES, allowCreateTests=True)
+    assert not err, out
+    assert ctx.xray.rest_calls[0][2]["data"] == JUNIT_CASES.encode()
+    assert out["createdTests"] == ["PROJ-40"]
+
+
+def test_junit_all_matched_needs_no_answer_and_no_created_list(tmp_path):
+    ctx = match_ctx(tmp_path, definitions=[("PROJ-1", "known", "a.B.known"),
+                                           ("PROJ-2", "fresh", "a.B.fresh")])
+    out, err = call(ctx, format="junit", content=JUNIT_CASES)
+    assert not err and "status" not in out and "createdTests" not in out, out
+    assert ctx.xray.rest_calls[0][2]["data"] == JUNIT_CASES.encode()
+
+
+def test_junit_test_keys_injected_as_test_key_property_and_skip_removes(tmp_path):
+    import xml.etree.ElementTree as ET
+    ctx = match_ctx(tmp_path)
+    out, err = call(ctx, format="junit", content=JUNIT_CASES,
+                    testKeys={"a.B.known": "PROJ-7"}, skipMissing=True)
+    assert not err, out
+    root = ET.fromstring(ctx.xray.rest_calls[0][2]["data"])
+    cases = root.findall(".//testcase")
+    assert [c.get("name") for c in cases] == ["known"]
+    assert cases[0].find("properties/property").attrib == {"name": "test_key",
+                                                            "value": "PROJ-7"}
+    assert out["skipped"] == ["a.B.fresh"]
+
+
+def test_junit_key_property_of_other_project_refused(tmp_path):
+    ctx = match_ctx(tmp_path)
+    xml = ('<testsuite><testcase name="x"><properties><property name="test_key" '
+           'value="OTHER-1"/></properties></testcase></testsuite>')
+    out, err = call(ctx, format="junit", content=xml)
+    assert err and "OTHER-1" in json.dumps(out) and ctx.xray.rest_calls == []
+
+
+def test_junit_keyed_cases_need_no_lookup(tmp_path):
+    ctx = match_ctx(tmp_path)
+    xml = ('<testsuite><testcase name="x"><properties><property name="test_key" '
+           'value="PROJ-1"/></properties></testcase></testsuite>')
+    out, err = call(ctx, format="junit", content=xml)
+    assert not err and "status" not in out, out
+    assert ctx.xray.calls_of(DEFINITIONS) == []
+
+
+def test_robot_key_tag_that_is_not_a_test_does_not_count(tmp_path):
+    ctx = match_ctx(tmp_path)
+    ctx.xray.responses[KEYS] = rows_by([])  # PROJ-3 is a story, not a test
+    xml = ('<robot><suite name="S"><test name="T"><tags><tag>PROJ-3</tag></tags></test>'
+           '</suite></robot>')
+    out, err = call(ctx, format="robot", content=xml)
+    assert out["status"] == "needs_answer" and out["missing"] == ["S.T"], out
+
+
+def test_invalid_xml_refused_before_upload(tmp_path):
+    ctx = match_ctx(tmp_path)
+    out, err = call(ctx, format="junit", content="<testsuite>")
+    assert err and "XML" in out["error"] and ctx.xray.rest_calls == []
+
+
+def test_xray_json_test_info_entries_go_through_the_gate(tmp_path):
+    ctx = match_ctx(tmp_path, definitions=[("PROJ-1", "x", "a.B.c")])
+    report = {"tests": [
+        {"testKey": "PROJ-2", "status": "PASSED"},
+        {"testInfo": {"summary": "gen", "type": "Generic", "definition": "a.B.c"},
+         "status": "PASSED"},
+        {"testInfo": {"summary": "New one", "type": "Cucumber", "scenario": "Given x"},
+         "status": "FAILED"}]}
+    out, err = call(ctx, format="xray", content=json.dumps(report))
+    assert out["status"] == "needs_answer" and out["missing"] == ["New one"], out
+    assert out["matched"] == 2 and ctx.xray.rest_calls == []
+    out, err = call(ctx, format="xray", content=json.dumps(report),
+                    testKeys={"New one": "PROJ-8"})
+    assert not err, out
+    body = json.loads(ctx.xray.rest_calls[0][2]["data"])
+    assert body["tests"][1]["testInfo"]["summary"] == "gen"
+    assert body["tests"][2] == {"testKey": "PROJ-8", "status": "FAILED"}
