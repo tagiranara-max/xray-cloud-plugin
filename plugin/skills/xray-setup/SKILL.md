@@ -15,15 +15,43 @@ Call `get_status`. It shows the settings file in use and the locations searched.
 2. `.xray/settings.yml` in the project Claude Code is working in;
 3. `~/.config/xray-cloud/settings.yml`.
 
-The plugin ships no settings. A file committed in the team's own project makes the choices team-wide. If none exists, propose `.xray/settings.yml` in the current project (team-wide) or the home-folder path (personal), and start from `.xray/settings.example.yml` in the plugin repository as a template. Never put credentials in it.
+The plugin ships no settings. A file committed in the team's own project makes the choices team-wide. If none exists, propose `.xray/settings.yml` in the current project (team-wide) or the home-folder path (personal). Never put credentials in it. A minimal skeleton to start from:
+
+```yaml
+projects:                          # the keys are the project allowlist
+  PROJ:
+    fields:
+      test:
+        component:                 # friendly name used in `fields`
+          id: customfield_12345    # Jira field id (or a system id such as fixVersions)
+          type: option             # option | options | string | number | version | versions | user | raw
+          required: true
+          default: Backend
+      testExecution:
+        fixVersion:
+          id: fixVersions
+          type: versions
+          required: true           # no default: asked on every create
+      testRun:                     # Xray test-run custom fields, matched by name
+        version:
+          name: Version
+          required: false
+```
+
+The README of the plugin's repository has more detail, including every optional key.
 
 ## 2. Projects and fields
 
 Ask for the Xray project keys (for example `PROJ`); the keys under `projects` are the allowlist. For each project, find which Jira fields are required on the Test, Test Execution, Test Plan, Test Set and Precondition issue types. Discover them in this order:
 
 1. **Jira token configured** (`get_status` shows Jira as configured): call `get_create_fields` with the project key and each issue type. It lists field IDs, types, required flags and allowed values.
-2. **Atlassian (Rovo) MCP tools in your tool list**: use its issue-type metadata (create-meta) tools for the same information.
-3. **Neither**: give the user the step-by-step instructions in `docs/field-ids.md` of the plugin repository (Jira field admin page, the create screen, or asking an admin) and ask them to paste the IDs.
+2. **Atlassian (Rovo) MCP tools in your tool list**: use its issue-type metadata (create-meta) tools for the same information. They may be reached through the MCP's discover tool and its executeRead tool rather than listed directly.
+3. **Neither**: walk the user through finding each field ID by hand, then ask them to paste the IDs:
+   - Jira settings, Issues, Custom fields: open the field's actions menu and choose Edit or Configure; the number at the end of the URL is the ID (`.../customfield/12345` means `customfield_12345`).
+   - While signed in to Jira, open `/rest/api/3/issue/<KEY>?expand=names` for an existing issue of that type in the browser: the JSON lists each field ID with its name. `/rest/api/3/field` lists every field.
+   - On the Create issue screen, inspect the field's input and read its `id` or `name` attribute.
+   - Ask a Jira admin for the ID (and allowed values) of the field on that issue type in the project.
+   - System fields use their plain ID (`fixVersions`, `components`). Test run custom fields are configured in Xray (project settings, Test Run Custom Fields); use the exact field name under `testRun`, no ID needed.
 
 For each field to declare, write it under `projects.<KEY>.fields.<issue type>` with a friendly name, its `id` (for example `customfield_12345`), a `type` (option, options, string, number, version, versions, user or raw), `required`, and a `default` only when the user names one (for example `Backend`). A required field with no default is asked for on every create. Test run custom fields are matched by `name`, not id.
 

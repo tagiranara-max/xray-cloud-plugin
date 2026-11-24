@@ -60,3 +60,15 @@ def test_no_settings_error_mentions_xray_setup(tmp_path):
     from xray_cloud.errors import ToolError
     with pytest.raises(ToolError, match="xray-setup skill"):
         require_project(make_context(tmp_path=tmp_path), "P", write=True)
+
+
+def test_xray_setup_yaml_skeleton_loads(tmp_path):
+    from xray_cloud.config import SettingsStore
+    text = (SKILLS_DIR / "xray-setup" / "SKILL.md").read_text(encoding="utf-8")
+    m = re.search(r"```yaml\n(.*?)```", text, re.S)
+    assert m
+    f = tmp_path / "settings.yml"
+    f.write_text(m.group(1), encoding="utf-8")
+    settings = SettingsStore({"XRAY_SETTINGS_FILE": str(f)}).get()
+    assert settings.path is not None
+    assert "PROJ" in settings.projects
