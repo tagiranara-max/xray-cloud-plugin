@@ -417,30 +417,18 @@ def _test_extras(project: ProjectSettings, feature: ParsedFeature, analysis: Tag
 
 @REGISTRY.tool(
     "create_tests_from_feature",
-    "Import a Gherkin .feature file the Xray way: every Scenario/Outline becomes a Cucumber test "
-    "(definition = its steps and all Examples). Backgrounds become Pre-Conditions linked to the "
-    "tests they apply to (reused by #@PRECOND_<KEY> comment, then by the feature path label, "
-    "then by summary), or with backgrounds=inline their steps are put at the start of each "
-    "test (feature-level, then rule-level). The Feature can become a Test Set (reused by exact "
-    "summary). Tags go through the project's tag rules (settings or remembered; none are built "
-    "in) into labels, Test Set membership (exact-name reuse, else created) and field values; "
-    "with tagsAsLabels unmatched plain tags become labels (unmatchedTags keep). @TEST_<KEY> or "
-    "@<KEY> on a scenario updates that test; @REQ_<KEY> (or a plain key on the Feature/Rule) "
-    "links tests to a requirement. QUESTIONS: createTestSet, backgrounds, tagsAsLabels, aiLabel "
-    "(the user's own label marking what the AI creates; no default; \"\" = don't mark) and "
-    "aiLabelScope (tests | all = also new Pre-Conditions and Test Sets) are answered per call, "
-    "by the settings file or by remembered answers. If the preview has non-empty `questions`, "
-    "ask the user once and call again with the answers; they are remembered for the project "
-    "on apply (remember=true makes a differing answer replace a remembered one). apply=true with "
-    "unanswered questions is refused. apply=false (default) previews the plan: actions, "
-    "perTest (labels, testSets, fields), testSets {reuse, create}, notDone, choices. apply=true "
-    "executes it, skipping scenarios with possible duplicates unless their index is in "
-    "createDuplicates. Items that cannot be done (labels, fields or requirement links on "
-    "existing tests without the Jira token; rule fields that already have a value, which are "
-    "never overwritten) are listed in notDone {item, what, reason, fix}: if a reason is \"no "
-    "Jira token or Atlassian MCP\" and Atlassian MCP tools are available to you, offer to "
-    "complete them with those tools. fields/rawFields apply to created tests; "
-    "preconditionFields and testSetFields to created Pre-Conditions and Test Sets.",
+    "Import a .feature file the Xray way: each Scenario/Outline becomes a Cucumber test. "
+    "Backgrounds become Pre-Conditions (or inline steps with backgrounds=inline); the Feature"
+    " can become a Test Set. Tags go through the project's tag rules (settings or remembered;"
+    " none built in) into labels, Test Sets and fields; @TEST_<KEY> or @<KEY> updates that "
+    "test, @REQ_<KEY> links a requirement. Choices (createTestSet, backgrounds, tagsAsLabels,"
+    " aiLabel, aiLabelScope) come from the call, settings or remembered answers. If the "
+    "preview has non-empty `questions`, ask the user once and call again with the answers; "
+    "apply=true with unanswered questions is refused. apply=false (default) previews the "
+    "plan; apply=true executes it, skipping possible duplicates unless indexed in "
+    "createDuplicates. Anything not doable is in notDone {item, what, reason, fix}: if the "
+    "reason is \"no Jira token or Atlassian MCP\" and Atlassian MCP tools are available, offer "
+    "to complete them with those. fields/rawFields apply to created tests.",
     _schema({"featureFilePath": {"type": "string"}, "apply": {"type": "boolean"},
              "createTestSet": _BOOL_OR_NULL,
              "backgrounds": {"type": ["string", "null"],
