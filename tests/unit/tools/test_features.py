@@ -1040,3 +1040,50 @@ def test_discovered_required_fields_are_preview_questions_then_applied(project):
     assert not err, res
     sent = [v["jira"]["fields"] for v in ctx.xray.calls_of("CreateTest")]
     assert sent and all(f["customfield_8"] == {"value": "High"} for f in sent)
+
+
+class FormChannel:
+    supports_elicitation = True
+
+    def __init__(self, answer):
+        self.answer, self.asked = answer, []
+
+    def elicit(self, message, schema):
+        self.asked.append(schema)
+        return self.answer
+
+
+def test_apply_elicits_every_item_type_in_one_form(project):
+    ctx = ctx_for(project)
+    ctx.jira = MetaJira()
+    ctx.channel = FormChannel({"test.customfield_8": "High",
+                               "precondition.customfield_8": "Low"})
+    res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=LOGIN,
+                    apply=True, **ans(createTestSet=False))
+    assert not err, res
+    assert len(ctx.channel.asked) == 1
+    assert ctx.channel.asked[0]["required"] == ["test.customfield_8",
+                                                "precondition.customfield_8"]
+    tests = [v["jira"]["fields"] for v in ctx.xray.calls_of("CreateTest")]
+    assert tests and all(f["customfield_8"] == {"value": "High"} for f in tests)
+    pre = [v["jira"]["fields"] for v in ctx.xray.calls_of("CreatePrecondition")]
+    assert pre and all(f["customfield_8"] == {"value": "Low"} for f in pre)
+
+
+def test_rule_fields_for_every_new_scenario_are_not_asked(tmp_path):
+    class CompJira(RecJira):
+        def create_meta(self, pk, issue_type):
+            return [{"id": "customfield_9", "name": "Component", "required": True,
+                     "schemaType": "option", "allowedValues": []}] \
+                if issue_type == "Test" else []
+
+    ctx = ctx_for(tmp_path, yaml=RULES_YAML)
+    ctx.jira = CompJira()
+    path = feature_file(tmp_path, "Feature: F\n  @comp=api\n  Scenario: A\n    Given a\n"
+                                  "  @comp=ui\n  Scenario: B\n    Given b\n")
+    res = preview(ctx, path, **ans(createTestSet=False))
+    assert res["questions"] == []
+    path = feature_file(tmp_path, "Feature: F\n  @comp=api\n  Scenario: A\n    Given a\n"
+                                  "  Scenario: B\n    Given b\n", "b.feature")
+    res = preview(ctx, path, **ans(createTestSet=False))
+    assert [q["id"] for q in res["questions"]] == ["customfield_9"]

@@ -5,7 +5,7 @@ and every missing field fits a flat form, else by needs_answer. Answers are reme
 user, site, project, item type and field, when the write goes ahead (commit)."""
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
 from .config import FieldSpec, ProjectSettings
 from .errors import NeedsAnswer, ToolError
@@ -15,6 +15,7 @@ ITEM_TYPE_NAMES = {"test": "Test", "testExecution": "Test Execution", "testPlan"
                    "testSet": "Test Set", "precondition": "Precondition"}
 SYSTEM_FIELDS = frozenset({"summary", "project", "issuetype", "reporter"})
 MAX_CHOICES = 50
+XRAY_CUSTOM_PREFIX = "com.xpandit.plugins.xray"
 # create-meta schema types a flat elicitation form can hold (one primitive value)
 _FORM_TYPES = frozenset({"string", "number", "date", "datetime", "option", "priority",
                          "version", "component", "securitylevel", "resolution"})
@@ -50,6 +51,11 @@ def _meta(ctx: Any, pk: str, item_type: str) -> Optional[List[dict]]:
             return None
         cache[key] = [f for f in meta or [] if isinstance(f, dict) and f.get("id")]
     return cache[key]
+
+
+def _xray_owned(f: dict) -> bool:
+    """A field Xray manages itself (Test Type, Pre-Condition Type, ...): never asked."""
+    return str(f.get("schemaCustom") or "").startswith(XRAY_CUSTOM_PREFIX)
 
 
 def _lookup(meta: Optional[List[dict]], name: str) -> Optional[dict]:
@@ -112,28 +118,34 @@ def _pending(ctx: Any) -> Dict[Tuple[str, str], dict]:
 
 
 def _add_pending(ctx: Any, pk: str, item_type: str, values: Dict[str, Any],
-                 remember: bool) -> None:
+                 remember: bool, asked: bool = False) -> None:
+    """Answers of this call: used by later resolutions of the call and remembered on commit.
+    Asked answers are always remembered; call-supplied ones when `remember` or when nothing
+    is remembered for the field yet."""
     if not values:
         return
-    entry = _pending(ctx).setdefault((pk, item_type), {"values": {}, "remember": False})
+    entry = _pending(ctx).setdefault((pk, item_type), {"values": {}, "store": {}})
     entry["values"].update(values)
-    entry["remember"] = entry["remember"] or bool(remember)
+    for k, v in values.items():
+        entry["store"][k] = (v, asked or bool(remember))
 
 
 def commit(ctx: Any) -> None:
-    """Remember this call's answers (all validation passed; the write comes next). A field
-    is stored when the call asked to remember, or when nothing is remembered for it yet."""
+    """Remember this call's answers (all validation passed; the write comes next). The
+    answers stay usable for the rest of the call (e.g. new tests of a container)."""
     pending = _pending(ctx)
     site = getattr(ctx, "site", "")
-    if pending and site:
-        from .choices import region_of
-        region = region_of(ctx)
-        for (pk, item_type), entry in pending.items():
-            known = ctx.preferences.field_values(region, site, pk, item_type)
-            store = {k: v for k, v in entry["values"].items()
-                     if entry["remember"] or k not in known}
-            ctx.preferences.remember_fields(region, site, pk, item_type, store)
-    reset(ctx)
+    if not site:
+        return
+    from .choices import region_of
+    region = region_of(ctx)
+    for (pk, item_type), entry in pending.items():
+        if not entry["store"]:
+            continue
+        known = ctx.preferences.field_values(region, site, pk, item_type)
+        store = {k: v for k, (v, force) in entry["store"].items() if force or k not in known}
+        ctx.preferences.remember_fields(region, site, pk, item_type, store)
+        entry["store"] = {}
 
 
 def _remembered(ctx: Any, pk: str, item_type: str) -> Dict[str, Any]:
@@ -182,7 +194,7 @@ def compute(ctx: Any, project: ProjectSettings, item_type: str,
                 if s.id and s.default is not None}
     remembered = _remembered(ctx, pk, item_type)
     if meta is not None:  # a field no longer on the create screen would fail the create
-        ids = {f["id"] for f in meta}
+        ids = {f["id"] for f in meta} | set(by_id)
         remembered = {k: v for k, v in remembered.items() if k in ids}
     answers = (_pending(ctx).get((pk, item_type)) or {}).get("values") or {}
     out = dict(remembered)
@@ -203,12 +215,15 @@ def compute(ctx: Any, project: ProjectSettings, item_type: str,
     skip = SYSTEM_FIELDS | set(provided)
     for f in meta or []:
         fid = f["id"]
-        if not f.get("required") or fid in skip:
+        if not f.get("required") or fid in skip or _xray_owned(f):
             continue
         required.add(fid)
-        if fid not in out and fid not in by_id and not f.get("hasDefaultValue"):
-            missing.append(_field(fid, f.get("name") or fid, f.get("schemaType"),
-                                  f.get("allowedValues"), meta=f))
+        if fid not in out and not f.get("hasDefaultValue") and \
+                all(m["id"] != fid for m in missing):
+            spec = by_id.get(fid)  # a settings spec (not required there) gives the name/type
+            missing.append(_field(fid, f.get("name") or fid, spec.type if spec else
+                                  f.get("schemaType"), f.get("allowedValues"), spec=spec,
+                                  meta=f))
     answered = {k: v for k, v in call.items() if k in required}
     return Resolution(out, applied, missing, answered)
 
@@ -275,54 +290,130 @@ def _missing_data(missing: List[dict]) -> List[dict]:
     return [{"name": f["name"], "id": f["id"]} for f in missing]
 
 
-def ask(ctx: Any, project: ProjectSettings, item_type: str, missing: List[dict],
-        param: str = "fields") -> Dict[str, Any]:
-    """Answers {field id: Jira value} for the missing fields, from an elicitation form; or
-    raises NeedsAnswer (no elicitation, or a field a flat form cannot hold) or ToolError
-    (declined, cancelled or no answer: nothing is written or remembered)."""
-    pk, tname = project.key, ITEM_TYPE_NAMES.get(item_type, item_type)
-    names = ", ".join(f["name"] for f in missing)
+def ask(ctx: Any, project: ProjectSettings, missing: Dict[str, dict],
+        remember: bool = False) -> None:
+    """Ask once for every missing field of every item type of the call: {itemType: {"param",
+    "fields": {id: field}}}. One elicitation form when the client supports it and every
+    field fits a flat form; otherwise one NeedsAnswer listing them all (each question names
+    its `param`). The answers become this call's pending answers. Declined, cancelled or no
+    answer: ToolError; nothing is written or remembered."""
+    pk = project.key
+    groups = [(t, m["param"], list(m["fields"].values())) for t, m in missing.items()
+              if m["fields"]]
+    if not groups:
+        return
+    every = [f for _, _, fs in groups for f in fs]
+    multi = len(groups) > 1
+
+    def label(t: str, f: dict) -> str:
+        return "%s (%s)" % (f["name"], ITEM_TYPE_NAMES.get(t, t)) if multi else f["name"]
+
+    names = ", ".join(label(t, f) for t, _, fs in groups for f in fs)
+    what = " and ".join("new %s" % ITEM_TYPE_NAMES.get(t, t) for t, _, _ in groups)
+    missing_data = [dict(d, itemType=t) if multi else d
+                    for t, _, fs in groups for d in _missing_data(fs)]
     channel = getattr(ctx, "channel", None)
-    if channel is not None and channel.supports_elicitation and all(map(_formable, missing)):
+    if channel is not None and channel.supports_elicitation and all(map(_formable, every)):
+        keys = {(t, f["id"]): ("%s.%s" % (t, f["id"]) if multi else f["id"])
+                for t, _, fs in groups for f in fs}
+        props: Dict[str, Any] = {}
+        for t, _, fs in groups:
+            form = _form(fs)
+            for f in fs:
+                prop = dict(form["properties"][f["id"]], title=label(t, f))
+                props[keys[(t, f["id"])]] = prop
         content = channel.elicit(
-            "A new %s in Jira project %s needs values for required fields: %s. The answers are "
-            "remembered for your user as defaults for new %s items in %s."
-            % (tname, pk, names, tname, pk), _form(missing))
-        answers: Dict[str, Any] = {}
-        for f in missing:
-            value = content.get(f["id"]) if isinstance(content, dict) else None
-            if value is None or (isinstance(value, str) and not value.strip()):
-                raise ToolError("No value was given for the required field(s) %s of the new %s "
-                                "in %s; nothing was written and nothing was remembered."
-                                % (names, tname, pk),
-                                projectKey=pk, missingFields=_missing_data(missing))
-            answers[f["id"]] = _convert_answer(f, value)
-        return answers
+            "The %s in Jira project %s need values for required fields: %s. The answers are "
+            "remembered for your user as defaults for new items of the same type in %s."
+            % (what, pk, names, pk),
+            {"type": "object", "properties": props, "required": list(props)})
+        answers: Dict[str, Dict[str, Any]] = {}
+        for t, _, fs in groups:
+            for f in fs:
+                value = content.get(keys[(t, f["id"])]) if isinstance(content, dict) else None
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    raise ToolError("No value was given for the required field(s) %s of the %s "
+                                    "in %s; nothing was written and nothing was remembered."
+                                    % (names, what, pk),
+                                    projectKey=pk, missingFields=missing_data)
+                answers.setdefault(t, {})[f["id"]] = _convert_answer(f, value)
+        for t, values in answers.items():
+            _add_pending(ctx, pk, t, values, remember, asked=True)
+        return
+    params = ", ".join("`%s` for the %s" % (p, ITEM_TYPE_NAMES.get(t, t))
+                       for t, p, _ in groups)
     raise NeedsAnswer(
-        "A new %s in %s needs values for required Jira fields: %s. Ask the user, then call "
-        "again with `%s` set to {field id or name: value} (lists for multi-value fields, "
+        "The %s in %s need values for required Jira fields: %s. Ask the user, then call "
+        "again with %s set to {field id or name: value} (lists for multi-value fields, "
         "account ids for users); never answer it yourself. Nothing was written."
-        % (tname, pk, names, param),
-        questions(project, item_type, missing, param),
-        projectKey=pk, missingFields=_missing_data(missing))
+        % (what, pk, names, params),
+        [q for t, p, fs in groups for q in questions(project, t, fs, p)],
+        projectKey=pk, missingFields=missing_data)
+
+
+class Collector:
+    """One pass over every resolution of a call: compute() each, collecting what is
+    missing (per item type), the remembered values used and the call's answers."""
+
+    def __init__(self, ctx: Any, project: ProjectSettings) -> None:
+        self.ctx, self.project = ctx, project
+        self.missing: Dict[str, dict] = {}
+        self.applied: Dict[str, Dict[str, Any]] = {}
+        self.answered: List[Tuple[str, Dict[str, Any]]] = []
+
+    def __call__(self, item_type: str, fields: Optional[Dict[str, Any]],
+                 raw_fields: Optional[Dict[str, Any]] = None, param: str = "fields",
+                 provided: Iterable[str] = (), record: bool = True,
+                 required: bool = True) -> Dict[str, Any]:
+        """Jira fields of one item. record=False: the call's values are not remembered
+        (tag rule values); required=False: missing fields are not asked (the result is not
+        used for a new item)."""
+        r = compute(self.ctx, self.project, item_type, fields, raw_fields, provided)
+        if required and r.missing:
+            entry = self.missing.setdefault(item_type, {"param": param, "fields": {}})
+            for f in r.missing:
+                entry["fields"].setdefault(f["id"], f)
+        if r.applied:
+            self.applied.setdefault(item_type, {}).update(r.applied)
+        if record and r.answered:
+            self.answered.append((item_type, r.answered))
+        return r.fields
+
+    def questions(self) -> List[dict]:
+        return [q for t, m in self.missing.items()
+                for q in questions(self.project, t, list(m["fields"].values()), m["param"])]
+
+
+def resolve_all(ctx: Any, project: ProjectSettings, build: Callable[[Collector], Any],
+                remember: bool = False) -> Tuple[Any, Dict[str, Dict[str, Any]]]:
+    """Run build(collector) (every resolution of the call); when fields are missing, ask
+    once for all of them (see ask) and run it again. -> (build's result, applied defaults
+    {itemType: {id: value}})."""
+    c = Collector(ctx, project)
+    result = build(c)
+    if c.missing:
+        ask(ctx, project, c.missing, remember)
+        c = Collector(ctx, project)
+        result = build(c)
+        if c.missing:
+            raise ToolError("Required fields are still missing after the answers; nothing "
+                            "was written", missingFields=[
+                                d for m in c.missing.values()
+                                for d in _missing_data(list(m["fields"].values()))])
+    for item_type, values in c.answered:
+        _add_pending(ctx, project.key, item_type, values, remember)
+    return result, c.applied
 
 
 def resolve(ctx: Any, project: ProjectSettings, item_type: str,
             fields: Optional[Dict[str, Any]], raw_fields: Optional[Dict[str, Any]],
             remember: bool = False, *, param: str = "fields", provided: Iterable[str] = (),
             record: bool = True) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """-> (Jira fields, applied remembered values). Asks for missing required fields (see
-    ask). Answers (asked, or required fields given in the call when `record`) are remembered
-    on commit(ctx): when `remember`, or when nothing is remembered yet for that field."""
-    provided = tuple(provided)
-    r = compute(ctx, project, item_type, fields, raw_fields, provided)
-    if r.missing:
-        _add_pending(ctx, project.key, item_type,
-                     ask(ctx, project, item_type, r.missing, param), remember)
-        r = compute(ctx, project, item_type, fields, raw_fields, provided)
-    if record:
-        _add_pending(ctx, project.key, item_type, r.answered, remember)
-    return r.fields, r.applied
+    """-> (Jira fields, applied remembered values) of one item (see resolve_all)."""
+    out, applied = resolve_all(
+        ctx, project, lambda c: c(item_type, fields, raw_fields, param, provided, record),
+        remember)
+    return out, applied.get(item_type, {})
 
 
 def add_applied(out: Dict[str, Any], item_type: str, applied: Dict[str, Any]) -> None:

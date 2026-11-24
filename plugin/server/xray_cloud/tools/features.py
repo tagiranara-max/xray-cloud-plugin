@@ -389,39 +389,16 @@ def _per_test(plan: List[ImportAction]) -> List[dict]:
     return out
 
 
-class _Fields:
-    """Required-field resolution for one import: asks on apply (requiredfields.resolve);
-    the preview only collects the questions."""
-
-    def __init__(self, ctx, project: ProjectSettings, apply: bool, remember: bool) -> None:
-        self.ctx, self.project, self.apply, self.remember = ctx, project, apply, remember
-        self.questions: List[dict] = []
-        self.applied: Dict[str, Dict[str, Any]] = {}
-        self._asked = set()
-
-    def __call__(self, item_type: str, fields, raw_fields, param: str = "fields",
-                 record: bool = True) -> dict:
-        if self.apply:
-            out, applied = requiredfields.resolve(self.ctx, self.project, item_type, fields,
-                                                  raw_fields, self.remember, param=param,
-                                                  record=record)
-        else:
-            r = requiredfields.compute(self.ctx, self.project, item_type, fields, raw_fields)
-            out, applied = r.fields, r.applied
-            new = [f for f in r.missing if (item_type, f["id"]) not in self._asked]
-            self._asked.update((item_type, f["id"]) for f in new)
-            self.questions.extend(requiredfields.questions(self.project, item_type, new, param))
-        if applied:
-            self.applied.setdefault(item_type, {}).update(applied)
-        return out
-
-
-def _test_extras(resolve: _Fields, feature: ParsedFeature, analysis: TagAnalysis,
+def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: TagAnalysis,
                  args: dict) -> Dict[int, dict]:
     """Jira fields per new test: the call's fields plus the rule fields of that test. A rule
-    value that differs from the call's value for the same field refuses the file."""
+    value that differs from the call's value for the same field refuses the file. Missing
+    required fields are collected only for scenarios that create a test, with their rule
+    fields."""
     call_fields = dict(args.get("fields") or {})
-    base = resolve("test", call_fields, args.get("rawFields"))
+    base_creates = any(st.test_key is None and not st.outcome.fields
+                       for st in analysis.scenarios)
+    base = c("test", call_fields, args.get("rawFields"), required=base_creates)
     out: Dict[int, dict] = {}
     for i, st in enumerate(analysis.scenarios):
         rule_fields = st.outcome.fields
@@ -437,8 +414,8 @@ def _test_extras(resolve: _Fields, feature: ParsedFeature, analysis: TagAnalysis
                                st.outcome.sources.get(name, "a tag rule"),
                                feature.scenarios[i].name, feature.scenarios[i].line),
                             field=name)
-        out[i] = resolve("test", dict(call_fields, **rule_fields), args.get("rawFields"),
-                         record=False)  # a rule value is never remembered
+        out[i] = c("test", dict(call_fields, **rule_fields), args.get("rawFields"),
+                   record=False)  # a rule value is never remembered
     return out
 
 
@@ -515,13 +492,22 @@ def create_tests_from_feature(ctx, args):
                         questions=[choices.question(n, contexts[n]) for n in unanswered])
 
     # -- fields for every item type that may be created: refuse the whole file first
-    resolve = _Fields(ctx, project, apply, bool(args.get("remember", False)))
-    test_extras = _test_extras(resolve, feature, analysis, args)
-    pre_extra = (resolve("precondition", args.get("preconditionFields"), None,
-                         "preconditionFields")
-                 if feature.backgrounds and not opts.inline else {})
-    set_extra = (resolve("testSet", args.get("testSetFields"), None, "testSetFields")
-                 if opts.create_test_set or analysis.tag_sets else {})
+    def build(c):
+        tests = _test_extras(c, feature, analysis, args)
+        pre = (c("precondition", args.get("preconditionFields"), None, "preconditionFields")
+               if feature.backgrounds and not opts.inline else {})
+        sets = (c("testSet", args.get("testSetFields"), None, "testSetFields")
+                if opts.create_test_set or analysis.tag_sets else {})
+        return tests, pre, sets
+
+    field_questions: List[dict] = []
+    if apply:  # every missing field of every item type is asked at once
+        (test_extras, pre_extra, set_extra), applied_defaults = requiredfields.resolve_all(
+            ctx, project, build, bool(args.get("remember", False)))
+    else:  # the preview never asks: the questions are listed
+        collector = requiredfields.Collector(ctx, project)
+        test_extras, pre_extra, set_extra = build(collector)
+        field_questions = collector.questions()
     create_dups = list(args.get("createDuplicates") or [])
     bad = [i for i in create_dups if i >= len(feature.scenarios)]
     if bad:
@@ -540,7 +526,7 @@ def create_tests_from_feature(ctx, args):
         shown["tagRules"] = {"count": len(rules), "source": rules_source}
         out: Dict[str, Any] = {"preview": True, "feature": feature.name, "path": rel,
                                "questions": [choices.question(n, contexts[n])
-                                             for n in unanswered] + resolve.questions,
+                                             for n in unanswered] + field_questions,
                                "choices": shown,
                                "actions": [a.to_dict() for a in plan],
                                "perTest": _per_test(plan), "testSets": _preview_sets(plan),
@@ -554,7 +540,7 @@ def create_tests_from_feature(ctx, args):
             out["hint"] = ("answer the questions (ask the user once), then call again with the "
                            "answers; until then the actions assume createTestSet=true, "
                            "backgrounds=preconditions, tagsAsLabels=true and no AI label")
-        elif resolve.questions:
+        elif field_questions:
             out["hint"] = ("required fields have no value: ask the user, then call again with "
                            "each answer in the question's `param` ({field id: value})")
         elif skipped:
@@ -578,7 +564,7 @@ def create_tests_from_feature(ctx, args):
     out["testSetMemberships"] = run.memberships
     if run.fields_applied:
         out["fieldsApplied"] = run.fields_applied
-    for item_type, applied in resolve.applied.items():
+    for item_type, applied in applied_defaults.items():
         requiredfields.add_applied(out, item_type, applied)
     out["notDone"] = not_done
     if skipped:

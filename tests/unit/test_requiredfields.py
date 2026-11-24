@@ -45,7 +45,8 @@ class FakeJira:
 
     def create_meta(self, pk, issue_type):
         self.calls.append((pk, issue_type))
-        return [dict(f) for f in self.meta]
+        meta = self.meta.get(issue_type, []) if isinstance(self.meta, dict) else self.meta
+        return [dict(f) for f in meta]
 
 
 class FakeChannel:
@@ -278,6 +279,10 @@ def test_container_new_tests_asked_with_test_fields_param(tmp_path):
         {"value": "High"}
     assert remembered(ctx, "testSet") == {"customfield_3": {"value": "Low"}}
     assert remembered(ctx, "test") == {"customfield_3": {"value": "High"}}
+    del args["fields"]
+    res, err = call(ctx, "create_test_set", **args)
+    assert not err and res["appliedDefaults"] == {"testSet": {"customfield_3": {"value": "Low"}},
+                                                  "test": {"customfield_3": {"value": "High"}}}
 
 
 def test_feature_import_without_background_never_asks_precondition_fields(tmp_path):
@@ -326,3 +331,53 @@ def test_required_field_with_jira_default_or_set_by_the_tool_is_not_asked(tmp_pa
     fields, _ = requiredfields.resolve(ctx, project(ctx), "test", None, None, False,
                                        provided=["description"])
     assert fields == {}
+
+
+BG_FEATURE = "Feature: F\n  Background:\n    Given y\n  Scenario: S\n    Given x\n"
+
+
+def test_multi_item_unformable_field_one_needs_answer_nothing_elicited(tmp_path):
+    ch = FakeChannel({"x": "y"})
+    ctx = make(tmp_path, meta={"Test": SEVERITY_ONLY, "Precondition": COMPONENTS}, channel=ch)
+    (tmp_path / "b.feature").write_text(BG_FEATURE)
+    res, err = call(ctx, "import_feature_file", projectKey="PROJ", filePath="b.feature")
+    assert not err and res["status"] == "needs_answer" and ch.asked == []
+    assert [(q["id"], q["param"]) for q in res["questions"]] == [
+        ("customfield_3", "fields"), ("components", "preconditionFields")]
+    assert ctx.xray.rest_calls == [] and remembered(ctx) == {}
+
+
+def test_multi_item_elicitation_one_form_then_applied_defaults(tmp_path):
+    ch = FakeChannel({"test.customfield_3": "High", "precondition.customfield_3": "Low"})
+    ctx = make(tmp_path, meta=SEVERITY_ONLY, channel=ch)
+    ctx.xray.rest_responses[("POST", "import/feature")] = {"updatedOrCreatedTests": []}
+    (tmp_path / "b.feature").write_text(BG_FEATURE)
+    res, err = call(ctx, "import_feature_file", projectKey="PROJ", filePath="b.feature")
+    assert not err and "status" not in res, res
+    assert len(ch.asked) == 1
+    assert ch.asked[0][1]["required"] == ["test.customfield_3", "precondition.customfield_3"]
+    files = ctx.xray.rest_calls[0][2]["multipart"]["files"]
+    assert json.loads(files["testInfo"][1])["fields"] == {"customfield_3": {"value": "High"}}
+    assert json.loads(files["precondInfo"][1])["fields"] == {"customfield_3": {"value": "Low"}}
+    res, err = call(ctx, "import_feature_file", projectKey="PROJ", filePath="b.feature")
+    assert not err and len(ch.asked) == 1
+    assert res["appliedDefaults"] == {"test": {"customfield_3": {"value": "High"}},
+                                      "precondition": {"customfield_3": {"value": "Low"}}}
+
+
+def test_xray_owned_fields_are_never_asked(tmp_path):
+    meta = [dict(META[2], schemaCustom="com.xpandit.plugins.xray:test-type-custom-field")]
+    ctx = make(tmp_path, meta=meta)
+    assert requiredfields.resolve(ctx, project(ctx), "test", None, None, False) == ({}, {})
+
+
+def test_settings_required_field_not_on_create_screen_uses_remembered(tmp_path):
+    settings = ("projects:\n  PROJ:\n    fields:\n      test:\n"
+                "        Team: {id: customfield_1, type: option, required: true}\n")
+    ctx = make(tmp_path, settings, meta=SEVERITY_ONLY[:1], channel=FakeChannel(
+        {"customfield_1": "Backend"}))
+    requiredfields.resolve(ctx, project(ctx), "test", None, None, False)
+    requiredfields.commit(ctx)
+    assert remembered(ctx) == {"customfield_1": {"value": "Backend"}}
+    fields, applied = requiredfields.resolve(ctx, project(ctx), "test", None, None, False)
+    assert fields == {"customfield_1": {"value": "Backend"}} and len(ctx.channel.asked) == 1

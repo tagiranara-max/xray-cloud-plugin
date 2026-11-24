@@ -172,6 +172,8 @@ class JiraClient:
             }
             if schema.get("items"):
                 entry["schemaItems"] = schema["items"]
+            if schema.get("custom"):
+                entry["schemaCustom"] = schema["custom"]
             if f.get("hasDefaultValue"):
                 entry["hasDefaultValue"] = True
             out.append(entry)

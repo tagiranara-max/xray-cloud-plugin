@@ -224,7 +224,9 @@ def register(kind: Kind, with_sets: bool) -> None:
         "(newTests). New tests whose summary matches an existing test are skipped and reported "
         "unless their 0-based index is listed in createDuplicates. If newTests are given and the "
         "result has status needs_answer (with `questions`; it asks for the AI label), ask the "
-        "user once and call again with the answer; it is remembered for the project." %
+        "user once and call again with the answer; it is remembered for the project. Required "
+        "Jira fields without a value are asked too (each question names its param: fields, or "
+        "testFields for newTests)." %
         (label, ", testSetKeys" if with_sets else ""),
         _schema(props, ["summary"]), write=True)
     def create(ctx, args):
@@ -240,22 +242,30 @@ def register(kind: Kind, with_sets: bool) -> None:
             if needs_answer:
                 return needs_answer
             ai_args = {RESOLVED_AI_LABEL: label, "remember": remember}
-        # Required fields after the AI-label question, so an elicited answer is not lost.
-        extra, applied = requiredfields.resolve(
-            ctx, project, kind.item, args.get("fields"), args.get("rawFields"), remember,
-            provided=["description"] if args.get("description") is not None else [])
-        direct, via_sets = members_of(ctx, pk, args)
         create_dups = args.get("createDuplicates") or []
         bad = [i for i in create_dups if i >= len(new_tests)]
         if bad:
             raise ToolError("createDuplicates index out of range: %s" % bad)
-        if new_tests:
-            # create_test applies the project's test fields (required/defaults) to every new
-            # test: resolve them now so a missing required field cannot orphan the container.
-            _, test_applied = requiredfields.resolve(ctx, project, "test", args.get("testFields"),
-                                                     None, remember, param="testFields")
-            if args.get("testFields"):
-                ai_args["fields"] = args["testFields"]
+
+        def build(c):
+            out = c(kind.item, args.get("fields"), args.get("rawFields"),
+                    provided=["description"] if args.get("description") is not None else [])
+            if new_tests:
+                # create_test applies the project's test fields (required/defaults) to every
+                # new test: resolve them now so a missing one cannot orphan the container.
+                c("test", args.get("testFields"), None, "testFields",
+                  provided=["description"] if all(t.get("description") is not None
+                                                  for t in new_tests) else [])
+            return out
+
+        # Required fields after the AI-label question (an elicited answer is not lost to
+        # it); every item type is asked at once.
+        extra, applied_all = requiredfields.resolve_all(ctx, project, build, remember)
+        applied = applied_all.get(kind.item, {})
+        test_applied = applied_all.get("test", {})
+        if new_tests and args.get("testFields"):
+            ai_args["fields"] = args["testFields"]
+        direct, via_sets = members_of(ctx, pk, args)
         direct_map = resolve_test_id_map(ctx, pk, direct)  # fail before creating anything
         if new_tests:  # all validation passed: remember a call-supplied label before writing
             remember_ai_label(ctx, pk, args)

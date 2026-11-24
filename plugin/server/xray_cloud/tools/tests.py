@@ -240,16 +240,18 @@ mutation CreateTest($jira: JSON!, $testType: UpdateTestTypeInput, $gherkin: Stri
 RESOLVED_AI_LABEL = "_resolvedAiLabel"
 
 _REMEMBER = {"type": "boolean", "description":
-             "Make a differing value of a required field replace the remembered one (default: "
-             "remembered only when nothing is remembered for that field yet)."}
+             "Make a required-field value passed in this call replace the remembered one "
+             "(default: a passed value is remembered only when none is remembered for that "
+             "field yet; answers the user gives in a form are always remembered)."}
 
 _AI_LABEL_PARAMS = {
     "aiLabel": {"type": "string", "description":
                 "The user's own label that marks newly created tests as AI-created; there is no "
                 "default. Empty string = don't mark. Asked once per project, then remembered."},
     "remember": {"type": "boolean", "description":
-                 "Make a differing aiLabel, or a differing value of a required field, replace "
-                 "the remembered one (default: this call only)."}}
+                 "Make a differing aiLabel, or a required-field value passed in this call, "
+                 "replace the remembered one (default: a differing aiLabel applies to this "
+                 "call only; a field value is remembered only when none is remembered yet)."}}
 
 
 def check_ai_label(label: Any) -> None:

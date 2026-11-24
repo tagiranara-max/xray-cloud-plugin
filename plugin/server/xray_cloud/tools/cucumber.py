@@ -12,6 +12,7 @@ from ..context import check_issue_in_project, require_project
 from ..errors import ToolError
 from .. import requiredfields
 from .. import localfiles
+from ..gherkin.parse import parse_feature
 from ..registry import REGISTRY
 from .tests import _OBJ, _REMEMBER, _schema
 
@@ -31,19 +32,23 @@ def _foreign_tests(entries: Dict[str, bytes], pk: str) -> List[str]:
     return sorted(found)
 
 
-_BACKGROUND = re.compile(rb"^[ \t]*Background:", re.MULTILINE)
+def _feature_has_background(data: bytes, name: str) -> bool:
+    try:
+        return bool(parse_feature(data.decode("utf-8"), name).backgrounds)
+    except Exception:  # unreadable or invalid: Xray reports it; assume a Pre-Condition
+        return True
 
 
 def _has_background(data: bytes) -> bool:
-    """Whether the .feature (or any .feature in the .zip) has a Background, which Xray turns
-    into a Pre-Condition. An unreadable zip counts as yes (Xray reports it)."""
+    """Whether the .feature (or any .feature in the .zip) has a Background (any Gherkin
+    language), which Xray turns into a Pre-Condition. Unreadable counts as yes."""
     if data[:2] != b"PK":
-        return bool(_BACKGROUND.search(data))
+        return _feature_has_background(data, "file.feature")
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            return any(_BACKGROUND.search(zf.read(i)) for i in zf.infolist()
-                       if i.filename.lower().endswith(".feature"))
-    except (zipfile.BadZipFile, OSError, RuntimeError, ValueError):
+            return any(_feature_has_background(zf.read(i), i.filename)
+                       for i in zf.infolist() if i.filename.lower().endswith(".feature"))
+    except Exception:
         return True
 
 
@@ -68,15 +73,17 @@ def import_feature_file(ctx, args):
         raise ToolError("filePath must be a .feature or .zip file", filePath=path)
     full, data = localfiles.read_local_file(ctx.env, path, "Feature file")
     remember = bool(args.get("remember", False))
-    test_fields, test_applied = requiredfields.resolve(
-        ctx, project, "test", args.get("fields"), args.get("rawFields"), remember)
-    if _has_background(data) or args.get("preconditionFields"):
-        pre_fields, pre_applied = requiredfields.resolve(
-            ctx, project, "precondition", args.get("preconditionFields"), None, remember,
-            param="preconditionFields")
-    else:  # no Pre-Condition is created: nothing to ask
-        pre = requiredfields.compute(ctx, project, "precondition", None, None)
-        pre_fields, pre_applied = pre.fields, {}
+    with_pre = _has_background(data) or bool(args.get("preconditionFields"))
+
+    def build(c):
+        test = c("test", args.get("fields"), args.get("rawFields"))
+        # without a Background no Pre-Condition is created: its fields are not asked
+        pre = c("precondition", args.get("preconditionFields"), None, "preconditionFields",
+                required=with_pre)
+        return test, pre
+
+    (test_fields, pre_fields), applied = requiredfields.resolve_all(ctx, project, build,
+                                                                    remember)
     ctype = "application/zip" if full.lower().endswith(".zip") else "text/plain"
     files: Dict[str, Any] = {"file": (os.path.basename(full), data, ctype)}
     if test_fields:
@@ -100,8 +107,9 @@ def import_feature_file(ctx, args):
     out = {"tests": keys("updatedOrCreatedTests"),
            "preconditions": keys("updatedOrCreatedPreconditions"),
            "errors": resp.get("errors") or []}
-    requiredfields.add_applied(out, "test", test_applied)
-    requiredfields.add_applied(out, "precondition", pre_applied)
+    requiredfields.add_applied(out, "test", applied.get("test", {}))
+    if with_pre:
+        requiredfields.add_applied(out, "precondition", applied.get("precondition", {}))
     return out
 
 

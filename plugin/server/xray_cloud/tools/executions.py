@@ -135,11 +135,11 @@ def _plan_keys(args: dict) -> List[str]:
 def create_test_execution(ctx, args):
     pk, summary = args["projectKey"], args["summary"]
     project = require_project(ctx, pk, write=True)
+    _check_keys(pk, args.get("testKeys"), args.get("testSetKeys"), _plan_keys(args))
     extra, applied = requiredfields.resolve(
         ctx, project, "testExecution", args.get("fields"), args.get("rawFields"),
         bool(args.get("remember", False)),
         provided=["description"] if args.get("description") is not None else [])
-    _check_keys(pk, args.get("testKeys"), args.get("testSetKeys"), _plan_keys(args))
     plan = None
     explicit = bool(args.get("testKeys") or args.get("testSetKeys"))
     # Resolve everything before creating, so bad keys fail without side effects.
