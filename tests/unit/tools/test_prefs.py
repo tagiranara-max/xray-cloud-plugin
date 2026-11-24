@@ -263,3 +263,44 @@ def test_status_lists_result_import_test_key_tag(tmp_path):
     assert not err, res
     assert res["perProject"]["Q"]["resultImport"] == {"testKeyTag": "issue"}
     assert res["perProject"]["P"]["resultImport"] == {"testKeyTag": None}
+
+
+def _site_ctx(tmp_path):
+    ctx = make(tmp_path)
+    ctx.env = dict(ctx.env, XRAY_CLIENT_ID="id-SECRET-111", XRAY_CLIENT_SECRET="sec-SECRET-222")
+    return ctx
+
+
+def test_set_preferences_revoke_and_clear(tmp_path):
+    ctx = _site_ctx(tmp_path)
+    site = ctx.site
+    assert site
+    ctx.preferences.approve("global", site, "P", True)
+    ctx.preferences.approve("global", site, "Q", False)
+    ctx.preferences.remember_fields("global", site, "P", "test", {"customfield_12345": "Backend"})
+    ctx.preferences.remember_fields("global", site, "P", "plan", {"customfield_2": "x"})
+    res, err = run(ctx, "set_preferences", projectKey="P", revokeProject="Q", approveAll=False,
+                   clearFieldValues={"itemType": "test"})
+    assert not err
+    assert ctx.preferences.approval("global", site) == {"approveAll": False,
+                                                        "approvedProjects": ["P"]}
+    assert ctx.preferences.field_values("global", site, "P", "test") == {}
+    assert ctx.preferences.field_values("global", site, "P", "plan") == {"customfield_2": "x"}
+    res, err = run(ctx, "set_preferences", projectKey="P", clearFieldValues={})
+    assert not err and ctx.preferences.field_values("global", site, "P", "plan") == {}
+    res, err = run(ctx, "set_preferences", projectKey="P", approveAll=True)
+    assert err and "false" in res["error"]
+
+
+def test_get_status_shows_approvals_and_field_values_without_site_id(tmp_path):
+    ctx = _site_ctx(tmp_path)
+    site = ctx.site
+    ctx.preferences.approve("global", site, "P", False)
+    ctx.preferences.remember_fields("global", site, "P", "test", {"customfield_12345": "Backend"})
+    res, err = run(ctx, "get_status")
+    assert not err
+    per = res["perProject"]["P"]
+    assert per["approvals"] == {"approveAll": False, "approvedProjects": ["P"]}
+    assert per["fieldValues"] == {"test": {"customfield_12345": "Backend"}}
+    assert site not in json.dumps(res)
+    assert "SECRET" not in json.dumps(res)

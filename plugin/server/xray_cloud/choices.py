@@ -77,7 +77,7 @@ def resolve(ctx: ServerContext, project_key: str, name: str,
     if found:
         return value, "settings"
     region = region_of(ctx)
-    remembered = ctx.preferences.get(region, project_key)
+    remembered = ctx.preferences.get(region, project_key, ctx.site)
     if name in remembered:
         value = remembered[name]
         problem = _remembered_problem(name, value)
@@ -131,12 +131,12 @@ def remember(ctx: ServerContext, project_key: str, answers: Dict[str, Any], forc
     """Store answers: when nothing is remembered for the name, or when the value differs and
     `force`. Identical values, None values and unknown names are ignored."""
     region = region_of(ctx)
-    current = ctx.preferences.get(region, project_key)
+    current = ctx.preferences.get(region, project_key, ctx.site)
     to_store = {n: v for n, v in answers.items()
                 if n in CHOICES and v is not None
                 and (n not in current or (current[n] != v and force))}
     if to_store:
-        ctx.preferences.update(region, project_key, to_store)
+        ctx.preferences.update(region, project_key, to_store, ctx.site)
 
 
 def question(name: str, context: Dict[str, Any]) -> Dict[str, Any]:

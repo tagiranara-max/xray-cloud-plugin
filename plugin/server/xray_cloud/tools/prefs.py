@@ -33,6 +33,14 @@ _SET_PARAMS = {
                  "Raw tag rules (replaces the remembered list; [] = none). Rule fields: tag or "
                  "match, split, label, testSet, field, skip. Example only, not a default: "
                  "[{\"tag\": \"group\", \"testSet\": \"{value}\"}]."},
+    "revokeProject": {"type": "string", "description":
+                      "Project key whose approval is removed (it is asked about again)."},
+    "approveAll": {"type": "boolean", "description":
+                   "Only false is accepted: revokes the approve-all permission."},
+    "clearFieldValues": {"type": "object", "properties": {"itemType": {"type": "string"}},
+                         "additionalProperties": False, "description":
+                         "Forget the remembered required-field values of the project: those of "
+                         "itemType, or of every item type when omitted."},
     "clear": {"type": "array", "items": {"type": "string"}, "description":
               "Choice names whose remembered value is removed (they become unanswered)."},
 }
@@ -84,18 +92,37 @@ def set_preferences(ctx, args):
     both = sorted(set(clear) & set(values))
     if both:
         raise ToolError("Cannot set and clear the same choice: %s" % ", ".join(both))
-    if not values and not clear:
+    revoke = args.get("revokeProject")
+    if revoke is not None and (not isinstance(revoke, str) or not revoke):
+        raise ToolError("revokeProject must be a project key")
+    if args.get("approveAll") not in (None, False):
+        raise ToolError("approveAll only accepts false (to revoke); approval happens when a "
+                        "write is first asked for")
+    revoke_all = args.get("approveAll") is False
+    clear_fv = args.get("clearFieldValues")
+    if clear_fv is not None:
+        if not isinstance(clear_fv, dict) or set(clear_fv) - {"itemType"} or not isinstance(
+                clear_fv.get("itemType", ""), str):
+            raise ToolError("clearFieldValues must be an object with an optional itemType string")
+    if not values and not clear and revoke is None and not revoke_all and clear_fv is None:
         raise ToolError("Nothing to do: give at least one value to set or names to clear")
     region = choices.region_of(ctx)
+    site = ctx.site
     if clear:
-        ctx.preferences.clear(region, pk, clear)
+        ctx.preferences.clear(region, pk, clear, site)
     if values:
-        ctx.preferences.update(region, pk, values)
+        ctx.preferences.update(region, pk, values, site)
+    if clear_fv is not None:
+        ctx.preferences.clear_fields(region, site, pk, clear_fv.get("itemType") or None)
+    if revoke is not None or revoke_all:
+        ctx.preferences.revoke(region, site, revoke, revoke_all)
     effective = choices.effective(ctx, pk)
     warnings = ["%s was saved, but the settings file sets it to %r, which always wins; edit "
                 "the settings file to change it" % (n, effective[n]["value"])
                 for n in values if effective[n]["source"] == "settings"]
     return {"projectKey": pk, "region": region, "set": sorted(values), "cleared": sorted(clear),
+            "revoked": {"project": revoke, "all": revoke_all},
+            "fieldValuesCleared": clear_fv is not None,
             "effective": effective, "warnings": warnings,
             "preferencesFile": str(ctx.preferences.path)}
 
@@ -146,6 +173,9 @@ def _project_status(ctx, pk: str) -> Dict[str, Any]:
     return {"featureImport": {n: eff[n] for n in _FEATURE_IMPORT},
             "aiCreated": {n: eff[n] for n in _AI_CREATED},
             "resultImport": {"testKeyTag": project.test_key_tag if project else None},
+            "approvals": ctx.preferences.approval(choices.region_of(ctx), ctx.site),
+            "fieldValues": (ctx.preferences.get(choices.region_of(ctx), pk, ctx.site)
+                            .get("fieldValues") or {}),
             "unanswered": [n for n, v in eff.items() if v["source"] == "unanswered"]}
 
 

@@ -9,7 +9,7 @@ from .config import (PROJECT_KEY_RE, Credentials, JiraCredentials, ProjectSettin
 from .errors import ToolError
 from .http import Transport, urllib_transport
 from .jira_client import JiraClient
-from .preferences import PreferenceStore
+from .preferences import PreferenceStore, site_id
 from .ratelimit import RateLimiter
 from .stepcache import StepCache, TTLCache
 from .xray_client import XrayClient
@@ -42,6 +42,11 @@ class ServerContext:
         self._transport = transport or urllib_transport
         self._limiter = limiter or RateLimiter()
         self._xray = xray
+
+    @property
+    def site(self) -> str:
+        """Hash of the Xray client id scoping approvals and remembered values; never shown."""
+        return site_id(self.env)
 
     @property
     def has_credentials(self) -> bool:
