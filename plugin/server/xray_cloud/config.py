@@ -129,8 +129,9 @@ class Settings:
 
 
 def project_dir(env: Mapping[str, str]) -> str:
-    """Claude Code's project directory ($CLAUDE_PROJECT_DIR), else the current directory."""
-    return _get(env, "CLAUDE_PROJECT_DIR") or os.getcwd()
+    """The project directory: $XRAY_PROJECT_DIR, else Claude Code's $CLAUDE_PROJECT_DIR, else
+    the current directory."""
+    return _get(env, "XRAY_PROJECT_DIR") or _get(env, "CLAUDE_PROJECT_DIR") or os.getcwd()
 
 
 def settings_search_paths(env: Mapping[str, str]) -> List[Path]:
@@ -155,8 +156,9 @@ def find_settings_file(env: Mapping[str, str]) -> Optional[Path]:
         path = Path(os.path.expanduser(explicit))
         if not path.is_file():
             raise SettingsError(
-                "The settings file set in XRAY_SETTINGS_FILE (plugin setting \"Settings file\") "
-                "does not exist or is not a file: %s" % path,
+                "The settings file set in XRAY_SETTINGS_FILE (Claude Code plugin setting "
+                "\"Settings file\", or the environment variable in your MCP client's server "
+                "config) does not exist or is not a file: %s" % path,
                 setting="XRAY_SETTINGS_FILE", file=str(path))
         return path
     for c in settings_search_paths(env):

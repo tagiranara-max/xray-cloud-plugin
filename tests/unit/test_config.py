@@ -367,3 +367,25 @@ def test_invalid_test_key_tag_refused(tmp_path, value):
     with pytest.raises(SettingsError) as ei:
         store.get()
     assert "projects.P1.testKeyTag" in ei.value.message
+
+
+def test_project_dir_prefers_xray_project_dir(tmp_path, monkeypatch):
+    from xray_cloud.config import project_dir
+    monkeypatch.chdir(tmp_path)
+    both = {"XRAY_PROJECT_DIR": "/x/xray", "CLAUDE_PROJECT_DIR": "/x/claude"}
+    assert project_dir(both) == "/x/xray"
+    assert project_dir({"CLAUDE_PROJECT_DIR": "/x/claude"}) == "/x/claude"
+    assert project_dir({}) == os.getcwd()
+
+
+def test_missing_credentials_message_is_client_neutral():
+    from xray_cloud.context import NO_CREDENTIALS_MESSAGE as m
+    assert "XRAY_CLIENT_ID" in m and "XRAY_CLIENT_SECRET" in m
+    assert "your MCP client's server config" in m
+    assert "Claude Code's plugin settings" in m
+
+
+def test_no_jira_fix_is_client_neutral():
+    from xray_cloud.notdone import NO_JIRA_FIX
+    for name in ("JIRA_SITE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"):
+        assert name in NO_JIRA_FIX

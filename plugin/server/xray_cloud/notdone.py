@@ -5,8 +5,9 @@ from __future__ import annotations
 from typing import Dict
 
 NO_JIRA_REASON = "no Jira token or Atlassian MCP"
-NO_JIRA_FIX = ("set the Jira token in plugin settings, or let the agent apply them via the "
-               "Atlassian MCP")
+NO_JIRA_FIX = ("set the Jira token in Claude Code's plugin settings, or as the JIRA_SITE_URL, "
+              "JIRA_EMAIL and JIRA_API_TOKEN environment variables in your MCP client's server "
+              "config, or let the agent apply them via the Atlassian MCP")
 NEVER_OVERWRITE_FIX = "existing values are never overwritten; change it in Jira if wanted"
 UNREADABLE_REASON = "current value could not be read; not changed"
 UNREADABLE_FIX = "check the field id in the settings file; set it in Jira if wanted"

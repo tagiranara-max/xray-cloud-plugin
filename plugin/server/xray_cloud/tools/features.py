@@ -46,7 +46,7 @@ mutation AddTestsToPrecondition($issueId: String!, $testIssueIds: [String]) {
 
 def read_feature(env, path: str) -> tuple:
     """-> (text, label path). Relative paths resolve against the project dir
-    ($CLAUDE_PROJECT_DIR, else cwd). The label path is relative to the project dir when the
+    ($XRAY_PROJECT_DIR, else $CLAUDE_PROJECT_DIR, else cwd). The label path is relative to the project dir when the
     file is under it, else the basename."""
     if not isinstance(path, str) or not path.strip():
         raise ToolError("featureFilePath must be a non-empty path")

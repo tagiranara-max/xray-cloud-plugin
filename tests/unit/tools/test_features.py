@@ -185,8 +185,7 @@ def test_key_tag_updates_existing_test(tmp_path):
     assert res["updated"] == ["P-5"] and res["created"] == []
     assert res["notDone"] == [{"item": "P-5", "what": "labels new",
                                "reason": "no Jira token or Atlassian MCP",
-                               "fix": "set the Jira token in plugin settings, or let the agent "
-                                      "apply them via the Atlassian MCP"}]
+                               "fix": NO_JIRA_FIX}]
     assert "warnings" not in res
 
 
@@ -443,8 +442,7 @@ def test_key_tag_update_without_jira_warns_about_links(tmp_path):
     assert not err, res
     assert res["notDone"] == [{"item": "P-5", "what": "requirement links R-1",
                                "reason": "no Jira token or Atlassian MCP",
-                               "fix": "set the Jira token in plugin settings, or let the agent "
-                                      "apply them via the Atlassian MCP"}]
+                               "fix": NO_JIRA_FIX}]
 
 
 def test_partial_failure_reports_links_and_labels_already_applied(tmp_path):
@@ -469,9 +467,9 @@ def test_partial_failure_reports_links_and_labels_already_applied(tmp_path):
 # -- import choices, tag rules, Test Sets from tags, notDone (spec 6.2-6.6, 8) ---------------
 
 LOGIN = "features/login flow.feature"
+from xray_cloud.notdone import NO_JIRA_FIX  # noqa: E402
 NO_JIRA = {"reason": "no Jira token or Atlassian MCP",
-           "fix": "set the Jira token in plugin settings, or let the agent apply them via the "
-                  "Atlassian MCP"}
+           "fix": NO_JIRA_FIX}
 RULES_YAML = """
 projects:
   P:

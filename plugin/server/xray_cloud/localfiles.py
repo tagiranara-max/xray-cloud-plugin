@@ -11,8 +11,8 @@ MAX_FILE_BYTES = 25 * 1024 * 1024
 
 
 def resolve_local_path(env: Mapping[str, str], path: str) -> str:
-    """~ expanded; a relative path is resolved against the project dir ($CLAUDE_PROJECT_DIR,
-    else cwd). Returns an absolute, symlink-resolved path."""
+    """~ expanded; a relative path is resolved against the project dir ($XRAY_PROJECT_DIR, else
+    $CLAUDE_PROJECT_DIR, else cwd). Returns an absolute, symlink-resolved path."""
     if not isinstance(path, str) or not path.strip():
         raise ToolError("File path must be a non-empty string", path=path)
     full = os.path.expanduser(path)

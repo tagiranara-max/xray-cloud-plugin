@@ -15,9 +15,9 @@ from .stepcache import StepCache, TTLCache
 from .xray_client import XrayClient
 
 NO_CREDENTIALS_MESSAGE = (
-    "Xray credentials are not configured. Set them in the plugin settings "
-    "(/plugin -> xray-cloud -> configure) or via the XRAY_CLIENT_ID and "
-    "XRAY_CLIENT_SECRET environment variables.")
+    "Xray credentials are not configured. Set them in Claude Code's plugin "
+    "settings (/plugin -> xray-cloud -> configure), or as the XRAY_CLIENT_ID and "
+    "XRAY_CLIENT_SECRET environment variables in your MCP client's server config.")
 
 
 class ServerContext:

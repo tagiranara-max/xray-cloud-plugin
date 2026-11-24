@@ -11,11 +11,12 @@ from .errors import ToolError
 
 class PreferenceStore:
     """Remembered import choices, keyed by "<region>/<PROJECT>" in one JSON file:
-    ${CLAUDE_PLUGIN_DATA}/preferences.json, else ~/.config/xray-cloud/preferences.json.
+    ${XRAY_DATA_DIR}/preferences.json, else ${CLAUDE_PLUGIN_DATA}/preferences.json, else
+    ~/.config/xray-cloud/preferences.json.
     Reads happen on every call (no caching); writes are atomic (temp file, then rename)."""
 
     def __init__(self, env: Mapping[str, str]) -> None:
-        data_dir = (env.get("CLAUDE_PLUGIN_DATA") or "").strip()
+        data_dir = (env.get("XRAY_DATA_DIR") or env.get("CLAUDE_PLUGIN_DATA") or "").strip()
         if data_dir:
             self.path = Path(os.path.expanduser(data_dir)) / "preferences.json"
         else:
