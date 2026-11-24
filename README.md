@@ -36,7 +36,7 @@ The `xray-setup`, `import-results`, `import-tests` and `predict-affected-tests` 
 python3 /path/to/xray-cloud-plugin/scripts/install_skills.py --client codex --scope project
 ```
 
-`--client` is `codex`, `cursor` or `gemini`; `--scope` is `project` (in the current directory, or `--project DIR`) or `user` (your home directory). Codex and Gemini target `.agents/skills` (`~/.agents/skills` for user scope; Gemini also reads `.gemini/skills`), Cursor targets `.cursor/skills`. The installer copies the skills, refuses to overwrite a different skill of the same name unless you pass `--force`, never deletes anything, and `--dry-run` shows what it would do.
+`--client` is `codex`, `cursor` or `gemini`; `--scope` is `project` (in the current directory, or `--project DIR`) or `user` (your home directory). Codex targets `.agents/skills`, Cursor `.cursor/skills` and Gemini `.gemini/skills` (user scope: the same paths under `~`). The installer only copies this plugin's skills and never touches other skills; `--force` replaces a differing skill of the same name (the old one is kept if the copy fails). `--dry-run` shows what it would do.
 
 ### Codex
 
@@ -52,7 +52,7 @@ env_vars = ["XRAY_CLIENT_ID", "XRAY_CLIENT_SECRET", "XRAY_REGION", "JIRA_SITE_UR
 XRAY_SETTINGS_FILE = "/path/to/your-project/.xray/settings.yml"
 ```
 
-Codex starts the server in your project directory, which is where `.xray/settings.yml` is looked up. Optionally add `cwd = "/path/to/your-project"` to the server table.
+Codex may not start the server in your project directory, so set `cwd = "/path/to/your-project"` in the server table or `XRAY_PROJECT_DIR` in `[mcp_servers.xray.env]`; that is where `.xray/settings.yml` is looked up.
 
 ### Cursor
 
@@ -139,8 +139,8 @@ Run `python3 /path/to/xray-cloud-plugin/plugin/server/main.py` with these enviro
 | `XRAY_REGION` | `global` (default), `eu` or `au`. | Xray region |
 | `XRAY_SETTINGS_FILE` | Explicit path to the settings file. | Settings file |
 | `XRAY_READ_ONLY` | `true` makes every write tool refuse. | Read-only mode |
-| `XRAY_PROJECT_DIR` | Project directory for `.xray/settings.yml` and relative paths. Falls back to `CLAUDE_PROJECT_DIR`, then the current directory. | (set by Claude Code) |
-| `XRAY_DATA_DIR` | Where remembered preferences live. Falls back to `CLAUDE_PLUGIN_DATA`, then `~/.config/xray-cloud`. | (set by Claude Code) |
+| `XRAY_PROJECT_DIR` | Project directory for `.xray/settings.yml` and relative paths. Falls back to `CLAUDE_PROJECT_DIR`, then the current directory. | none (Claude Code sets `CLAUDE_PROJECT_DIR`) |
+| `XRAY_DATA_DIR` | Where remembered preferences live. Falls back to `CLAUDE_PLUGIN_DATA`, then `~/.config/xray-cloud`. | none (Claude Code sets `CLAUDE_PLUGIN_DATA`) |
 | `XRAY_TOOLS` | Comma-separated tool groups to expose; empty or unset means all. | none |
 | `JIRA_SITE_URL` | Jira site URL, enables Jira tools. | Jira site URL |
 | `JIRA_EMAIL` | Email of the Jira account. | Jira email |

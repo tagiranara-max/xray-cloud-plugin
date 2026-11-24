@@ -106,3 +106,12 @@ def test_preferences_dir_prefers_xray_data_dir(tmp_path):
     assert PreferenceStore(only).path == tmp_path / "c" / "preferences.json"
     assert PreferenceStore({}).path == (Path(os.path.expanduser("~")) / ".config"
                                         / "xray-cloud" / "preferences.json")
+
+
+@pytest.mark.parametrize("bad", ["${env:XRAY_DATA_DIR}", "  "])
+def test_placeholder_data_dir_falls_back(bad, monkeypatch, tmp_path):
+    s = PreferenceStore({"XRAY_DATA_DIR": bad, "CLAUDE_PLUGIN_DATA": str(tmp_path / "p")})
+    assert s.path == tmp_path / "p" / "preferences.json"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    s = PreferenceStore({"XRAY_DATA_DIR": bad, "CLAUDE_PLUGIN_DATA": bad})
+    assert s.path == tmp_path / ".config" / "xray-cloud" / "preferences.json"

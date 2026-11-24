@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
-from .config import REGIONS, ai_created_problem, feature_import_problem
+from .config import REGIONS, _get, ai_created_problem, feature_import_problem
 from .context import ServerContext
 from .errors import ToolError
 
@@ -50,7 +50,7 @@ _SETTINGS_KEYS = {
 
 
 def region_of(ctx: ServerContext) -> str:
-    region = (ctx.env.get("XRAY_REGION") or "").strip().lower()
+    region = (_get(ctx.env, "XRAY_REGION") or "").lower()
     return region if region in REGIONS else "global"
 
 

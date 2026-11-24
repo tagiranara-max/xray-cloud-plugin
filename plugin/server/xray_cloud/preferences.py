@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Mapping
 
+from .config import _get
 from .errors import ToolError
 
 
@@ -16,7 +17,7 @@ class PreferenceStore:
     Reads happen on every call (no caching); writes are atomic (temp file, then rename)."""
 
     def __init__(self, env: Mapping[str, str]) -> None:
-        data_dir = (env.get("XRAY_DATA_DIR") or env.get("CLAUDE_PLUGIN_DATA") or "").strip()
+        data_dir = _get(env, "XRAY_DATA_DIR") or _get(env, "CLAUDE_PLUGIN_DATA") or ""
         if data_dir:
             self.path = Path(os.path.expanduser(data_dir)) / "preferences.json"
         else:

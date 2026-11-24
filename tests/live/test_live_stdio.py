@@ -52,6 +52,7 @@ def test_live_stdio_plain_env(tmp_path):
         assert not p["result"].get("isError"), json.dumps(p)[:500]
     status = json.loads(parsed[1]["result"]["content"][0]["text"])
     assert status["settings"]["path"] == str(settings)
+    assert status["preferencesFile"].startswith(str(data))
     json.loads(parsed[2]["result"]["content"][0]["text"])
     for k in ("XRAY_CLIENT_ID", "XRAY_CLIENT_SECRET", "JIRA_API_TOKEN"):
         v = (os.environ.get(k) or "").strip()
