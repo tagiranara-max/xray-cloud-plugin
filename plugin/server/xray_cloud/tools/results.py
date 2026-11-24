@@ -677,7 +677,7 @@ def import_execution_results(ctx, args):
         out["createdTests"] = None if run_keys is None else \
             dedupe([k for k in run_keys if k not in known])
         out["note"] = ("Tests created by this import carry no AI label; label them with "
-                       "edit_test or mark_test_status if wanted.")
+                       "edit_test or set_lifecycle_label if wanted.")
     if skipped:
         out["skipped"] = sorted(skipped)[:CAP]
     if res.notes:
