@@ -1,4 +1,4 @@
-"""Live checks for Plan 2 (XRAY_TEST_PROJECT): result import (JUnit multipart into a new
+"""Live checks for results and analysis (XRAY_TEST_PROJECT): result import (JUnit multipart into a new
 execution, Cucumber JSON into an existing one and into a new one with an environment), native
 feature import and Cucumber export, run history, requirement coverage, find_related_tests and
 the parity audit. Each test gets its own ServerContext (`fresh`) with a temp settings file and a
@@ -156,7 +156,7 @@ def cucumber(feature: str, *elements: dict) -> str:
 
 def test_feature_import_export_results_and_run_history(fresh, results_log):
     lv = fresh
-    log = results_log.setdefault("plan2", {})
+    log = results_log.setdefault("results", {})
 
     # -- import_feature_file (Xray's native importer) on regression/sample.feature -----------
     # A copy with the run id in every name, so Xray (which matches by name) creates new issues.
@@ -303,7 +303,7 @@ def test_requirement_coverage_and_find_related(fresh, results_log):
     if not HAS_JIRA:
         pytest.skip("JIRA_SITE_URL/JIRA_EMAIL/JIRA_API_TOKEN not set")
     lv = fresh
-    log = results_log.setdefault("plan2", {})
+    log = results_log.setdefault("results", {})
     term = "zq" + RUN_ID
     rel_label = "rel-" + RUN_ID
     test = lv.call("create_test", aiLabel="", testType="Generic",
@@ -375,5 +375,5 @@ def test_parity_audit_and_table(results_log):
     assert not missing, "mutations missing from the API parity table: %s" % missing
     stale = sorted(rows - set(mutations))
     assert not stale, "API parity rows for mutations not in the live schema: %s" % stale
-    results_log.setdefault("plan2", {})["parity audit"] = (
+    results_log.setdefault("results", {})["parity audit"] = (
         "ok: %d mutations, every one has a row" % len(mutations))

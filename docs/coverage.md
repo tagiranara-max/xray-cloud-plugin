@@ -68,9 +68,9 @@ file and temp `CLAUDE_PLUGIN_DATA`, so remembered answers start empty):
 | `get_status` with `check=true` | ok: credentials `configured: true` (no values), Jira reachable via `/myself`, preferences file in the temp data dir, all five choices unanswered; no credential value appears in the output |
 | `set_preferences` | unit tests only (the live tests remember answers through the import itself) |
 
-## Plan 2: results, native import/export, analysis
+## Results, native import/export, analysis
 
-Verified live with `tests/live/test_live_plan2.py` (temp settings and `CLAUDE_PLUGIN_DATA`;
+Verified live with `tests/live/test_live_results_analysis.py` (temp settings and `CLAUDE_PLUGIN_DATA`;
 everything created, including the tests Xray creates for JUnit test cases, deleted in teardown):
 
 | Item | Outcome |
@@ -166,9 +166,9 @@ matches the forum report: Background steps are not shown as run steps.
 
 Every GraphQL mutation the server uses and every REST import/export endpoint, with the tool
 that exposes it. `dev/parity_audit.py` lists the mutations and queries of the live schema (read-only,
-needs credentials). Completed from its output for the audited tenant (Plan 2, Task 8; 66
+needs credentials). Completed from its output for the audited tenant (66
 mutations): every mutation of that tenant's schema has a row, which
-`tests/live/test_live_plan2.py` checks. Other tenants or later Xray releases may add mutations;
+`tests/live/test_live_results_analysis.py` checks. Other tenants or later Xray releases may add mutations;
 rerun the audit. A cell is
 `tool: <name>[, <name>...]` or `not exposed: <reason>`; `tests/unit/test_parity_doc.py` checks
 that every named tool is registered.

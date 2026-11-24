@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 
 
@@ -18,7 +19,18 @@ FORBIDDEN_SHA256 = {
     "7a9d8c4ad3c66b7a1399aaa4be2b8886ec956685507898cf96be159ef44ae629",
 }
 
-EXCLUDE = [".git", "tests/fixtures", ".superpowers", ".pytest_cache", "__pycache__"]
+EXCLUDE = [".git", "tests/fixtures", ".pytest_cache", "__pycache__"]
+
+
+def git_ignored_dirs():
+    """Local directories git ignores (e.g. via .git/info/exclude): not repo content."""
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory"],
+            cwd=REPO, capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    return [line.rstrip("/") for line in out.splitlines() if line.endswith("/")]
 TOKEN_RE = re.compile(r"[A-Za-z0-9-]+")
 
 
@@ -72,7 +84,7 @@ def test_no_plugin_version():
 def test_no_company_strings():
     hits = [
         (path, "<forbidden>")
-        for path, tok in iter_word_tokens(REPO, exclude=EXCLUDE)
+        for path, tok in iter_word_tokens(REPO, exclude=EXCLUDE + git_ignored_dirs())
         if sha256(tok.lower()) in FORBIDDEN_SHA256
     ]
     assert hits == []

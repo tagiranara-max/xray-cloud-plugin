@@ -8,7 +8,7 @@ Claude Code plugin `xray-cloud`: a stdlib-only Python 3.9 MCP server (stdio) for
 - `plugin/skills/` holds the four skills (`xray-setup`, `import-results`, `import-tests`, `predict-affected-tests`), each a `SKILL.md`.
 - `dev/` holds dev-only scripts (`parity_audit.py`: lists the live GraphQL schema's mutations and queries, read-only, needs credentials; compare with `docs/coverage.md`).
 - `.claude-plugin/marketplace.json` makes the repo root a one-plugin marketplace (`xray-cloud-plugin`).
-- `.xray/settings.example.yml` is the settings example; `docs/field-ids.md` the field-id guide; `docs/superpowers/` the design spec and plans.
+- `.xray/settings.example.yml` is the settings example; `docs/field-ids.md` the field-id guide.
 - `tests/unit/` unit tests, `tests/fixtures/` Gherkin fixtures.
 
 ## Tests
@@ -32,6 +32,6 @@ The first prints one JSON line with `serverInfo.name == "xray-cloud"`; the secon
 
 - Runtime code is Python 3.9 standard library only; pure-Python vendored libraries live under `_vendor/` and always win over installed copies. pytest is dev-only.
 - No company-specific values anywhere (names, project keys, cloud IDs, field IDs). Examples use `PROJ`, `customfield_12345`, `Backend`. `tests/unit/test_repo_guards.py` enforces this.
-- Conventional commits (`feat:`, `fix:`, `docs:`, `chore:` ...), each ending with the trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- Conventional commits (`feat:`, `fix:`, `docs:`, `chore:` ...) with no AI attribution trailers. Plans, specs and other working notes stay out of the repo.
 - `plugin.json` and the marketplace entry carry no `"version"` (the plugin is versioned by git commit); `tests/unit/test_repo_guards.py` enforces it.
 - Never print, log or commit secrets (client ID/secret, Jira token); the settings loader rejects credential-like keys.
