@@ -134,6 +134,6 @@ def test_null_for_optional_parameter_is_treated_as_omitted():
         "a": {"type": "string"}, "aiLabel": {"type": "string"},
         "assigneeId": {"type": "string"}}}
     assert coerce({"a": "x", "aiLabel": None}, schema) == coerce({"a": "x"}, schema) == {"a": "x"}
-    assert coerce({"a": "x", "assigneeId": None}, schema) == {"a": "x", "assigneeId": None}
+    assert coerce({"a": "x", "assigneeId": None}, schema) == {"a": "x"}
     with pytest.raises(ToolError):
         coerce({"a": None}, schema)  # required stays required

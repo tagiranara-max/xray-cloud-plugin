@@ -29,10 +29,6 @@ _TYPE_CHECKS = {
 }
 
 
-# Parameters where an explicit null is meaningful and is passed through to the tool.
-KEEP_NULL = frozenset({"assigneeId", "executedById"})
-
-
 def _types(schema: dict) -> List[str]:
     t = schema.get("type")
     if t is None:
@@ -96,10 +92,8 @@ def _coerce_object(args: dict, schema: dict, path: str = "") -> dict:
     for key, value in args.items():
         if (value is None and key in props and key not in required
                 and "null" not in _types(props[key])):
-            if key in KEEP_NULL:  # an explicit null still means something (unassign)
-                out[key] = None
             continue  # null = omitted (clients send null for parameters they leave unset)
-        out[key] =  _coerce_value(value, props[key], prefix + key) if key in props else value
+        out[key] = _coerce_value(value, props[key], prefix + key) if key in props else value
     return out
 
 

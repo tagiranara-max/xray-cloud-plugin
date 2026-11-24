@@ -286,7 +286,7 @@ def test_update_run_applies_other_updates_before_status(tmp_path):
     f.write_bytes(b"img")
     ctx = run_ctx()
     res, err = call(ctx, "update_test_run", projectKey="P", testExecutionKey="P-50",
-                    testKey="P-1", status="FAILED", assigneeId=None, executedById="u1",
+                    testKey="P-1", status="FAILED", assigneeId="", executedById="u1",
                     fields={"version": "2"}, steps=[{"index": 1, "status": "FAIL",
                                                      "actualResult": "boom"}],
                     attachments=[str(f)], defectKeys=["P-9"])
@@ -429,8 +429,8 @@ def test_update_run_required_run_field_enforced_only_when_setting_status():
 
 
 @pytest.mark.parametrize("given,expect_in_mutation", [
-    ({"assigneeId": ""}, True), ({"assigneeId": None}, True), ({}, False)])
-def test_update_run_unassign_with_empty_string_or_null_omitted_unchanged(given, expect_in_mutation):
+    ({"assigneeId": ""}, True), ({"assigneeId": None}, False), ({}, False)])
+def test_update_run_unassigns_only_with_empty_string(given, expect_in_mutation):
     ctx = run_ctx()
     res, err = call(ctx, "update_test_run", projectKey="P", testExecutionKey="P-50",
                     testKey="P-1", fields={"version": "1.4"}, **given)
