@@ -11,8 +11,8 @@ Create or update the user's settings file together with the user. Never write it
 
 Call `get_status`. It shows the settings file in use and the locations searched. The settings file is the user's own file, found in this order:
 
-1. the path from the plugin prompt;
-2. `.xray/settings.yml` in the project Claude Code is working in;
+1. the path from the plugin prompt in Claude Code, or the `XRAY_SETTINGS_FILE` environment variable in any other client;
+2. `.xray/settings.yml` in the project your agent is working in (Claude Code, Codex, Cursor or Gemini);
 3. `~/.config/xray-cloud/settings.yml`.
 
 The plugin ships no settings. A file committed in the team's own project makes the choices team-wide. If none exists, propose `.xray/settings.yml` in the current project (team-wide) or the home-folder path (personal). Never put credentials in it. A minimal skeleton to start from:

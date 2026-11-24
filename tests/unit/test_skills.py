@@ -71,3 +71,10 @@ def test_xray_setup_yaml_skeleton_loads(tmp_path):
     settings = SettingsStore({"XRAY_SETTINGS_FILE": str(f)}).get()
     assert settings.path is not None
     assert "PROJ" in settings.projects
+
+
+@pytest.mark.parametrize("path", skill_files(), ids=lambda p: p.parent.name)
+def test_skill_text_is_client_neutral(path):
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if "Claude Code" in line:
+            assert re.search(r"\bor\b", line), "%s: Claude Code without an alternative: %s" % (path.parent.name, line)
