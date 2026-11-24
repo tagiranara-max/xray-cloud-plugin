@@ -85,7 +85,8 @@ def iter_word_tokens(root, exclude=()):
 
 def test_no_plugin_version():
     """No "version" in plugin.json or the marketplace entry: Claude Code then versions the
-    plugin by git commit, so every update reaches users."""
+    plugin by git commit, so every update reaches users. Only gemini-extension.json carries
+    a "version" (a placeholder, 0.0.0), because the Gemini manifest format expects one."""
     assert "version" not in load(PLUGIN_JSON)
     assert all("version" not in p for p in load(MARKETPLACE_JSON)["plugins"])
 

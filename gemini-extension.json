@@ -1,10 +1,12 @@
 {
   "name": "xray-cloud",
+  "version": "0.0.0",
   "description": "Manage Xray Cloud tests, test sets, plans, executions and runs through a zero-install Python MCP server.",
   "mcpServers": {
     "xray": {
       "command": "python3",
-      "args": ["${extensionPath}/plugin/server/main.py"]
+      "args": ["${extensionPath}/plugin/server/main.py"],
+      "env": {"XRAY_PROJECT_DIR": "${workspacePath}"}
     }
   },
   "settings": [
@@ -15,6 +17,7 @@
     {"name": "Jira site URL", "description": "Optional, enables Jira tools. Example: https://yourcompany.atlassian.net", "envVar": "JIRA_SITE_URL"},
     {"name": "Jira email", "description": "Optional, email of the Jira account used for Jira tools.", "envVar": "JIRA_EMAIL"},
     {"name": "Jira API token", "description": "Optional, Jira API token that enables Jira tools.", "envVar": "JIRA_API_TOKEN", "sensitive": true},
-    {"name": "Read-only mode", "description": "Set to true to make every write tool refuse to run.", "envVar": "XRAY_READ_ONLY"}
+    {"name": "Read-only mode", "description": "Set to true to make every write tool refuse to run.", "envVar": "XRAY_READ_ONLY"},
+    {"name": "Tool groups", "description": "Optional. Comma-separated tool groups; leave empty for all tools.", "envVar": "XRAY_TOOLS"}
   ]
 }
