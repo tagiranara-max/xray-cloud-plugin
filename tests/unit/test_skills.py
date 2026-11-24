@@ -48,7 +48,6 @@ def test_skill_tool_references_exist(path):
             assert ident in registered, "%s references unknown tool %s" % (path.parent.name, ident)
 
 
-@pytest.mark.xfail(strict=True, reason="import-tests and predict-affected-tests arrive in Task 6")
 def test_all_four_skills_present():
     for name in EXPECTED:
         assert (SKILLS_DIR / name / "SKILL.md").is_file(), name
