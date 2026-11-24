@@ -24,6 +24,134 @@ What it does that other Xray integrations do not:
 /plugin install xray-cloud@xray-cloud-plugin
 ```
 
+## Use with other MCP clients
+
+The server speaks plain MCP over stdio, so it also works in Codex, Cursor, Gemini CLI, VS Code and Claude Desktop. It needs Python 3.9 or newer. In the examples below `/path/to/xray-cloud-plugin` is your clone of this repository (`git clone https://github.com/<owner>/xray-cloud-plugin`). On Windows the command is usually `python` or `py` instead of `python3`, and paths use backslashes (escape them in JSON and double-quoted TOML).
+
+Put credentials in your environment or your client's secret mechanism, never in a committed config file. The examples only reference variables.
+
+The `xray-setup`, `import-results`, `import-tests` and `predict-affected-tests` skills are Claude Code skills. For Codex, Cursor and Gemini CLI, copy them into the client's skills folder:
+
+```sh
+python3 /path/to/xray-cloud-plugin/scripts/install_skills.py --client codex --scope project
+```
+
+`--client` is `codex`, `cursor` or `gemini`; `--scope` is `project` (in the current directory, or `--project DIR`) or `user` (your home directory). Codex and Gemini target `.agents/skills` (`~/.agents/skills` for user scope; Gemini also reads `.gemini/skills`), Cursor targets `.cursor/skills`. The installer copies the skills, refuses to overwrite a different skill of the same name unless you pass `--force`, never deletes anything, and `--dry-run` shows what it would do.
+
+### Codex
+
+In `~/.codex/config.toml` (or a project's `.codex/config.toml`). `env_vars` forwards variables from your shell; set the ones you use.
+
+```toml
+[mcp_servers.xray]
+command = "python3"
+args = ["/path/to/xray-cloud-plugin/plugin/server/main.py"]
+env_vars = ["XRAY_CLIENT_ID", "XRAY_CLIENT_SECRET", "XRAY_REGION", "JIRA_SITE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"]
+
+[mcp_servers.xray.env]
+XRAY_SETTINGS_FILE = "/path/to/your-project/.xray/settings.yml"
+```
+
+Codex starts the server in your project directory, which is where `.xray/settings.yml` is looked up. Optionally add `cwd = "/path/to/your-project"` to the server table.
+
+### Cursor
+
+In `~/.cursor/mcp.json` or `.cursor/mcp.json`. Cursor expands `${env:NAME}`, `${userHome}` and `${workspaceFolder}`.
+
+```json
+{
+  "mcpServers": {
+    "xray": {
+      "command": "python3",
+      "args": ["/path/to/xray-cloud-plugin/plugin/server/main.py"],
+      "env": {
+        "XRAY_CLIENT_ID": "${env:XRAY_CLIENT_ID}",
+        "XRAY_CLIENT_SECRET": "${env:XRAY_CLIENT_SECRET}",
+        "XRAY_REGION": "${env:XRAY_REGION}",
+        "XRAY_PROJECT_DIR": "${workspaceFolder}"
+      }
+    }
+  }
+}
+```
+
+### Gemini CLI
+
+```sh
+gemini extensions install https://github.com/<owner>/xray-cloud-plugin
+```
+
+The extension (`gemini-extension.json`) asks for the client ID, secret and the optional values when you install it, and keeps secrets in your system keychain. It sets `XRAY_PROJECT_DIR` to the workspace. The extension version is a placeholder (`0.0.0`); it is versioned by git commit, so update with `gemini extensions update xray-cloud`.
+
+### VS Code
+
+In `.vscode/mcp.json`. Inputs prompt once and store the value in VS Code's secret storage.
+
+```json
+{
+  "inputs": [
+    {"id": "xray-client-id", "type": "promptString", "description": "Xray client ID", "password": true},
+    {"id": "xray-client-secret", "type": "promptString", "description": "Xray client secret", "password": true}
+  ],
+  "servers": {
+    "xray": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["/path/to/xray-cloud-plugin/plugin/server/main.py"],
+      "env": {
+        "XRAY_CLIENT_ID": "${input:xray-client-id}",
+        "XRAY_CLIENT_SECRET": "${input:xray-client-secret}",
+        "XRAY_PROJECT_DIR": "${workspaceFolder}"
+      }
+    }
+  }
+}
+```
+
+### Claude Desktop
+
+In `claude_desktop_config.json` (Settings, Developer, Edit Config). Claude Desktop does not expand variables, so the credentials have to be set in this file's `env`; keep it out of version control, or prefer one of the clients above.
+
+```json
+{
+  "mcpServers": {
+    "xray": {
+      "command": "python3",
+      "args": ["/path/to/xray-cloud-plugin/plugin/server/main.py"],
+      "env": {
+        "XRAY_CLIENT_ID": "<your client id>",
+        "XRAY_CLIENT_SECRET": "<your client secret>",
+        "XRAY_PROJECT_DIR": "/path/to/your-project"
+      }
+    }
+  }
+}
+```
+
+### Any other stdio client
+
+Run `python3 /path/to/xray-cloud-plugin/plugin/server/main.py` with these environment variables. A value that is entirely an unsubstituted `${...}` placeholder is ignored, so clients that leave unset variables unexpanded still work.
+
+| Variable | Meaning | Claude Code prompt |
+| --- | --- | --- |
+| `XRAY_CLIENT_ID` | Xray Cloud API key client ID (required). | Xray client ID |
+| `XRAY_CLIENT_SECRET` | Xray Cloud API key client secret (required). | Xray client secret |
+| `XRAY_REGION` | `global` (default), `eu` or `au`. | Xray region |
+| `XRAY_SETTINGS_FILE` | Explicit path to the settings file. | Settings file |
+| `XRAY_READ_ONLY` | `true` makes every write tool refuse. | Read-only mode |
+| `XRAY_PROJECT_DIR` | Project directory for `.xray/settings.yml` and relative paths. Falls back to `CLAUDE_PROJECT_DIR`, then the current directory. | (set by Claude Code) |
+| `XRAY_DATA_DIR` | Where remembered preferences live. Falls back to `CLAUDE_PLUGIN_DATA`, then `~/.config/xray-cloud`. | (set by Claude Code) |
+| `XRAY_TOOLS` | Comma-separated tool groups to expose; empty or unset means all. | none |
+| `JIRA_SITE_URL` | Jira site URL, enables Jira tools. | Jira site URL |
+| `JIRA_EMAIL` | Email of the Jira account. | Jira email |
+| `JIRA_API_TOKEN` | Jira API token. | Jira API token |
+
+### Notes
+
+- **Tool limits:** some clients cap how many tools a server may expose. Set `XRAY_TOOLS` to a comma-separated list of groups: `tests`, `containers`, `folders`, `import`, `analysis`, `jira`, `setup`. The `setup` group is always on. An unknown group stops the server with an error that lists the valid ones.
+- **Preferences:** remembered import choices are stored in `preferences.json` inside `XRAY_DATA_DIR`. Without it, `~/.config/xray-cloud` is used (or `CLAUDE_PLUGIN_DATA` under Claude Code).
+- **Secrets:** use the environment or the client's secret store (Gemini keychain, VS Code inputs, Cursor `${env:...}`), not committed files.
+
 ## Credentials
 
 Create an API key in Jira: Apps, Xray, API Keys. Claude Code asks for the client ID and secret when you enable the plugin. Alternatively leave those prompts empty and set the `XRAY_CLIENT_ID` and `XRAY_CLIENT_SECRET` environment variables. Credentials are never exposed to the model and never stored in the settings file.
