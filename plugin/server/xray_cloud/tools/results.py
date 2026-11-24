@@ -606,12 +606,16 @@ def _exec_info(pk: str, summary: str, extra: Dict[str, Any], plan_key: Optional[
     "rename matched tests. Every key must belong to projectKey. Returns the execution key, "
     "created, and runs by status; detail adds the raw response.",
     _schema({"format": {"type": "string", "enum": list(FORMATS)},
-             "filePath": {"type": "string"}, "content": {"type": "string"},
+             "filePath": {"type": "string", "description":
+                          "Local results file; must not be empty."},
+             "content": {"type": "string", "description":
+                         "Inline results; must not be empty."},
              "testExecKey": {"type": "string"}, "testPlanKey": {"type": "string"},
              "testEnvironments": {"type": "array", "items": {"type": "string"}},
              "summary": {"type": "string"}, "fields": _OBJ, "rawFields": _OBJ,
              "testKeys": {"type": "object", "additionalProperties": {"type": "string"},
-                          "description": "Result name exactly as listed in needs_answer -> "
+                          "description": "If a @TEST_ tag and the testKeyTag tag name different tests the tool asks; "
+                                         "answer here. Result name exactly as listed in needs_answer -> "
                                          "test key. Names: the scenario name (\"Feature: "
                                          "Scenario\" when features share it), the XML case "
                                          "definition, or the Xray JSON summary (\"summary "

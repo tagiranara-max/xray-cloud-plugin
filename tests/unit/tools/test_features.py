@@ -959,3 +959,12 @@ def test_unnamed_feature_never_gets_a_feature_test_set(tmp_path, source):
     assert not err, res
     assert [c["jira"]["fields"]["summary"] for c in ctx.xray.calls_of("CreateTestSet")] == ["ui"]
     assert "testSet" not in res or res["testSet"] is None or res["testSet"]["summary"] == "ui"
+
+
+def test_null_optional_answers_behave_like_omitted(project):
+    base = dict(projectKey="P", featureFilePath="features/login flow.feature")
+    nulls = dict(base, aiLabel=None, aiLabelScope=None, createTestSet=None,
+                 tagsAsLabels=None, backgrounds=None)
+    a, err_a = call(ctx_for(project), "create_tests_from_feature", **base)
+    b, err_b = call(ctx_for(project), "create_tests_from_feature", **nulls)
+    assert (a, err_a) == (b, err_b)

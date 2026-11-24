@@ -49,7 +49,10 @@ def _folder_files(env, folder: str, room: int) -> Dict[str, Any]:
     "\"group\", split: \",\", testSet: \"{value}\"} turns @group=alpha,beta into Test Sets alpha "
     "and beta.",
     _schema({"featureFilePaths": {"type": "array", "items": {"type": "string"}},
-             "folder": {"type": "string"}}, []))
+             "folder": {"type": "string", "description":
+                        "Searched recursively. Rules have one or more of label/testSet/"
+                        "field/skip; issue-key tags (issueKeys) are never subject to rules."}},
+            []))
 def analyze_feature_tags(ctx, args):
     pk = args["projectKey"]
     project = require_project(ctx, pk, write=False)

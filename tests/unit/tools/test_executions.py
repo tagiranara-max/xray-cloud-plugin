@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import json
 
+import pytest
+
 from conftest import make_context
 from test_test_sets import members
 from xray_cloud.registry import REGISTRY
@@ -424,3 +426,16 @@ def test_update_run_required_run_field_enforced_only_when_setting_status():
     res, err = call(ctx, "update_test_run", projectKey="P", testExecutionKey="P-50",
                     testKey="P-1", executedById="u1")
     assert not err, res
+
+
+@pytest.mark.parametrize("given,expect_in_mutation", [
+    ({"assigneeId": ""}, True), ({"assigneeId": None}, True), ({}, False)])
+def test_update_run_unassign_with_empty_string_or_null_omitted_unchanged(given, expect_in_mutation):
+    ctx = run_ctx()
+    res, err = call(ctx, "update_test_run", projectKey="P", testExecutionKey="P-50",
+                    testKey="P-1", fields={"version": "1.4"}, **given)
+    assert not err, res
+    upd = ctx.xray.calls_of("UpdateTestRun")[0]
+    assert ("assigneeId" in upd) == expect_in_mutation
+    if expect_in_mutation:
+        assert upd["assigneeId"] is None

@@ -289,7 +289,7 @@ def _skipped(plan: List[ImportAction], create_dups: List[int]) -> List[dict]:
 
 
 QUESTION_IDS = ("createTestSet", "backgrounds", "tagsAsLabels", "aiLabel", "aiLabelScope")
-_BOOL_OR_NULL = {"type": ["boolean", "null"]}
+_BOOL = {"type": "boolean"}
 
 
 def _rules(ctx: ServerContext, pk: str, project: ProjectSettings) -> Tuple[List[TagRule], Any]:
@@ -430,19 +430,24 @@ def _test_extras(project: ProjectSettings, feature: ParsedFeature, analysis: Tag
     "reason is \"no Jira token or Atlassian MCP\" and Atlassian MCP tools are available, offer "
     "to complete them with those. fields/rawFields apply to created tests.",
     _schema({"featureFilePath": {"type": "string"}, "apply": {"type": "boolean"},
-             "createTestSet": _BOOL_OR_NULL,
-             "backgrounds": {"type": ["string", "null"],
-                             "enum": ["preconditions", "inline", None]},
-             "tagsAsLabels": _BOOL_OR_NULL,
-             "aiLabel": {"type": ["string", "null"], "description":
+             "createTestSet": _BOOL,
+             "backgrounds": {"type": "string", "enum": ["preconditions", "inline"]},
+             "tagsAsLabels": _BOOL,
+             "aiLabel": {"type": "string", "description":
                          "The user's own label for items the AI creates; \"\" = don't mark."},
-             "aiLabelScope": {"type": ["string", "null"], "enum": ["tests", "all", None]},
+             "aiLabelScope": {"type": "string", "enum": ["tests", "all"], "description":
+                              "tests | all. all also marks new Pre-Conditions and Test Sets."},
              "remember": {"type": "boolean", "description":
-                          "Make differing answers replace the remembered ones (default: this "
-                          "call only)."},
+                          "Answers are remembered for the project on apply when nothing is "
+                          "remembered yet. Default false: a differing answer applies to this "
+                          "call only; true makes it replace the remembered one."},
              "createDuplicates": {"type": "array", "items": {"type": "integer", "minimum": 0}},
-             "fields": _OBJ, "rawFields": _OBJ, "preconditionFields": _OBJ,
-             "testSetFields": _OBJ}, ["featureFilePath"]))
+             "fields": _OBJ, "rawFields": _OBJ,
+             "preconditionFields": {"type": "object", "description":
+                                    "Field values applied to created Pre-Conditions."},
+             "testSetFields": {"type": "object", "description":
+                               "Field values applied to created Test Sets."}},
+            ["featureFilePath"]))
 # Registered read-only so the preview (apply=false, zero writes) works in read-only mode;
 # apply=true checks require_write itself.
 def create_tests_from_feature(ctx, args):
