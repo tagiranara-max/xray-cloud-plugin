@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import filecmp
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -29,14 +30,36 @@ TARGETS = {
 }
 
 
+def _entries(root: Path) -> dict:
+    """Map relative path -> kind for everything under root, without following links."""
+    out = {}
+    for cur, dirs, files in os.walk(str(root), followlinks=False):
+        for n in dirs + files:
+            full = os.path.join(cur, n)
+            rel = os.path.relpath(full, str(root))
+            out[rel] = "link" if os.path.islink(full) else ("dir" if n in dirs else "file")
+    return out
+
+
 def _same(a: Path, b: Path) -> bool:
-    cmp = filecmp.dircmp(str(a), str(b))
-    if cmp.left_only or cmp.right_only or cmp.funny_files:
+    if os.path.islink(str(b)) or not os.path.isdir(str(b)):
         return False
-    _, mismatch, errors = filecmp.cmpfiles(str(a), str(b), cmp.common_files, shallow=False)
-    if mismatch or errors:
+    ea, eb = _entries(a), _entries(b)
+    if ea != eb:
         return False
-    return all(_same(a / d, b / d) for d in cmp.common_dirs)
+    for rel, kind in ea.items():
+        pa, pb = os.path.join(str(a), rel), os.path.join(str(b), rel)
+        if kind == "link" and os.readlink(pa) != os.readlink(pb):
+            return False
+        if kind == "file" and not filecmp.cmp(pa, pb, shallow=False):
+            return False
+    return True
+
+
+class InstallError(Exception):
+    def __init__(self, message: str, done: list):
+        super().__init__(message)
+        self.done = done
 
 
 def target_dir(client: str, scope: str, project: Path = None, home: Path = None) -> Path:
@@ -53,12 +76,17 @@ def install(client: str, scope: str, project: Path = None, force: bool = False,
     """Return a list of (name, action) with action copied|skipped|overwritten."""
     dest = target_dir(client, scope, project, home)
     names = sorted(p.name for p in Path(src).iterdir() if (p / "SKILL.md").is_file())
+    for part in [dest] + list(dest.parents):
+        if part.exists() and not part.is_dir():
+            raise ValueError("%s exists and is not a directory" % part)
+        if part.exists():
+            break
     plan, conflicts = [], []
     for name in names:  # all checks happen before the first write
         target = dest / name
-        if not target.exists():
+        if not (target.exists() or target.is_symlink()):
             plan.append((name, "copied"))
-        elif target.is_dir() and _same(Path(src) / name, target):
+        elif _same(Path(src) / name, target):
             plan.append((name, "skipped"))
         elif force:
             plan.append((name, "overwritten"))
@@ -67,18 +95,28 @@ def install(client: str, scope: str, project: Path = None, force: bool = False,
     if conflicts:
         raise FileExistsError(
             "refusing to overwrite differing skill(s) in %s: %s (use --force)" % (dest, ", ".join(conflicts)))
-    if not dry_run:
-        for name, action in plan:
-            if action == "skipped":
-                continue
-            target = dest / name
-            if target.is_dir() and not target.is_symlink():
-                shutil.rmtree(str(target))
-            elif target.exists() or target.is_symlink():
-                target.unlink()
+    if dry_run:
+        return plan
+    done = []
+    for name, action in plan:
+        if action == "skipped":
+            done.append((name, action))
+            continue
+        target = dest / name
+        tmp = dest / (".%s.tmp-%d" % (name, os.getpid()))
+        try:
             dest.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(str(Path(src) / name), str(target))
-    return plan
+            shutil.copytree(str(Path(src) / name), str(tmp))
+            if target.is_symlink() or target.is_file():
+                target.unlink()
+            elif target.is_dir():
+                shutil.rmtree(str(target))
+            os.rename(str(tmp), str(target))
+        except OSError as exc:
+            shutil.rmtree(str(tmp), ignore_errors=True)
+            raise InstallError("failed to install %s into %s: %s" % (name, dest, exc), done)
+        done.append((name, action))
+    return done
 
 
 def main(argv=None) -> int:
@@ -92,6 +130,11 @@ def main(argv=None) -> int:
     try:
         plan = install(args.client, args.scope, Path(args.project) if args.project else None,
                        args.force, args.dry_run)
+    except InstallError as exc:
+        for name, action in exc.done:
+            print("%s %s" % (action, name))
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
     except (FileExistsError, ValueError) as exc:
         print("error: %s" % exc, file=sys.stderr)
         return 1

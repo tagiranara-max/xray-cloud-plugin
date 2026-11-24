@@ -78,3 +78,73 @@ def test_cli_conflict_exit_code(tmp_path, capsys):
     rc = inst.main(["--client", "codex", "--scope", "project", "--project", str(tmp_path)])
     assert rc == 1
     assert "xray-setup" in capsys.readouterr().err
+
+
+def test_failed_copy_keeps_old_skill_and_reports(tmp_path, monkeypatch, capsys):
+    dest = tmp_path / ".agents" / "skills"
+    (dest / "import-results").mkdir(parents=True)
+    (dest / "import-results" / "SKILL.md").write_text("old", encoding="utf-8")
+    (dest / "import-tests").mkdir()
+    (dest / "import-tests" / "SKILL.md").write_text("old2", encoding="utf-8")
+    real = inst.shutil.copytree
+    calls = []
+
+    def boom(src, dst, *a, **k):
+        calls.append(dst)
+        if len(calls) == 2:
+            Path(dst).mkdir(parents=True)
+            raise OSError("disk full")
+        return real(src, dst, *a, **k)
+
+    monkeypatch.setattr(inst.shutil, "copytree", boom)
+    rc = inst.main(["--client", "codex", "--scope", "project", "--project", str(tmp_path), "--force"])
+    assert rc == 1
+    cap = capsys.readouterr()
+    assert "import-tests" in cap.err and "disk full" in cap.err
+    assert "overwritten import-results" in cap.out
+    assert (dest / "import-tests" / "SKILL.md").read_text(encoding="utf-8") == "old2"
+    assert not [p for p in dest.iterdir() if ".tmp-" in p.name]
+
+
+def test_target_dir_is_a_file_refused(tmp_path, capsys):
+    (tmp_path / ".agents").mkdir()
+    (tmp_path / ".agents" / "skills").write_text("x", encoding="utf-8")
+    for extra in ([], ["--dry-run"]):
+        rc = inst.main(["--client", "codex", "--scope", "project", "--project", str(tmp_path)] + extra)
+        assert rc == 1
+        assert "not a directory" in capsys.readouterr().err
+
+
+def test_symlink_target_replaced_link_target_untouched(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("k", encoding="utf-8")
+    dest = tmp_path / "p" / ".agents" / "skills"
+    dest.mkdir(parents=True)
+    try:
+        (dest / "xray-setup").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    with pytest.raises(FileExistsError):
+        inst.install("codex", "project", project=tmp_path / "p")
+    inst.install("codex", "project", project=tmp_path / "p", force=True)
+    assert not (dest / "xray-setup").is_symlink()
+    assert (dest / "xray-setup" / "SKILL.md").is_file()
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "k"
+
+
+def test_file_in_place_of_skill_needs_force(tmp_path):
+    dest = tmp_path / ".gemini" / "skills"
+    dest.mkdir(parents=True)
+    (dest / "xray-setup").write_text("x", encoding="utf-8")
+    with pytest.raises(FileExistsError):
+        inst.install("gemini", "project", project=tmp_path)
+    inst.install("gemini", "project", project=tmp_path, force=True)
+    assert (dest / "xray-setup" / "SKILL.md").is_file()
+
+
+def test_extra_file_or_hidden_file_counts_as_different(tmp_path):
+    inst.install("codex", "project", project=tmp_path)
+    (tmp_path / ".agents" / "skills" / "xray-setup" / ".DS_Store").write_text("x", encoding="utf-8")
+    with pytest.raises(FileExistsError):
+        inst.install("codex", "project", project=tmp_path)
