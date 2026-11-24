@@ -33,7 +33,12 @@ def runs_response(statuses):
 
 
 def make(tmp_path, yaml=YAML, statuses=("PASSED", "FAILED", "PASSED"), **kw):
-    ctx = make_context(yaml, tmp_path=tmp_path, responses={RUNS: runs_response(statuses)}, **kw)
+    ctx = make_context(yaml, tmp_path=tmp_path, responses={
+        RUNS: runs_response(statuses),
+        # every key asked about is an existing Test unless a test says otherwise
+        "ResultMatchKeys": lambda v: {"getTests": {"results": [
+            {"issueId": "1", "jira": {"key": k, "summary": "Test " + k}}
+            for k in v["jql"][len("issue in ("):-1].split(", ")]}}}, **kw)
     ctx.xray.rest_responses[("POST", "import/execution/junit")] = {
         "id": "100", "key": "PROJ-9", "self": "https://x/rest/api/2/issue/100"}
     return ctx
@@ -311,7 +316,7 @@ def test_cucumber_scenario_with_two_test_tags_is_ambiguous(tmp_path):
     assert not err and out["status"] == "needs_answer", out
     assert out["ambiguous"] == [{"name": "S ['@TEST_PROJ-1', '@TEST_PROJ-2']",
                                  "candidates": ["PROJ-1", "PROJ-2"]}]
-    assert ctx.xray.rest_calls == [] and ctx.xray.calls == []
+    assert ctx.xray.rest_calls == [] and [op for op, _ in ctx.xray.calls] == ["ResultMatchKeys"]
 
 
 def test_cucumber_into_existing_execution_refuses_other_project_and_bad_json(tmp_path):
@@ -912,3 +917,23 @@ def test_robot_match_without_a_readable_summary_refused_before_upload(tmp_path):
     ctx.xray.responses[KEYS] = rows_by([])  # summary of PROJ-5 cannot be read
     out, err = call(ctx, format="robot", content=ROBOT_DEF, allowCreateTests=True)
     assert err and "PROJ-5" in out["error"] and ctx.xray.rest_calls == [], out
+
+
+def test_test_tag_and_key_tag_naming_different_tests_is_ambiguous(tmp_path):
+    ctx = match_ctx(tmp_path, yaml="projects:\n  PROJ: {testKeyTag: issue}\n")
+    both = _scenario(["@TEST_PROJ-1", "@issue=PROJ-2"], _step("passed"))
+    same = _scenario(["@TEST_PROJ-3", "@issue=PROJ-3"], _step("passed"))
+    out, err = call(ctx, format="cucumber", content=cucumber_report(both, same),
+                    testExecKey="PROJ-9")
+    assert out["status"] == "needs_answer" and out["matched"] == 1, out
+    assert out["ambiguous"][0]["candidates"] == ["PROJ-1", "PROJ-2"]
+
+
+def test_tag_keys_must_be_existing_tests(tmp_path):
+    ctx = match_ctx(tmp_path, yaml="projects:\n  PROJ: {testKeyTag: issue}\n")
+    ctx.xray.responses[KEYS] = rows_by([("PROJ-1", "a", None)])  # PROJ-2: a story
+    report = cucumber_report(_scenario(["@TEST_PROJ-1"], _step("passed")),
+                             _scenario(["@issue=PROJ-2"], _step("passed")))
+    out, err = call(ctx, format="cucumber", content=report, testExecKey="PROJ-9")
+    assert err and "PROJ-2" in out["error"] and "PROJ-1" not in out["error"], out
+    assert ctx.xray.rest_calls == []

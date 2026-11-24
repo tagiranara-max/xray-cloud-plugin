@@ -31,6 +31,8 @@ def git_ignored_dirs():
     except (OSError, subprocess.CalledProcessError):
         return []
     return [line.rstrip("/") for line in out.splitlines() if line.endswith("/")]
+
+
 TOKEN_RE = re.compile(r"[A-Za-z0-9-]+")
 
 

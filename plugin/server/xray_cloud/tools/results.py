@@ -393,7 +393,9 @@ def _resolve_xml(ctx, pk: str, fmt: str, cases: List[rm.XmlCase],
         if not complete:
             notes.append("The project has more than %d Generic tests; only those were checked "
                          "for matching definitions, so some 'missing' results may already "
-                         "have a test (Xray then reuses it)." % (rm.MAX_DEFINITION_PAGES * rm.PAGE))
+                         "have a test. If creation is allowed, Xray then reuses that test and "
+                         "may overwrite its summary or labels from the file (for Robot: rename "
+                         "it to the Robot test's name)." % (rm.MAX_DEFINITION_PAGES * rm.PAGE))
         return found
 
     names = [c.name for c in cases]
@@ -597,8 +599,8 @@ def _exec_info(pk: str, summary: str, extra: Dict[str, Any], plan_key: Optional[
     "rawFields and the project's testExecution field settings apply; required fields are "
     "checked before upload); with testExecKey results go to that execution. "
     "Before any upload every result is matched to a test of projectKey: Cucumber/Behave "
-    "scenarios by a @TEST_<KEY> tag, else the project's testKeyTag setting, else the test whose "
-    "summary is exactly the scenario name; JUnit/TestNG/NUnit/Robot cases as Xray does it (the "
+    "scenarios by a @TEST_<KEY> tag or the project's testKeyTag tag (if they name different "
+    "tests, the tool asks), else the test whose summary is exactly the scenario name; JUnit/TestNG/NUnit/Robot cases as Xray does it (the "
     "key the file names, else the Generic test with the same definition); Xray JSON entries "
     "without testKey by Generic definition. If a result matches several tests or none, nothing "
     "is uploaded and the result has status needs_answer with `questions`, `matched`, "
@@ -606,7 +608,8 @@ def _exec_info(pk: str, summary: str, extra: Dict[str, Any], plan_key: Optional[
     "again with testKeys {name: KEY} for chosen tests, skipMissing: true to leave unmatched "
     "results out, or allowCreateTests: true (only after the user agreed) to let new Test issues "
     "be created for them; created tests are listed in createdTests and get no AI label. "
-    "Existing tests are never changed: the uploaded copy (never the user's file) sends "
+    "Existing tests are never changed, except that requirement links named in the file are "
+    "added: the uploaded copy (never the user's file) sends "
     "known tests by key without testInfo, drops XML summary/description/label properties and "
     "plain Robot tags of matched cases, and gives matched Robot tests their key tag and the "
     "test's current summary as name, since Xray would otherwise rename them (warnings say "
@@ -622,8 +625,11 @@ def _exec_info(pk: str, summary: str, extra: Dict[str, Any], plan_key: Optional[
              "testEnvironments": {"type": "array", "items": {"type": "string"}},
              "summary": {"type": "string"}, "fields": _OBJ, "rawFields": _OBJ,
              "testKeys": {"type": "object", "additionalProperties": {"type": "string"},
-                          "description": "Result name (scenario name, or the case definition "
-                                         "as listed in needs_answer) -> test key"},
+                          "description": "Result name exactly as listed in needs_answer -> "
+                                         "test key. Names: the scenario name (\"Feature: "
+                                         "Scenario\" when features share it), the XML case "
+                                         "definition, or the Xray JSON summary (\"summary "
+                                         "(definition)\" when entries share it)"},
              "allowCreateTests": {"type": "boolean", "description":
                                   "Let new Test issues be created for results that match no "
                                   "test. Only with the user's consent. Default false."},
@@ -687,16 +693,18 @@ def import_execution_results(ctx, args):
         multipart = True
         info = _exec_info(pk, args.get("summary") or "Imported results (%s)" % fmt, extra,
                           plan_key, envs)
-    # testKeys must name existing Tests: anything else would be a link to Xray (a Robot tag)
-    # or a failed upload, and the result could fall back to Xray creating a test.
+    # testKeys and scenario tag keys must name existing Tests: anything else would be a link
+    # to Xray (a Robot tag), a dropped scenario or a failed upload, and the result could fall
+    # back to Xray creating a test.
     known: Dict[str, str] = {}
-    if explicit:
-        wanted = sorted(set(explicit.values()))
+    tag_keys = sorted({k for c in scen for k in c.tag_keys})
+    if explicit or tag_keys:
+        wanted = sorted(set(explicit.values()) | set(tag_keys))
         known = rm.existing_tests(ctx, wanted)
         bad = [k for k in wanted if k not in known]
         if bad:
-            raise ToolError("testKeys must name existing Tests of %s; these are not: %s"
-                            % (pk, ", ".join(bad)), notTests=bad)
+            raise ToolError("testKeys and @TEST_/testKeyTag tags must name existing Tests of "
+                            "%s; these are not: %s" % (pk, ", ".join(bad)), notTests=bad)
     # Match every result to a test (reads only).
     if scen:
         res = _resolve_scenarios(ctx, pk, scen, explicit)

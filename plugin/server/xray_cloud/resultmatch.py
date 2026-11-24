@@ -199,7 +199,7 @@ def xml_cases(root, fmt: str, pk: str) -> List[XmlCase]:
         if fmt != "robot":
             for k in keys:
                 check_issue_in_project(k, pk)
-        out.append(XmlCase(definition, summary, el, sorted(set(keys))))
+        out.append(XmlCase(definition.strip(), summary, el, sorted(set(keys))))
     return out
 
 
@@ -307,7 +307,7 @@ def find_by_definition(ctx: ServerContext, pk: str,
                                 MAX_DEFINITION_PAGES)
     for r in rows:
         key = str((r.get("jira") or {}).get("key") or "")
-        d = r.get("unstructured")
+        d = (r.get("unstructured") or "").strip()
         if d in wanted and key.startswith(pk + "-") and key not in out[d]:
             out[d].append(key)
     return out, complete
@@ -327,9 +327,10 @@ _NO_SUCH_ISSUE = re.compile(r"does not exist|is invalid|not valid|no project", r
 
 
 def existing_tests(ctx: ServerContext, keys: Sequence[str]) -> Dict[str, str]:
-    """{key: summary} of the keys that are Test issues (keys must be key-shaped). JQL rejects
-    a whole `issue in (...)` when one key does not exist, so such a chunk is retried key by
-    key; a key JQL still rejects is not a test. Other errors are raised."""
+    """{key: summary} of the keys that are Test issues (keys must be key-shaped). Live, getTests
+    simply leaves out keys that do not exist (no error); in case JQL ever rejects a whole
+    `issue in (...)` for one such key, the chunk is retried key by key as a fallback, and a key
+    still rejected is not a test. Other errors are raised."""
     found: Dict[str, str] = {}
     keys = list(dict.fromkeys(keys))
     for i in range(0, len(keys), PAGE):

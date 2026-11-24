@@ -224,3 +224,17 @@ def test_scenario_names_qualified_by_feature_when_they_collide():
     assert [(c.name, c.summary) for c in cases] == [
         ("Accounts: Login", "Login"), ("Logout", "Logout"), ("Accounts: Login", "Login"),
         ("Admin: Login", "Login")]
+
+
+def test_xml_definitions_are_trimmed():
+    cases = xml_cases("junit", '<testsuite><testcase classname=" a.B " name=" c "/></testsuite>')
+    assert cases[0].name == "a.B . c"  # trimmed as a whole, like testKeys names
+    nunit = xml_cases("nunit", '<test-run><test-case name="c" fullname=" a.Fx.c "/></test-run>')
+    assert nunit[0].name == "a.Fx.c"
+
+
+def test_find_by_definition_compares_trimmed_definitions():
+    ctx = make_context(responses={"ResultMatchDefinitions": lambda v: rows_response([
+        ("PROJ-1", "c", " a.B.c ")])})
+    found, _ = rm.find_by_definition(ctx, "PROJ", ["a.B.c"])
+    assert found == {"a.B.c": ["PROJ-1"]}
