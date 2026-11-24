@@ -165,7 +165,9 @@ class XrayClient:
         return data
 
     def rest(self, method: str, path: str, *, json_body: Any = None,
-             multipart: Optional[dict] = None, params: Optional[dict] = None) -> Any:
+             multipart: Optional[dict] = None, params: Optional[dict] = None,
+             data: Optional[bytes] = None, content_type: Optional[str] = None) -> Any:
+        """data (with content_type) sends raw bytes untouched as the request body."""
         url = self._api + path.lstrip("/")
         if params:
             url += "?" + urlencode(params, doseq=True)
@@ -174,6 +176,10 @@ class XrayClient:
         if multipart is not None:
             body, ctype = encode_multipart(multipart.get("fields", {}), multipart.get("files", {}))
             headers["Content-Type"] = ctype
+        elif data is not None:
+            body = data
+            if content_type:
+                headers["Content-Type"] = content_type
         elif json_body is not None:
             body = json.dumps(json_body).encode("utf-8")
             headers["Content-Type"] = "application/json"

@@ -336,3 +336,13 @@ def test_fragment_or_bom_mutation_not_retried(fake, doc):
     with pytest.raises(ToolError):
         c.graphql(doc)
     assert c.sleeps == [] and len(fake.calls) == 2
+
+
+def test_rest_raw_data_sent_untouched(fake):
+    fake.push(auth_ok(), json_response({"ok": True}))
+    raw = "<testsuites>\xe9</testsuites>".encode("latin-1")
+    make(fake).rest("POST", "import/execution/junit", params={"projectKey": "P"},
+                    data=raw, content_type="text/xml")
+    call = fake.calls[1]
+    assert call.body == raw and call.headers["Content-Type"] == "text/xml"
+    assert call.url.endswith("import/execution/junit?projectKey=P")

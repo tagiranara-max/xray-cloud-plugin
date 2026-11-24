@@ -65,6 +65,7 @@ class FakeXray:
         self.responses = dict(responses or {})
         self.calls: List[tuple] = []
         self.rest_calls: List[tuple] = []
+        self.rest_responses: dict = {}  # (METHOD, path) -> response or callable(kwargs)
         self.downloads: dict = {}  # url -> bytes, or an Exception to raise
         self.download_calls: List[str] = []
 
@@ -79,7 +80,11 @@ class FakeXray:
 
     def rest(self, method, path, **kwargs):
         self.rest_calls.append((method, path, kwargs))
-        raise AssertionError("FakeXray: unexpected REST call %s %s" % (method, path))
+        key = (method.upper(), path)
+        if key not in self.rest_responses:
+            raise AssertionError("FakeXray: unexpected REST call %s %s" % (method, path))
+        resp = self.rest_responses[key]
+        return resp(kwargs) if callable(resp) else resp
 
     def download(self, url: str) -> bytes:
         self.download_calls.append(url)
