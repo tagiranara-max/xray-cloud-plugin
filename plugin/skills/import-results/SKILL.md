@@ -37,7 +37,7 @@ Ask whether the results belong to a test environment. Pass names in `testEnviron
 
 Call `import_execution_results` with the project key, format, file and target. Before uploading anything, the tool matches every result to a test of the project:
 
-- Cucumber and Behave scenarios: a `@TEST_<KEY>` tag, else the project's `testKeyTag` setting (for example `@issue=PROJ-12`), else the test whose summary is exactly the scenario name (Scenario Outline rows use the outline's name). Scenarios need no tags.
+- Cucumber and Behave scenarios: a `@TEST_<KEY>` tag or the project's `testKeyTag` tag (for example `@issue=PROJ-12`); if they name different tests, the tool asks. Else the test whose summary is exactly the scenario name (Scenario Outline rows use the outline's name). Scenarios need no tags.
 - JUnit, TestNG, NUnit and Robot cases: the way Xray does it. The key the file names (JUnit property `test_key`, TestNG attribute `test`, NUnit property `Test`, a Robot tag equal to the key), else the Generic test whose definition is the case's full name (for example `com.acme.LoginTest.validUser`). Xray does not match these by summary.
 - Xray JSON entries without `testKey` (with `testInfo`): a Generic entry matches the Generic test with the same definition; others match nothing.
 
@@ -58,9 +58,9 @@ Result names are unique per result: when two features have a scenario with the s
 
 When two scenarios with the same name in different features both match no test, creating tests makes one Cucumber test for both (named after the scenario). Tell the user, and map one of them with `testKeys` if they should be separate tests.
 
-For Robot results, Xray would rename a matched test to the Robot test's name. The tool prevents that without asking: for each Robot test matched to an existing test, the uploaded copy uses the test's key tag and its current summary as the name. The user's file is not changed. Jira tests are never renamed.
+For Robot results, Xray would rename a matched test to the Robot test's name. The tool always prevents that: for each Robot test matched to an existing test, the uploaded copy uses the test's key tag and its current summary as the name. The user's file is not changed. Jira tests are never renamed.
 
-Existing tests are otherwise left as they are: the tool removes `testInfo` from Xray JSON entries that name a test, summary, description and label properties (for example JUnit `test_summary` and `tags`) from cases matched to existing tests, and plain Robot tags (which Xray would add as labels) from Robot tests matched to existing tests; the result's `warnings` say so.
+Existing tests are otherwise left as they are, except for one thing: links to requirements named in the file (JUnit `requirements`, Robot requirement-key tags and the like) are kept, so the import can link a test to those requirements. Otherwise the tool removes `testInfo` from Xray JSON entries that name a test, summary, description and label properties (for example JUnit `test_summary` and `tags`) from cases matched to existing tests, and plain Robot tags (which Xray would add as labels) from Robot tests matched to existing tests; the result's `warnings` say so.
 
 ## 6. Summarise
 

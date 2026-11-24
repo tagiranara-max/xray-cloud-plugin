@@ -139,10 +139,13 @@ and Robot plain (not key-shaped) tags from cases matched to existing tests; and 
 `testKeys` values that are not existing Tests of the project. For every Robot result matched
 to an existing test (by key tag, `testKeys` or definition), the uploaded copy gets the test's
 key tag and the test's current summary as the Robot test name, so Xray renames nothing. The
-user's file is never modified.
+user's file is never modified. TestNG and NUnit behaviour on matched tests was not verified
+live: their property stripping is a precaution. Requirement links named in the file
+(JUnit `requirements`, Robot requirement-key tags and the like) are kept, so an import can add
+requirement links to existing tests; plain Cucumber/Behave tags also stay in the uploaded copy.
 
-So, in the tool: Cucumber/Behave scenarios are matched by tag, the project's `testKeyTag`, or
-exact summary (the plugin's own rule; trimmed, case-sensitive), and the resolved key is sent as
+So, in the tool: Cucumber/Behave scenarios are matched by a `@TEST_<KEY>` tag or the project's
+`testKeyTag` tag (if they name different tests, the tool asks), else by exact summary (the plugin's own rule; trimmed, case-sensitive), and the resolved key is sent as
 a `@TEST_<KEY>` tag (new execution, native import keeps step details) or as `testKey` in Xray
 JSON (existing execution, or tests to create: those go as `testInfo` with `type: Cucumber`).
 XML cases mirror Xray's rule (file key, else Generic definition); Robot key tags count only when

@@ -163,7 +163,7 @@ Before any upload, `import_execution_results` works out which test of the projec
 
 | Format | Matched by |
 |---|---|
-| Cucumber, Behave | a `@TEST_<KEY>` tag, else the project's `testKeyTag`, else the test whose summary is exactly the scenario name (trimmed, case-sensitive; outline rows use the outline's name). No tags needed |
+| Cucumber, Behave | a `@TEST_<KEY>` tag or the project's `testKeyTag` tag (if they name different tests, the tool asks), else the test whose summary is exactly the scenario name (trimmed, case-sensitive; outline rows use the outline's name). No tags needed |
 | JUnit, TestNG, NUnit, Robot | Xray's own rule: the key the file names (JUnit property `test_key`, TestNG attribute `test`, NUnit property `Test`, Robot tag equal to a Test key), else the Generic test with the same definition (JUnit `classname.name`, TestNG `class.method`, NUnit `fullname`, Robot `Suite.Test`). Xray does not match these by summary |
 | Xray JSON | `testKey`; an entry with only `testInfo` matches the Generic test with the same definition (Generic type only) |
 
@@ -173,13 +173,14 @@ When a result matches several tests (`ambiguous`) or none (`missing`), nothing i
 - `skipMissing: true` to leave unmatched results out;
 - `allowCreateTests: true`, only with the user's consent, to let new tests be created: Xray creates a Generic test per JUnit/TestNG/NUnit/Robot case (summary = the case name), and a Cucumber test named after each unmatched scenario. They are listed in `createdTests` and get no AI label (label them afterwards with `edit_test` or `set_lifecycle_label`, or create labelled tests first with `create_tests_from_feature`).
 
-Existing tests are never changed without asking. Xray would change them in these cases (verified live), so the tool prevents it:
+Existing tests are never changed (except requirement links named in the file: JUnit `requirements`, Robot requirement-key tags and the like are kept, so Xray may link the test to those requirements). Xray would change them in these cases (verified live), so the tool prevents it:
 
 - A Robot result renames the test it maps to (by key tag or by definition) to the Robot test's name, and adds its plain tags as labels. For each Robot test matched to an existing test, the uploaded copy (never your file) carries that test's key tag and its current summary as the name, and drops plain tags (key-shaped tags stay), so the test stays as it is.
 - `testInfo` overwrites a test's summary and definition, even next to a `testKey`. Entries whose test is known are sent with `testKey` only.
-- JUnit `test_summary` and `tags` properties overwrite the summary and labels of a test matched by key or definition. The tool removes them (and `test_description`; for TestNG and NUnit the similar names, as a precaution) from matched cases and says so in `warnings`. Cases for new tests keep them.
+- JUnit `test_summary` and `tags` properties overwrite the summary and labels of a test matched by key or definition. The tool removes them (and `test_description`; for TestNG and NUnit the similar names, as a precaution) from matched cases and says so in `warnings`. Cases for new tests keep them. TestNG and NUnit behaviour on matched tests was not verified live; their stripping is a precaution.
+- Plain Cucumber/Behave tags (for example `@smoke`) stay in the uploaded copy; only the `@TEST_<KEY>` tag is added or replaced.
 
-`testKeys` values must be existing Tests of the project. A Robot tag counts as a test key only when the issue is a Test (requirement links and tags such as `ISO-8601` are left alone); a Test of another project is refused. Names that occur more than once are told apart: `Feature: Scenario` for Cucumber/Behave, `summary (definition)` for Xray JSON. Tests created from Cucumber hold only the scenario's steps (no Background, no Examples); outline rows with filled-in names show up as missing, so map them with `testKeys`.
+`testKeys` values and the keys in `@TEST_<KEY>` / `testKeyTag` tags must be existing Tests of the project. A Robot tag counts as a test key only when the issue is a Test (requirement links and tags such as `ISO-8601` are left alone); a Test of another project is refused. Names that occur more than once are told apart: `Feature: Scenario` for Cucumber/Behave, `summary (definition)` for Xray JSON. Tests created from Cucumber hold only the scenario's steps (no Background, no Examples); outline rows with filled-in names show up as missing, so map them with `testKeys`.
 
 ## Analysis
 
