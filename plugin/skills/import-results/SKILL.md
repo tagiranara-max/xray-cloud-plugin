@@ -25,8 +25,8 @@ If the format is unclear, ask. Pass the file with `filePath` (sent unchanged, 25
 
 Ask which one:
 
-- an existing test execution: pass `testExecKey`;
-- a test plan: pass `testPlanKey` (XML formats; JSON formats only together with a new execution created with `fields`);
+- an existing test execution: pass `testExecKey`. Cucumber JSON can go into an existing execution only when every scenario carries one `@TEST_<KEY>` tag: Xray's Cucumber import always creates a new execution, so the tool sends one status per test as Xray JSON (step details are not kept; failures become the run comment). Behave JSON cannot go into an existing execution;
+- a test plan: pass `testPlanKey` (any format);
 - a new test execution: omit `testExecKey`, and ask for a `summary`. The project's `testExecution` fields from the settings file apply. Call `get_create_fields` with issue type `Test Execution` to see which are required. A required field with no default must be given in `fields` (friendly names from the settings file) or `rawFields`; the import is refused before any upload if one is missing.
 
 ## 3. Environments

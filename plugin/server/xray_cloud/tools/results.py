@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..context import check_issue_in_project, require_project
 from ..errors import ToolError
@@ -62,14 +63,121 @@ def _status_summary(ctx, issue_id: str) -> Dict[str, Any]:
             return {"total": total, "byStatus": by_status}
 
 
+def _parse_json(data: bytes, fmt: str) -> Any:
+    try:
+        return json.loads(data.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError) as e:
+        raise ToolError("The %s results are not valid UTF-8 JSON: %s" % (fmt, e)) from None
+
+
+def _with_target(report: Any, exec_key: Optional[str], plan_key: Optional[str],
+                 envs: List[str]) -> bytes:
+    """An Xray JSON report aimed at an existing execution / plan / environments."""
+    if not isinstance(report, dict):
+        raise ToolError("Xray JSON results must be an object with a tests list")
+    report = dict(report)
+    if exec_key:
+        have = report.get("testExecutionKey")
+        if have and have != exec_key:
+            raise ToolError("The report names testExecutionKey %s, not %s" % (have, exec_key))
+        report["testExecutionKey"] = exec_key
+    if plan_key or envs:
+        info = dict(report.get("info") or {})
+        for name, value in (("testPlanKey", plan_key), ("testEnvironments", envs or None)):
+            if value is None:
+                continue
+            if info.get(name) not in (None, "", [], value):
+                raise ToolError("The report's info.%s differs from the %s argument"
+                                % (name, name), report=info.get(name), argument=value)
+            info[name] = value
+        report["info"] = info
+    return json.dumps(report).encode("utf-8")
+
+
+_TEST_TAG = re.compile(r"^@TEST_([A-Z][A-Z0-9_]*-[1-9][0-9]*)$")
+_FAILED = {"failed", "undefined", "ambiguous"}
+
+
+def _element_status(element: dict) -> Tuple[str, Optional[str]]:
+    """(Xray status, first failure) of one Cucumber JSON scenario element: FAILED when a step
+    or hook failed (or is undefined/ambiguous), PASSED when every step passed, else TODO."""
+    statuses: List[str] = []
+    failure: Optional[str] = None
+    for group in ("before", "steps", "after"):
+        for st in element.get(group) or []:
+            res = (st.get("result") or {}) if isinstance(st, dict) else {}
+            status = str(res.get("status") or "").lower()
+            statuses.append(status)
+            if status in _FAILED and failure is None:
+                name = ("%s%s" % (st.get("keyword") or "", st.get("name") or "")).strip() \
+                    or group
+                failure = "%s: %s" % (name, res.get("error_message") or status)
+    if any(s in _FAILED for s in statuses):
+        return "FAILED", (failure or "")[:2000]
+    steps = [str(((st.get("result") or {}).get("status") or "")).lower()
+             for st in element.get("steps") or [] if isinstance(st, dict)]
+    if steps and all(s == "passed" for s in statuses):
+        return "PASSED", None
+    return "TODO", None
+
+
+def cucumber_to_xray(report: Any, pk: str) -> dict:
+    """Convert a Cucumber JSON report to Xray JSON (tests by @TEST_<KEY> tag). Every scenario
+    must carry exactly one @TEST_ key of the project; otherwise nothing is sent. A key with
+    several scenarios (Scenario Outline rows) gets one example status per row."""
+    if not isinstance(report, list):
+        raise ToolError("Cucumber JSON results must be a list of features")
+    by_key: Dict[str, List[Tuple[str, Optional[str]]]] = {}
+    untagged: List[str] = []
+    for feature in report:
+        if not isinstance(feature, dict):
+            raise ToolError("Cucumber JSON results must be a list of feature objects")
+        for el in feature.get("elements") or []:
+            if not isinstance(el, dict) or el.get("type") == "background" or \
+                    str(el.get("keyword") or "").strip().lower() == "background":
+                continue
+            keys = sorted({m.group(1) for m in (_TEST_TAG.match(str((t or {}).get("name") or ""))
+                                                for t in el.get("tags") or []) if m})
+            where = "%s / %s" % (feature.get("name") or feature.get("uri") or "?",
+                                 el.get("name") or "?")
+            if len(keys) != 1:
+                untagged.append(where)
+                continue
+            check_issue_in_project(keys[0], pk)
+            by_key.setdefault(keys[0], []).append(_element_status(el))
+    if untagged:
+        raise ToolError("Cucumber results can go into an existing execution only when every "
+                        "scenario is tagged with one @TEST_<KEY> (Xray Cloud's Cucumber import "
+                        "always creates a new execution, so the results are sent as Xray JSON). "
+                        "Tag these scenarios or omit testExecKey: %s" % "; ".join(untagged[:20]),
+                        scenarios=untagged)
+    if not by_key:
+        raise ToolError("The Cucumber report has no scenarios")
+    tests: List[Dict[str, Any]] = []
+    for key, rows in by_key.items():
+        statuses = [st for st, _ in rows]
+        overall = ("FAILED" if "FAILED" in statuses else
+                   "PASSED" if all(st == "PASSED" for st in statuses) else "TODO")
+        item: Dict[str, Any] = {"testKey": key, "status": overall}
+        comments = [c for _, c in rows if c]
+        if comments:
+            item["comment"] = "\n".join(comments)[:4000]
+        if len(rows) > 1:
+            item["examples"] = statuses
+        tests.append(item)
+    return {"tests": tests}
+
+
 @REGISTRY.tool(
     "import_execution_results",
     "Import test results into Xray. format: xray | cucumber | behave (JSON) or junit | testng | "
     "nunit | robot (XML). Give exactly one of filePath (sent byte for byte, max 25 MB) or content. "
     "Without testExecKey a new Test Execution is created (summary/fields/rawFields and the "
     "project's testExecution field settings apply; required fields are checked before upload); "
-    "with testExecKey results go to that execution. testPlanKey and testEnvironments are "
-    "supported for XML formats, or for JSON formats when a new execution is created with fields. "
+    "with testExecKey results go to that execution (cucumber: every scenario needs a @TEST_<KEY> "
+    "tag, and the results are sent as Xray JSON with one status per test; behave: not "
+    "supported, Xray always creates a new execution). testPlanKey and testEnvironments work "
+    "with every format. "
     "Returns the execution key and a count of its runs by status; detail adds the raw response.",
     _schema({"format": {"type": "string", "enum": list(FORMATS)},
              "filePath": {"type": "string"}, "content": {"type": "string"},
@@ -96,6 +204,7 @@ def import_execution_results(ctx, args):
     # Decide the endpoint and validate everything before the first Xray call.
     multipart = False
     info: Optional[dict] = None
+    sent_as = fmt
     if not exec_key and (wants_fields or (project.fields.get("testExecution") or {})):
         extra = build_jira_fields(project, "testExecution", args.get("fields"),
                                   args.get("rawFields"))
@@ -110,12 +219,29 @@ def import_execution_results(ctx, args):
             xf["environments"] = envs
         if xf:
             info["xrayFields"] = xf
-    elif fmt in JSON_FORMATS and (exec_key or plan_key or envs):
-        raise ToolError("For %s results testExecKey, testPlanKey and testEnvironments cannot be "
-                        "sent with the plain endpoint; put them in the report itself or let a new "
-                        "execution be created with summary/fields" % fmt)
+    elif fmt == "behave" and exec_key:
+        raise ToolError("Behave results cannot go into an existing execution: Xray Cloud's "
+                        "Behave endpoints always create a new Test Execution. Omit testExecKey.")
+    elif fmt == "cucumber" and exec_key:
+        # Xray Cloud's Cucumber endpoints always create a new Test Execution (the multipart
+        # info rejects xrayFields.testExecKey; a testExecKey query parameter is ignored), so
+        # the report is converted to Xray JSON, whose testExecutionKey targets the execution.
+        report = cucumber_to_xray(_parse_json(data, fmt), pk)
+        sent_as = "xray"
+        data = _with_target(report, exec_key, plan_key, envs)
+    elif fmt == "xray" and (exec_key or plan_key or envs):
+        sent_as = "xray"
+        data = _with_target(_parse_json(data, fmt), exec_key, plan_key, envs)
+    elif fmt in JSON_FORMATS and (plan_key or envs):
+        # The plain Cucumber/Behave endpoints take no parameters: a new execution through
+        # the multipart endpoint carries them in info.xrayFields.
+        multipart = True
+        info = {"fields": {"project": {"key": pk}, "summary": "Imported results (%s)" % fmt,
+                           "issuetype": {"name": "Test Execution"}},
+                "xrayFields": dict(([("testPlanKey", plan_key)] if plan_key else [])
+                                   + ([("environments", envs)] if envs else []))}
     ctype = "text/xml" if fmt in XML_FORMATS else "application/json"
-    path = _endpoint(fmt, multipart)
+    path = _endpoint(sent_as, multipart)
     if multipart:
         # Verified live: every format's multipart part is "results" (Cucumber with "result"
         # gets HTTP 400 "Unexpected field (result)").
@@ -154,6 +280,9 @@ def import_execution_results(ctx, args):
         warnings.append("Results were imported but the run summary could not be read: %s" % e)
     if warnings:
         out["warnings"] = warnings
+    if sent_as != fmt:
+        out["sentAs"] = ("xray JSON converted from cucumber (one status per @TEST_ key, "
+                         "failures as comment)")
     if args.get("detail"):
         out["response"] = resp
     return out

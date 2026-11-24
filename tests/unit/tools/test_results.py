@@ -151,10 +151,111 @@ def test_cucumber_and_xray_json_endpoints(tmp_path):
         assert out["testExecKey"] == "PROJ-7"
 
 
-def test_json_format_with_exec_or_env_params_refused(tmp_path):
+def test_json_format_new_execution_with_envs_goes_multipart(tmp_path):
     ctx = make(tmp_path)
-    out, err = call(ctx, format="cucumber", content="[]", testEnvironments=["a"])
-    assert err and ctx.xray.rest_calls == []
+    ctx.xray.rest_responses[("POST", "import/execution/cucumber/multipart")] = {
+        "id": "7", "key": "PROJ-7"}
+    out, err = call(ctx, format="cucumber", content="[]", testEnvironments=["a"],
+                    testPlanKey="PROJ-5")
+    assert not err, out
+    m, path, kw = ctx.xray.rest_calls[0]
+    assert path == "import/execution/cucumber/multipart"
+    info = json.loads(kw["multipart"]["files"]["info"][1])
+    assert info["xrayFields"] == {"testPlanKey": "PROJ-5", "environments": ["a"]}
+    assert kw["multipart"]["files"]["results"][1] == b"[]"
+
+
+def _step(status, name="it works", error=None):
+    res = {"status": status, "duration": 1}
+    if error:
+        res["error_message"] = error
+    return {"keyword": "Then ", "name": name, "result": res}
+
+
+def _scenario(tags, *steps, kind="scenario"):
+    return {"type": kind, "keyword": "Scenario", "name": "S %s" % tags,
+            "tags": [{"name": t} for t in tags], "steps": list(steps)}
+
+
+def cucumber_report(*elements):
+    return json.dumps([{"name": "F", "uri": "f.feature", "elements": [
+        {"type": "background", "keyword": "Background", "steps": [_step("passed")]}]
+        + list(elements)}])
+
+
+def test_cucumber_into_existing_execution_sent_as_xray_json(tmp_path):
+    """Xray Cloud's Cucumber endpoints always create a new execution (verified live), so
+    results for an existing one are converted to Xray JSON with testExecutionKey."""
+    ctx = make(tmp_path)
+    ctx.xray.rest_responses[("POST", "import/execution")] = {"id": "9", "key": "PROJ-9"}
+    report = cucumber_report(
+        _scenario(["@smoke", "@TEST_PROJ-1"], _step("passed"), _step("passed")),
+        _scenario(["@TEST_PROJ-2"], _step("passed"), _step("failed", "x", "boom")),
+        _scenario(["@TEST_PROJ-3"], _step("passed")),     # outline row 1
+        _scenario(["@TEST_PROJ-3"], _step("undefined")),  # outline row 2
+        _scenario(["@TEST_PROJ-4"], _step("skipped")))
+    out, err = call(ctx, format="cucumber", content=report, testExecKey="PROJ-9",
+                    testEnvironments=["chrome"])
+    assert not err, out
+    m, path, kw = ctx.xray.rest_calls[0]
+    assert (m, path) == ("POST", "import/execution") and "params" not in kw
+    assert kw["content_type"] == "application/json"
+    body = json.loads(kw["data"])
+    assert body["testExecutionKey"] == "PROJ-9"
+    assert body["info"] == {"testEnvironments": ["chrome"]}
+    assert body["tests"] == [
+        {"testKey": "PROJ-1", "status": "PASSED"},
+        {"testKey": "PROJ-2", "status": "FAILED", "comment": "Then x: boom"},
+        {"testKey": "PROJ-3", "status": "FAILED", "comment": "Then it works: undefined",
+         "examples": ["PASSED", "FAILED"]},
+        {"testKey": "PROJ-4", "status": "TODO"}]
+    assert out["testExecKey"] == "PROJ-9" and out["created"] is False
+    assert "converted from cucumber" in out["sentAs"]
+
+
+@pytest.mark.parametrize("tags", [[], ["@TEST_PROJ-1", "@TEST_PROJ-2"], ["@PROJ-1"]])
+def test_cucumber_into_existing_execution_needs_one_test_tag(tmp_path, tags):
+    ctx = make(tmp_path)
+    report = cucumber_report(_scenario(["@TEST_PROJ-1"], _step("passed")),
+                             _scenario(tags, _step("passed")))
+    out, err = call(ctx, format="cucumber", content=report, testExecKey="PROJ-9")
+    assert err and "@TEST_" in out["error"] and out["scenarios"] == ["F / S %s" % tags]
+    assert ctx.xray.rest_calls == []
+
+
+def test_cucumber_into_existing_execution_refuses_other_project_and_bad_json(tmp_path):
+    ctx = make(tmp_path)
+    out, err = call(ctx, format="cucumber", testExecKey="PROJ-9",
+                    content=cucumber_report(_scenario(["@TEST_OTHER-1"], _step("passed"))))
+    assert err and "OTHER-1" in json.dumps(out)
+    out, err = call(ctx, format="cucumber", content="{not json", testExecKey="PROJ-9")
+    assert err and "JSON" in out["error"]
+    out, err = call(ctx, format="cucumber", content="[]", testExecKey="PROJ-9")
+    assert err and "no scenarios" in out["error"]
+    assert ctx.xray.rest_calls == []
+
+
+def test_behave_into_existing_execution_refused(tmp_path):
+    ctx = make(tmp_path)
+    out, err = call(ctx, format="behave", content="[]", testExecKey="PROJ-9")
+    assert err and "new Test Execution" in out["error"] and ctx.xray.rest_calls == []
+
+
+def test_xray_json_into_existing_execution_sets_testexecutionkey(tmp_path):
+    ctx = make(tmp_path)
+    ctx.xray.rest_responses[("POST", "import/execution")] = {"id": "9", "key": "PROJ-9"}
+    report = json.dumps({"info": {"summary": "s"}, "tests": [
+        {"testKey": "PROJ-1", "status": "PASSED"}]})
+    out, err = call(ctx, format="xray", content=report, testExecKey="PROJ-9",
+                    testPlanKey="PROJ-5")
+    assert not err, out
+    body = json.loads(ctx.xray.rest_calls[0][2]["data"])
+    assert body["testExecutionKey"] == "PROJ-9"
+    assert body["info"] == {"summary": "s", "testPlanKey": "PROJ-5"}
+    assert "sentAs" not in out
+    clash = json.dumps({"testExecutionKey": "PROJ-8", "tests": []})
+    out, err = call(ctx, format="xray", content=clash, testExecKey="PROJ-9")
+    assert err and "PROJ-8" in out["error"] and len(ctx.xray.rest_calls) == 1
 
 
 def test_json_format_new_execution_with_fields_multipart(tmp_path):

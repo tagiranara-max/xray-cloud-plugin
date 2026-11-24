@@ -151,7 +151,7 @@ Tools act with the permissions of the user behind the Xray API key (and, for Jir
 
 ## Results and native feature import/export
 
-- **`import_execution_results`** uploads a result file (JUnit, TestNG, NUnit, Robot, Cucumber JSON, Behave JSON or Xray JSON) into a new or existing test execution. The file is sent byte for byte (UTF-8, max 25 MB); give either `filePath` or `content`.
+- **`import_execution_results`** uploads a result file (JUnit, TestNG, NUnit, Robot, Cucumber JSON, Behave JSON or Xray JSON) into a new or existing test execution. The file is sent byte for byte (max 25 MB); give either `filePath` or `content`. Exceptions: Xray JSON for an existing execution, plan or environments gets `testExecutionKey`/`info` set; Cucumber JSON for an existing execution needs a `@TEST_<KEY>` tag on every scenario and is sent as Xray JSON (one status per test), because Xray's Cucumber import always creates a new execution; Behave JSON always creates a new execution.
 - **`import_feature_file`** uses Xray's native importer for a `.feature` file or a `.zip` of them. It is faster and a good fit for bulk loads, but it does no duplicate check, asks no questions, applies no tag rules, adds no AI label and has no preview.
 - **`create_tests_from_feature`** is the plugin's own import (see Feature import below): duplicate check, import choices, tag rules, the AI label and a preview before anything is written. Use it for everyday imports; use `import_feature_file` when you want Xray's native result as is.
 - **`export_cucumber_features`** writes Cucumber tests (by key or saved filter) as `.feature` files into a local directory and refuses to overwrite existing files unless you ask.
