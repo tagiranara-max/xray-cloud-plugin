@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from .context import is_permission_error, permission_denied, require_write
 from .errors import ToolError
@@ -87,8 +87,12 @@ def _coerce_object(args: dict, schema: dict, path: str = "") -> dict:
         unknown = sorted(k for k in args if k not in props)
         if unknown:
             raise ToolError("Unknown parameter '%s%s'" % (prefix, unknown[0]), unknown=unknown)
+    required = set(schema.get("required", []))
     out = {}
     for key, value in args.items():
+        if (value is None and key in props and key not in required
+                and "null" not in _types(props[key])):
+            continue  # null = omitted (clients send null for parameters they leave unset)
         out[key] = _coerce_value(value, props[key], prefix + key) if key in props else value
     return out
 
@@ -107,6 +111,7 @@ def _error_result(request_data: dict) -> dict:
 class Registry:
     def __init__(self) -> None:
         self._tools: Dict[str, Tool] = {}
+        self.allowed: Optional[Set[str]] = None  # None = every tool (XRAY_TOOLS unset)
 
     def tool(self, name: str, description: str, params: dict, write: bool = False):
         def decorator(fn):
@@ -121,7 +126,7 @@ class Registry:
     def list(self) -> List[dict]:
         return [
             {"name": t.name, "description": t.description, "inputSchema": t.params}
-            for t in self._tools.values()
+            for t in self._tools.values() if self.allowed is None or t.name in self.allowed
         ]
 
     def call(self, ctx: Any, name: str, args: dict) -> dict:
@@ -129,6 +134,9 @@ class Registry:
             tool = self._tools.get(name)
             if tool is None:
                 raise ToolError("Unknown tool '%s'" % name)
+            if self.allowed is not None and name not in self.allowed:
+                raise ToolError("Tool '%s' is not enabled: it is outside the tool groups selected by "
+                                "XRAY_TOOLS. Add its group to XRAY_TOOLS or unset it." % name)
             clean = coerce(args or {}, tool.params)
             if tool.write:
                 require_write(ctx)

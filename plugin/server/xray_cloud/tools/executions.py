@@ -414,7 +414,8 @@ _RUN_STEPS = {"type": "array", "items": {"type": "object", "properties": {
                                                 "(PASS/FAIL are sent as PASSED/FAILED)"},
     "comment": {"type": "string"}, "actualResult": {"type": "string"}},
     "required": ["index"], "additionalProperties": False}}
-_NULLABLE_STR = {"type": ["string", "null"]}
+_UNASSIGN_STR = {"type": "string", "description":
+                 "Jira account id; an empty string unassigns. Omit to leave unchanged."}
 
 
 @REGISTRY.tool(
@@ -424,12 +425,12 @@ _NULLABLE_STR = {"type": ["string", "null"]}
     "-> FAILED, all PASS -> PASSED, otherwise EXECUTING); updates without any status (e.g. "
     "comments only) leave the run status unchanged. "
     "Other updates (assignee/executor, fields, steps, defects, evidence attachments) are applied "
-    "before the status. assigneeId/executedById: Jira account id, or null to unassign. fields "
+    "before the status. assigneeId/executedById: Jira account id, or \"\" to unassign. fields "
     "uses friendly names from settings (required/default run fields are enforced when a status "
     "is set); rawFields is {Xray run field name or id: value}. attachments are local file paths.",
     _schema({"testExecutionKey": {"type": "string"}, "testKey": {"type": "string"},
-             "status": {"type": "string"}, "assigneeId": _NULLABLE_STR,
-             "executedById": _NULLABLE_STR, "fields": _OBJ, "rawFields": _OBJ,
+             "status": {"type": "string"}, "assigneeId": _UNASSIGN_STR,
+             "executedById": _UNASSIGN_STR, "fields": _OBJ, "rawFields": _OBJ,
              "steps": _RUN_STEPS, "attachments": {"type": "array", "items": {"type": "string"}},
              "defectKeys": _KEYS}, ["testExecutionKey", "testKey"]),
     write=True)
@@ -453,7 +454,7 @@ def update_test_run(ctx, args):
     entries = build_run_fields(run_project, args.get("fields"), args.get("rawFields"))
     labels = {(s.xray_name or s.id): n
               for n, s in (project.fields.get("testRun") or {}).items()}
-    assign = {k: args[k] for k in ("assigneeId", "executedById") if k in args}
+    assign = {k: (args[k] or None) for k in ("assigneeId", "executedById") if k in args}
     defects = dedupe(list(args.get("defectKeys") or []))
     evidence = _evidence(ctx.env, list(args.get("attachments") or []))
     if not (sets_status or entries or assign or steps or defects or evidence):

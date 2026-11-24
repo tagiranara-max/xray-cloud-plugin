@@ -166,3 +166,11 @@ def test_valid_remembered_values_pass(tmp_path, name, value):
     ctx = ctx_for(tmp_path, yaml="projects:\n  P2: {}\n")
     ctx.preferences.update("global", "P2", {name: value})
     assert choices.resolve(ctx, "P2", name, None) == (value, "remembered")
+
+
+def test_region_of_ignores_placeholder_and_whitespace():
+    from types import SimpleNamespace
+    from xray_cloud.choices import region_of
+    assert region_of(SimpleNamespace(env={"XRAY_REGION": "${env:XRAY_REGION}"})) == "global"
+    assert region_of(SimpleNamespace(env={"XRAY_REGION": "  "})) == "global"
+    assert region_of(SimpleNamespace(env={"XRAY_REGION": " EU "})) == "eu"

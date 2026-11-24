@@ -46,7 +46,7 @@ mutation AddTestsToPrecondition($issueId: String!, $testIssueIds: [String]) {
 
 def read_feature(env, path: str) -> tuple:
     """-> (text, label path). Relative paths resolve against the project dir
-    ($CLAUDE_PROJECT_DIR, else cwd). The label path is relative to the project dir when the
+    ($XRAY_PROJECT_DIR, else $CLAUDE_PROJECT_DIR, else cwd). The label path is relative to the project dir when the
     file is under it, else the basename."""
     if not isinstance(path, str) or not path.strip():
         raise ToolError("featureFilePath must be a non-empty path")
@@ -289,7 +289,7 @@ def _skipped(plan: List[ImportAction], create_dups: List[int]) -> List[dict]:
 
 
 QUESTION_IDS = ("createTestSet", "backgrounds", "tagsAsLabels", "aiLabel", "aiLabelScope")
-_BOOL_OR_NULL = {"type": ["boolean", "null"]}
+_BOOL = {"type": "boolean"}
 
 
 def _rules(ctx: ServerContext, pk: str, project: ProjectSettings) -> Tuple[List[TagRule], Any]:
@@ -417,44 +417,37 @@ def _test_extras(project: ProjectSettings, feature: ParsedFeature, analysis: Tag
 
 @REGISTRY.tool(
     "create_tests_from_feature",
-    "Import a Gherkin .feature file the Xray way: every Scenario/Outline becomes a Cucumber test "
-    "(definition = its steps and all Examples). Backgrounds become Pre-Conditions linked to the "
-    "tests they apply to (reused by #@PRECOND_<KEY> comment, then by the feature path label, "
-    "then by summary), or with backgrounds=inline their steps are put at the start of each "
-    "test (feature-level, then rule-level). The Feature can become a Test Set (reused by exact "
-    "summary). Tags go through the project's tag rules (settings or remembered; none are built "
-    "in) into labels, Test Set membership (exact-name reuse, else created) and field values; "
-    "with tagsAsLabels unmatched plain tags become labels (unmatchedTags keep). @TEST_<KEY> or "
-    "@<KEY> on a scenario updates that test; @REQ_<KEY> (or a plain key on the Feature/Rule) "
-    "links tests to a requirement. QUESTIONS: createTestSet, backgrounds, tagsAsLabels, aiLabel "
-    "(the user's own label marking what the AI creates; no default; \"\" = don't mark) and "
-    "aiLabelScope (tests | all = also new Pre-Conditions and Test Sets) are answered per call, "
-    "by the settings file or by remembered answers. If the preview has non-empty `questions`, "
-    "ask the user once and call again with the answers; they are remembered for the project "
-    "on apply (remember=true makes a differing answer replace a remembered one). apply=true with "
-    "unanswered questions is refused. apply=false (default) previews the plan: actions, "
-    "perTest (labels, testSets, fields), testSets {reuse, create}, notDone, choices. apply=true "
-    "executes it, skipping scenarios with possible duplicates unless their index is in "
-    "createDuplicates. Items that cannot be done (labels, fields or requirement links on "
-    "existing tests without the Jira token; rule fields that already have a value, which are "
-    "never overwritten) are listed in notDone {item, what, reason, fix}: if a reason is \"no "
-    "Jira token or Atlassian MCP\" and Atlassian MCP tools are available to you, offer to "
-    "complete them with those tools. fields/rawFields apply to created tests; "
-    "preconditionFields and testSetFields to created Pre-Conditions and Test Sets.",
+    "Import a .feature file the Xray way: each Scenario/Outline becomes a Cucumber test. "
+    "Backgrounds become Pre-Conditions (or inline steps with backgrounds=inline); the Feature"
+    " can become a Test Set. Tags go through the project's tag rules (settings or remembered;"
+    " none built in) into labels, Test Sets and fields; @TEST_<KEY> or @<KEY> updates that "
+    "test, @REQ_<KEY> links a requirement. Choices (createTestSet, backgrounds, tagsAsLabels,"
+    " aiLabel, aiLabelScope) come from the call, settings or remembered answers. If the "
+    "preview has non-empty `questions`, ask the user once and call again with the answers; "
+    "apply=true with unanswered questions is refused. apply=false (default) previews the "
+    "plan; apply=true executes it, skipping possible duplicates unless indexed in "
+    "createDuplicates. Anything not doable is in notDone {item, what, reason, fix}: if the "
+    "reason is \"no Jira token or Atlassian MCP\" and Atlassian MCP tools are available, offer "
+    "to complete them with those. fields/rawFields apply to created tests.",
     _schema({"featureFilePath": {"type": "string"}, "apply": {"type": "boolean"},
-             "createTestSet": _BOOL_OR_NULL,
-             "backgrounds": {"type": ["string", "null"],
-                             "enum": ["preconditions", "inline", None]},
-             "tagsAsLabels": _BOOL_OR_NULL,
-             "aiLabel": {"type": ["string", "null"], "description":
+             "createTestSet": _BOOL,
+             "backgrounds": {"type": "string", "enum": ["preconditions", "inline"]},
+             "tagsAsLabels": _BOOL,
+             "aiLabel": {"type": "string", "description":
                          "The user's own label for items the AI creates; \"\" = don't mark."},
-             "aiLabelScope": {"type": ["string", "null"], "enum": ["tests", "all", None]},
+             "aiLabelScope": {"type": "string", "enum": ["tests", "all"], "description":
+                              "tests | all. all also marks new Pre-Conditions and Test Sets."},
              "remember": {"type": "boolean", "description":
-                          "Make differing answers replace the remembered ones (default: this "
-                          "call only)."},
+                          "Answers are remembered for the project on apply when nothing is "
+                          "remembered yet. Default false: a differing answer applies to this "
+                          "call only; true makes it replace the remembered one."},
              "createDuplicates": {"type": "array", "items": {"type": "integer", "minimum": 0}},
-             "fields": _OBJ, "rawFields": _OBJ, "preconditionFields": _OBJ,
-             "testSetFields": _OBJ}, ["featureFilePath"]))
+             "fields": _OBJ, "rawFields": _OBJ,
+             "preconditionFields": {"type": "object", "description":
+                                    "Field values applied to created Pre-Conditions."},
+             "testSetFields": {"type": "object", "description":
+                               "Field values applied to created Test Sets."}},
+            ["featureFilePath"]))
 # Registered read-only so the preview (apply=false, zero writes) works in read-only mode;
 # apply=true checks require_write itself.
 def create_tests_from_feature(ctx, args):

@@ -127,3 +127,13 @@ def test_every_limit_param_is_capped_at_100():
     # find_related_tests caps the merged result set (paged internally), not one Xray page
     assert [n for n, s in limits
             if s.get("maximum") != (200 if n == "find_related_tests" else 100)] == []
+
+
+def test_null_for_optional_parameter_is_treated_as_omitted():
+    schema = {"type": "object", "required": ["a"], "properties": {
+        "a": {"type": "string"}, "aiLabel": {"type": "string"},
+        "assigneeId": {"type": "string"}}}
+    assert coerce({"a": "x", "aiLabel": None}, schema) == coerce({"a": "x"}, schema) == {"a": "x"}
+    assert coerce({"a": "x", "assigneeId": None}, schema) == {"a": "x"}
+    with pytest.raises(ToolError):
+        coerce({"a": None}, schema)  # required stays required

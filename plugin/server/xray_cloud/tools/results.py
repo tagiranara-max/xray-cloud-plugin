@@ -593,46 +593,37 @@ def _exec_info(pk: str, summary: str, extra: Dict[str, Any], plan_key: Optional[
 
 @REGISTRY.tool(
     "import_execution_results",
-    "Import test results into Xray. format: xray | cucumber | behave (JSON) or junit | testng | "
-    "nunit | robot (XML). Give exactly one of filePath (max 25 MB) or content (neither may be "
-    "empty). Without testExecKey a new Test Execution is created in projectKey (summary/fields/"
-    "rawFields and the project's testExecution field settings apply; required fields are "
-    "checked before upload); with testExecKey results go to that execution. "
-    "Before any upload every result is matched to a test of projectKey: Cucumber/Behave "
-    "scenarios by a @TEST_<KEY> tag or the project's testKeyTag tag (if they name different "
-    "tests, the tool asks), else the test whose summary is exactly the scenario name; JUnit/TestNG/NUnit/Robot cases as Xray does it (the "
-    "key the file names, else the Generic test with the same definition); Xray JSON entries "
-    "without testKey by Generic definition. If a result matches several tests or none, nothing "
-    "is uploaded and the result has status needs_answer with `questions`, `matched`, "
-    "`ambiguous` [{name, candidates}] and `missing` [names]: show them to the user and call "
-    "again with testKeys {name: KEY} for chosen tests, skipMissing: true to leave unmatched "
-    "results out, or allowCreateTests: true (only after the user agreed) to let new Test issues "
-    "be created for them; created tests are listed in createdTests and get no AI label. "
-    "Existing tests are never changed, except that requirement links named in the file are "
-    "added: the uploaded copy (never the user's file) sends "
-    "known tests by key without testInfo, drops XML summary/description/label properties and "
-    "plain Robot tags of matched cases, and gives matched Robot tests their key tag and the "
-    "test's current summary as name, since Xray would otherwise rename them (warnings say "
-    "so). "
-    "Every key (testExecKey, testPlanKey, testKeys, keys in the report) must belong to "
-    "projectKey. Cucumber/Behave results for an existing execution (or with tests to create) "
-    "are sent as Xray JSON, one status per test, failures as comment. testPlanKey and "
-    "testEnvironments (names without ';') work with every format. Returns the execution key, "
-    "created, and a count of its runs by status; detail adds the raw response.",
+    "Import test results into Xray. format: xray | cucumber | behave (JSON) or junit | testng"
+    " | nunit | robot (XML). Give exactly one of filePath (max 25 MB) or content. Without "
+    "testExecKey a new Test Execution is created in projectKey; with it, results go to that "
+    "execution. Each result is first matched to a test of projectKey (Cucumber/Behave by "
+    "@TEST_<KEY> or the testKeyTag tag, else exact summary; XML as Xray does; Xray JSON by "
+    "Generic definition). If a result matches several tests or none, nothing is uploaded and "
+    "status is needs_answer with `questions`, `matched`, `ambiguous`, `missing`: show them to"
+    " the user and call again with testKeys {name: KEY}, skipMissing, or allowCreateTests "
+    "(only after the user agreed). Existing tests are never changed, except requirement links"
+    " named in the file; the uploaded copy (never your file) is adjusted so Xray does not "
+    "rename matched tests. Every key must belong to projectKey. Returns the execution key, "
+    "created, and runs by status; detail adds the raw response.",
     _schema({"format": {"type": "string", "enum": list(FORMATS)},
-             "filePath": {"type": "string"}, "content": {"type": "string"},
+             "filePath": {"type": "string", "description":
+                          "Local results file; must not be empty."},
+             "content": {"type": "string", "description":
+                         "Inline results; must not be empty."},
              "testExecKey": {"type": "string"}, "testPlanKey": {"type": "string"},
              "testEnvironments": {"type": "array", "items": {"type": "string"}},
              "summary": {"type": "string"}, "fields": _OBJ, "rawFields": _OBJ,
              "testKeys": {"type": "object", "additionalProperties": {"type": "string"},
-                          "description": "Result name exactly as listed in needs_answer -> "
+                          "description": "If a @TEST_ tag and the testKeyTag tag name different tests the tool asks; "
+                                         "answer here. Result name exactly as listed in needs_answer -> "
                                          "test key. Names: the scenario name (\"Feature: "
                                          "Scenario\" when features share it), the XML case "
                                          "definition, or the Xray JSON summary (\"summary "
                                          "(definition)\" when entries share it)"},
              "allowCreateTests": {"type": "boolean", "description":
                                   "Let new Test issues be created for results that match no "
-                                  "test. Only with the user's consent. Default false."},
+                                  "test. Only with the user's consent. Default false. Created tests are listed in "
+                                  "createdTests and get no AI label."},
              "skipMissing": {"type": "boolean", "description":
                              "Leave results that match no test out of the import."},
              "detail": {"type": "boolean"}}, ["format"]),

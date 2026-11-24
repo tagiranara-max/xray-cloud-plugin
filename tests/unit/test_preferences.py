@@ -97,3 +97,21 @@ def test_unwritable_directory_raises_tool_error(tmp_path):
     with pytest.raises(ToolError) as ei:
         s.update("global", "P", {"a": 1})
     assert "preferences.json" in ei.value.message
+
+
+def test_preferences_dir_prefers_xray_data_dir(tmp_path):
+    both = {"XRAY_DATA_DIR": str(tmp_path / "x"), "CLAUDE_PLUGIN_DATA": str(tmp_path / "c")}
+    assert PreferenceStore(both).path == tmp_path / "x" / "preferences.json"
+    only = {"CLAUDE_PLUGIN_DATA": str(tmp_path / "c")}
+    assert PreferenceStore(only).path == tmp_path / "c" / "preferences.json"
+    assert PreferenceStore({}).path == (Path(os.path.expanduser("~")) / ".config"
+                                        / "xray-cloud" / "preferences.json")
+
+
+@pytest.mark.parametrize("bad", ["${env:XRAY_DATA_DIR}", "  "])
+def test_placeholder_data_dir_falls_back(bad, monkeypatch, tmp_path):
+    s = PreferenceStore({"XRAY_DATA_DIR": bad, "CLAUDE_PLUGIN_DATA": str(tmp_path / "p")})
+    assert s.path == tmp_path / "p" / "preferences.json"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    s = PreferenceStore({"XRAY_DATA_DIR": bad, "CLAUDE_PLUGIN_DATA": bad})
+    assert s.path == tmp_path / ".config" / "xray-cloud" / "preferences.json"

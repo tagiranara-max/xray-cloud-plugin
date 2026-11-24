@@ -8,7 +8,7 @@ from .tests import _schema, fetch_test, require_jira
 
 @REGISTRY.tool(
     "set_lifecycle_label",
-    "Set a lifecycle label (from the plugin settings, default ai-draft, needs-refinement, "
+    "Set a lifecycle label (from the settings file, default ai-draft, needs-refinement, "
     "automation-candidate, automated, obsolete) on a test, replacing any previous lifecycle "
     "label and keeping other labels. Labels are Jira fields, so this needs the optional Jira "
     "API token.",

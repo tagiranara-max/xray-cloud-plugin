@@ -6,6 +6,8 @@ Claude Code plugin `xray-cloud`: a stdlib-only Python 3.9 MCP server (stdio) for
 
 - `plugin/` is the plugin: `.claude-plugin/plugin.json` (userConfig prompts, MCP server definition) and `server/` (`main.py`, package `xray_cloud/`: config, registry, tools, vendored libs under `_vendor/`).
 - `plugin/skills/` holds the four skills (`xray-setup`, `import-results`, `import-tests`, `predict-affected-tests`), each a `SKILL.md`.
+- `scripts/install_skills.py` copies the skills into Codex, Cursor or Gemini CLI skills folders (`--client`, `--scope`, `--force`, `--dry-run`).
+- `gemini-extension.json` is the Gemini CLI extension manifest (versioned by git commit; its version is a placeholder).
 - `dev/` holds dev-only scripts (`parity_audit.py`: lists the live GraphQL schema's mutations and queries, read-only, needs credentials; compare with `docs/coverage.md`).
 - `.claude-plugin/marketplace.json` makes the repo root a one-plugin marketplace (`xray-cloud-plugin`).
 - `.xray/settings.example.yml` is the settings example; `docs/field-ids.md` the field-id guide.

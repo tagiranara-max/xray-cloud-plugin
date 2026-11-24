@@ -38,23 +38,21 @@ def _folder_files(env, folder: str, room: int) -> Dict[str, Any]:
 
 @REGISTRY.tool(
     "analyze_feature_tags",
-    "Read-only. Summarise the tags used in .feature files (featureFilePaths and/or a folder, "
-    "searched recursively for *.feature, at most 500 files; `capped` is reported when more "
-    "exist) without writing anything. tagSummary: keyValue {key: {values {value: count}, "
-    "separators, commaLists, where {feature, rule, scenario}, scenarios}}, plain {tag: {count, "
-    "where}}, issueKeys (never subject to rules), handledByRules, unmatched (no rule matches) "
-    "and valuesMatchingTestSets {key: [values that are the name of an existing Test Set in "
-    "the project]}. Files that fail to parse are listed in errors {path, error}; the rest "
-    "are still summarised. Tag rules are the project's settings/remembered rules. When the "
-    "project has no rules or there are unmatched tags, propose rules from this summary: "
-    "explain each proposed rule in plain words with its effect on a few concrete scenarios "
-    "from the files, and apply nothing until the user agrees; then store the agreed rules "
-    "with set_preferences. A rule has `tag` (key or keys), optional `split`, and one or more "
-    "of `label`, `testSet`, `field`, `skip`; for example (an example only, not a default; "
-    "tag names are neutral) {tag: \"group\", split: \",\", testSet: \"{value}\"} would turn "
-    "@group=alpha,beta into Test Sets alpha and beta.",
+    "Read-only. Summarise the tags in .feature files (featureFilePaths and/or a folder, "
+    "searched recursively, max 500 files; `capped` when more) without writing. tagSummary has"
+    " keyValue, plain, issueKeys, handledByRules, unmatched and valuesMatchingTestSets; "
+    "unparseable files are in errors. Rules are the project's settings/remembered rules. When"
+    " there are no rules or unmatched tags, propose rules: explain each in plain words with "
+    "its effect on a few concrete scenarios, and apply nothing until the user agrees; then "
+    "store them with set_preferences. Rule fields: `tag`, optional `split`, and `label`, "
+    "`testSet`, `field` or `skip`; for example (an example only, not a default) {tag: "
+    "\"group\", split: \",\", testSet: \"{value}\"} turns @group=alpha,beta into Test Sets alpha "
+    "and beta.",
     _schema({"featureFilePaths": {"type": "array", "items": {"type": "string"}},
-             "folder": {"type": "string"}}, []))
+             "folder": {"type": "string", "description":
+                        "Searched recursively. Rules have one or more of label/testSet/"
+                        "field/skip; issue-key tags (issueKeys) are never subject to rules."}},
+            []))
 def analyze_feature_tags(ctx, args):
     pk = args["projectKey"]
     project = require_project(ctx, pk, write=False)
