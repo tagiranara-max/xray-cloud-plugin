@@ -14,6 +14,7 @@ from ..gherkin.tagrules import parse_rules
 from ..jira_client import normalize_site_url
 from ..protocol import SERVER_INFO
 from ..registry import REGISTRY
+from ..toolgroups import GROUPS, active_groups
 from .tests import _schema, check_ai_label
 
 PLUGIN_JSON = Path(__file__).resolve().parents[3] / ".claude-plugin" / "plugin.json"
@@ -174,6 +175,11 @@ def get_status(ctx, args):
         "settings": settings, "projects": projects, "readOnly": bool(ctx.read_only),
         "jira": _jira_status(ctx, bool(args.get("check"))),
         "preferencesFile": str(ctx.preferences.path), "perProject": {}}
+    try:
+        groups = active_groups(ctx.env)
+    except ToolError:  # startup already rejects this; stay readable
+        groups = None
+    out["toolGroups"] = list(GROUPS) if groups is None else groups
     try:
         out["perProject"] = {pk: _project_status(ctx, pk) for pk in projects}
     except ToolError as exc:  # unreadable preferences file: report, keep the rest
