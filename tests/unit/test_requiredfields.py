@@ -342,8 +342,9 @@ def test_multi_item_unformable_field_one_needs_answer_nothing_elicited(tmp_path)
     (tmp_path / "b.feature").write_text(BG_FEATURE)
     res, err = call(ctx, "import_feature_file", projectKey="PROJ", filePath="b.feature")
     assert not err and res["status"] == "needs_answer" and ch.asked == []
-    assert [(q["id"], q["param"]) for q in res["questions"]] == [
-        ("customfield_3", "fields"), ("components", "preconditionFields")]
+    assert [(q["id"], q["field"], q["param"]) for q in res["questions"]] == [
+        ("fields.customfield_3", "customfield_3", "fields"),
+        ("preconditionFields.components", "components", "preconditionFields")]
     assert ctx.xray.rest_calls == [] and remembered(ctx) == {}
 
 
@@ -381,3 +382,37 @@ def test_settings_required_field_not_on_create_screen_uses_remembered(tmp_path):
     assert remembered(ctx) == {"customfield_1": {"value": "Backend"}}
     fields, applied = requiredfields.resolve(ctx, project(ctx), "test", None, None, False)
     assert fields == {"customfield_1": {"value": "Backend"}} and len(ctx.channel.asked) == 1
+
+
+DESCRIPTION = [META[0], {"id": "description", "name": "Description", "required": True,
+                         "schemaType": "string", "allowedValues": []}]
+
+
+def test_call_description_wins_over_asked_and_remembered(tmp_path):
+    ch = FakeChannel({"description": "ASKED"})
+    ctx = make(tmp_path, meta={"Test": DESCRIPTION}, channel=ch, responses=created())
+    base = dict(projectKey="PROJ", summary="S", aiLabel="", allowDuplicates=True)
+    res, err = call(ctx, "create_test", **base)
+    assert not err and ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]["description"] \
+        == "ASKED"
+    res, err = call(ctx, "create_test", description="MINE", **base)
+    assert not err and "appliedDefaults" not in res, res
+    assert ctx.xray.calls_of("CreateTest")[1]["jira"]["fields"]["description"] == "MINE"
+    assert len(ch.asked) == 1
+
+
+def test_container_new_test_own_description_wins(tmp_path):
+    ch = FakeChannel({"description": "ASKED"})
+    ctx = make(tmp_path, meta={"Test": DESCRIPTION}, channel=ch, responses=dict(created(), **{
+        "CreateTestSet": {"createTestSet": {"testSet": {"issueId": "900",
+                                                        "jira": {"key": "PROJ-10"}},
+                                            "warnings": []}},
+        "GetTestIssueIds": {"getTests": {"results": [{"issueId": "1",
+                                                      "jira": {"key": "PROJ-1"}}]}},
+        "AddTestsToTestSet": {"addTestsToTestSet": {"addedTests": ["1"], "warning": None}}}))
+    res, err = call(ctx, "create_test_set", projectKey="PROJ", summary="S", aiLabel="",
+                    createDuplicates=[0, 1],
+                    newTests=[{"summary": "A", "description": "MINE"}, {"summary": "B"}])
+    assert not err, res
+    sent = [v["jira"]["fields"]["description"] for v in ctx.xray.calls_of("CreateTest")]
+    assert sent == ["MINE", "ASKED"] and len(ch.asked) == 1

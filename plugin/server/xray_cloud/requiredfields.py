@@ -201,8 +201,10 @@ def compute(ctx: Any, project: ProjectSettings, item_type: str,
     out.update(defaults)
     out.update(answers)
     out.update(call)
+    own = set(provided)  # the tool's own values (e.g. description) always win
+    out = {k: v for k, v in out.items() if k not in own}
     applied = {k: v for k, v in remembered.items()
-               if k not in defaults and k not in answers and k not in call}
+               if k not in defaults and k not in answers and k not in call and k not in own}
     meta_by_id = {f["id"]: f for f in meta or []}
     missing: List[dict] = []
     required = set()
@@ -248,14 +250,16 @@ def _type_label(f: dict) -> str:
 
 
 def questions(project: ProjectSettings, item_type: str, missing: List[dict],
-              param: str) -> List[dict]:
+              param: str, unique_ids: bool = False) -> List[dict]:
     """needs_answer questions for missing required fields: name, id, type, first 50 allowed
-    values."""
+    values. unique_ids (several item types in one question set): id is "<param>.<field id>"
+    and `field` holds the field id."""
     tname = ITEM_TYPE_NAMES.get(item_type, item_type)
     out = []
     for f in missing:
         q: Dict[str, Any] = {
-            "id": f["id"], "name": f["name"], "type": _type_label(f), "param": param,
+            "id": "%s.%s" % (param, f["id"]) if unique_ids else f["id"], "field": f["id"],
+            "name": f["name"], "type": _type_label(f), "param": param,
             "question": "Value of the required field %s (%s) for a new %s in %s?"
                         % (f["name"], f["id"], tname, project.key),
             "context": {"projectKey": project.key, "itemType": item_type}}
@@ -347,7 +351,7 @@ def ask(ctx: Any, project: ProjectSettings, missing: Dict[str, dict],
         "again with %s set to {field id or name: value} (lists for multi-value fields, "
         "account ids for users); never answer it yourself. Nothing was written."
         % (what, pk, names, params),
-        [q for t, p, fs in groups for q in questions(project, t, fs, p)],
+        [q for t, p, fs in groups for q in questions(project, t, fs, p, multi)],
         projectKey=pk, missingFields=missing_data)
 
 
@@ -380,8 +384,10 @@ class Collector:
         return r.fields
 
     def questions(self) -> List[dict]:
+        multi = len(self.missing) > 1
         return [q for t, m in self.missing.items()
-                for q in questions(self.project, t, list(m["fields"].values()), m["param"])]
+                for q in questions(self.project, t, list(m["fields"].values()), m["param"],
+                                   multi)]
 
 
 def resolve_all(ctx: Any, project: ProjectSettings, build: Callable[[Collector], Any],
