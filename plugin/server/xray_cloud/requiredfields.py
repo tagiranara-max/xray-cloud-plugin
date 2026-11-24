@@ -165,8 +165,8 @@ def learn(ctx: Any, pk: str, item_type: str, found: List[dict]) -> None:
 
 @contextmanager
 def creating(ctx: Any, pk: str, item_type: str, param: str = "fields") -> Iterator[None]:
-    """Wraps the create mutation of a new item. On success the call's field answers are
-    remembered (commit). A Jira error naming required fields becomes RequiredFieldsRejected
+    """Wraps the create mutation of a new item. On success the call's field answers for
+    that item type are remembered (commit). A Jira error naming required fields becomes RequiredFieldsRejected
     (the fields learned, see learn); one naming only system fields passes unchanged; another
     "Create issue failed!" error becomes CreateRefused; other errors pass unchanged."""
     try:
@@ -198,7 +198,7 @@ def creating(ctx: Any, pk: str, item_type: str, param: str = "fields") -> Iterat
             % (tname, pk, ", ".join("%s (%s)" % (f["name"], f["id"]) for f in found)),
             projectKey=pk, itemType=item_type, param=param, jiraError=e.message,
             missingFields=[{"name": f["name"], "id": f["id"]} for f in found]) from None
-    commit(ctx)
+    commit(ctx, item_type)
 
 
 def _discovered(meta: Optional[List[dict]], learned: List[dict]) -> Optional[List[dict]]:
@@ -293,21 +293,22 @@ def _add_pending(ctx: Any, pk: str, item_type: str, values: Dict[str, Any],
         entry["store"][k] = (v, asked or bool(remember))
 
 
-def commit(ctx: Any) -> None:
-    """Remember this call's answers (all validation passed; the write comes next). The
-    answers stay usable for the rest of the call (e.g. new tests of a container)."""
+def commit(ctx: Any, item_type: Optional[str] = None) -> None:
+    """Remember this call's answers (all validation passed; the write comes next), or with
+    item_type only that item type's (its create just succeeded). The answers stay usable for
+    the rest of the call (e.g. new tests of a container)."""
     pending = _pending(ctx)
     site = getattr(ctx, "site", "")
     if not site:
         return
     from .choices import region_of
     region = region_of(ctx)
-    for (pk, item_type), entry in pending.items():
-        if not entry["store"]:
+    for (pk, t), entry in pending.items():
+        if not entry["store"] or (item_type is not None and t != item_type):
             continue
-        known = ctx.preferences.field_values(region, site, pk, item_type)
+        known = ctx.preferences.field_values(region, site, pk, t)
         store = {k: v for k, (v, force) in entry["store"].items() if force or k not in known}
-        ctx.preferences.remember_fields(region, site, pk, item_type, store)
+        ctx.preferences.remember_fields(region, site, pk, t, store)
         entry["store"] = {}
 
 

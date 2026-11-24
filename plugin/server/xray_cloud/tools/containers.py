@@ -304,9 +304,9 @@ def register(kind: Kind, with_sets: bool) -> None:
                 try:
                     ctx.xray.graphql(kind.q(_DELETE), {"issueId": node["issueId"]})
                 except Exception as de:
-                    raise requiredfields.refusal_failure(
-                        msg + " (deleting it again failed: %s)" % de, created, e,
-                        "testFields") from None
+                    err = requiredfields.refusal_failure(msg, created, e, "testFields")
+                    err.data["rollbackError"] = str(de)
+                    raise err from None
                 e.data["param"] = "testFields"
                 raise e from None
             raise requiredfields.refusal_failure(msg, created, e, "testFields") from None

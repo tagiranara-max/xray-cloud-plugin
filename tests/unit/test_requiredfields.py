@@ -657,3 +657,31 @@ def test_container_later_new_test_refused_is_accurate_partial_failure(tmp_path):
     assert "Test was not created" in res["cause"]
     assert res["missingFields"] == [{"name": "Components", "id": "components"}]
     assert ctx.xray.calls_of("DeleteTestSet") == []
+
+
+def test_container_rollback_refused_keeps_the_partial_failure(tmp_path):
+    world = _set_world(1)
+
+    def denied(_):
+        raise ToolError("You do not have permission to delete issues in this project")
+    world["DeleteTestSet"] = denied
+    ctx = make(tmp_path, responses=world)
+    res, err = call(ctx, "create_test_set", projectKey="PROJ", summary="S", aiLabel="",
+                    newTests=[{"summary": "A"}], createDuplicates=[0])
+    assert err and res["created"] == ["PROJ-10"], res
+    assert "permission" in res["rollbackError"] and "permission" not in res["error"]
+    assert res["missingFields"] == [{"name": "Components", "id": "components"}]
+    assert "`testFields`" in res["cause"]
+
+
+def test_rolled_back_container_leaves_test_answers_unsaved(tmp_path):
+    ctx = make(tmp_path, SETTINGS.replace("      test:", "      testSet:\n"
+               "        Area: {id: customfield_8, type: string, required: true}\n"
+               "      test:"), responses=_set_world(1))
+    res, err = call(ctx, "create_test_set", projectKey="PROJ", summary="S", aiLabel="",
+                    newTests=[{"summary": "A"}], createDuplicates=[0],
+                    fields={"Area": "Core"}, testFields={"Team": "Frontend"})
+    assert not err and res["status"] == "needs_answer", res
+    assert ctx.xray.calls_of("DeleteTestSet") == [{"issueId": "900"}]
+    assert remembered(ctx, "testSet") == {"customfield_8": "Core"}  # its create succeeded
+    assert remembered(ctx, "test") == {}  # the refused test's answers were not saved

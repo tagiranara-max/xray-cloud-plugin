@@ -190,7 +190,11 @@ that does not exist yet may be created by Jira when the user can administer the 
 - A "Create issue failed!" error naming no readable field returns `needs_answer` with Jira's
   raw message and the field-ids guidance; nothing is retried automatically. An error naming
   only system fields (for example the reporter) is passed through unchanged.
-- Answers are remembered only after the create they were used for succeeded.
+- Answers for an item type are remembered only after a create of that item type succeeded
+  (a container's answers on the container create, `testFields` answers on its first new
+  test), so a container rolled back after its first test was refused leaves the test answers
+  unsaved. If that rollback itself fails, the `partial_failure` still lists the container in
+  `created`, with the delete error in `rollbackError`.
 - Known gap: `import_execution_results` and `import_feature_file` go through Xray's REST
   import, which is not wrapped; Jira's required-field error is passed through without asking.
 - No live test covers this path: it needs a field made required in Jira, a temporary change

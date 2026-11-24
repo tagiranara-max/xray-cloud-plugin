@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 
 from . import requiredfields
 from .approval import ALLOW_PROJECT_PARAM
-from .context import is_permission_error, permission_denied, require_write
+from .context import PartialFailure, is_permission_error, permission_denied, require_write
 from .errors import NeedsAnswer, ToolError
 
 
@@ -173,7 +173,9 @@ class Registry:
                                              requiredfields.FIELD_IDS_GUIDANCE),
                             **again.data) from None
             except ToolError as e:
-                if tool.write and is_permission_error(e):
+                # a partial failure always reports what was created: never replaced
+                if tool.write and is_permission_error(e) and \
+                        not isinstance(e, PartialFailure):
                     raise permission_denied(e, action="run %s" % name,
                                             project_key=clean.get("projectKey")) from None
                 raise
