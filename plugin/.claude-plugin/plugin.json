@@ -2,6 +2,7 @@
   "name": "xray-cloud",
   "displayName": "Xray Cloud",
   "description": "Manage Xray Cloud tests, test sets, plans, executions and runs from Claude Code through a zero-install Python MCP server.",
+  "author": { "name": "Diana Andre" },
   "license": "MIT",
   "userConfig": {
     "xray_client_id": {
