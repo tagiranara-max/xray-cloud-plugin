@@ -147,11 +147,12 @@ def _fetch(ctx, query: str, base: Dict[str, Any], limit: int) -> Tuple[List[dict
     return rows, capped
 
 
-def find_related(ctx, pk: str, criteria: Criteria, limit: int,
-                 with_truncated: bool = False):
-    """Tests of project `pk` matching any criterion, merged by key: [{key, summary, folder,
-    labels, lastStatus, matchedBy}], most matches first then key, at most `limit` (<= 200)
-    rows. With with_truncated=True returns (rows, truncated)."""
+def find_related(ctx, pk: str, criteria: Criteria,
+                 limit: int) -> Tuple[List[Dict[str, Any]], bool]:
+    """Tests of project `pk` matching any criterion, merged by key. Returns (rows, truncated):
+    rows are [{key, summary, folder, labels, lastStatus, matchedBy}], most matches first then
+    key, at most `limit` (<= 200); truncated is True when results were cut off (a cap or a
+    page limit was hit)."""
     if criteria.empty():
         raise ToolError("Provide at least one criterion: terms, issueKeys, labels, "
                         "components or folder")
@@ -200,4 +201,4 @@ def find_related(ctx, pk: str, criteria: Criteria, limit: int,
         for r in ordered:
             st = latest.get(ids.get(r["key"], ""))
             r["lastStatus"] = st["status"] if st else None
-    return (ordered, truncated) if with_truncated else ordered
+    return ordered, truncated

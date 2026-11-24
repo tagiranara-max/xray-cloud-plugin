@@ -103,7 +103,7 @@ def test_coverage_lists_tests_with_last_status_and_counts():
         {"key": "PROJ-2", "summary": "b", "lastStatus": "FAILED", "lastRunOn": "2026-01-02"}]
     assert out["counts"] == {"total": 2, "byLastStatus": {"PASSED": 1, "FAILED": 1}, "neverRun": 0}
     jql = ctx.xray.calls_of("SearchTests")[0]["jql"]
-    assert jql == 'issue in linkedIssues("OTHER-5", "is tested by")'
+    assert jql == 'project = "PROJ" AND (issue in linkedIssues("OTHER-5", "is tested by"))'
 
 
 def test_coverage_status_from_xray():

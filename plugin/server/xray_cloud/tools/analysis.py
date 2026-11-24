@@ -5,7 +5,8 @@ from typing import Any, Dict, List
 
 from ..context import check_issue_key, require_project
 from ..registry import REGISTRY
-from ..related import Criteria, MAX_PAGES, MAX_RELATED, PAGE, find_related, latest_statuses_checked, run_on
+from ..related import (Criteria, MAX_PAGES, MAX_RELATED, PAGE, _jql_for, find_related,
+                       latest_statuses_checked, run_on)
 from .tests import _BASE_JIRA, _GET_TESTS, _LIMIT, _jira_list, _schema, fetch_test
 
 _HISTORY = """
@@ -103,7 +104,7 @@ def get_requirement_coverage(ctx, args):
     pk, key = args["projectKey"], args["issueKey"]
     require_project(ctx, pk, write=False)
     check_issue_key(key)
-    jql = 'issue in linkedIssues("%s", "is tested by")' % key
+    jql = _jql_for("issueKeys", [key], pk)  # only tests of projectKey
     data = ctx.xray.graphql(_GET_TESTS % ("", _jira_list(_BASE_JIRA)), {"jql": jql, "limit": 100})
     found = data.get("getTests") or {}
     results = found.get("results") or []
@@ -160,5 +161,5 @@ def find_related_tests(ctx, args):
                     labels=list(args.get("labels") or []),
                     components=list(args.get("components") or []),
                     folder=args.get("folder") or None)
-    tests, truncated = find_related(ctx, pk, crit, args.get("limit", 50), with_truncated=True)
+    tests, truncated = find_related(ctx, pk, crit, args.get("limit", 50))
     return {"tests": tests, "truncated": truncated}

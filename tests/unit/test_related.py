@@ -74,3 +74,14 @@ def test_untimestamped_run_counts_and_loses_to_timestamped():
     out = related.latest_statuses(ctx, ["1", "2"])
     assert out["1"]["status"] == "TODO" and out["1"]["on"] is None
     assert out["2"]["status"] == "PASSED"
+
+
+def test_find_related_always_returns_rows_and_truncated():
+    ctx = make_context("projects:\n  PROJ: {}\n", responses={
+        "RelatedTests": {"getTests": {"total": 1, "results": [
+            {"issueId": "1", "jira": {"key": "PROJ-1", "summary": "a", "labels": []}}]}},
+        Q: {"getTestRuns": {"total": 0, "results": []}}})
+    out = related.find_related(ctx, "PROJ", related.Criteria(labels=["x"]), 10)
+    assert isinstance(out, tuple) and len(out) == 2
+    rows, truncated = out
+    assert [r["key"] for r in rows] == ["PROJ-1"] and truncated is False
