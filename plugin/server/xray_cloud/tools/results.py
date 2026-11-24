@@ -117,10 +117,11 @@ def import_execution_results(ctx, args):
     ctype = "text/xml" if fmt in XML_FORMATS else "application/json"
     path = _endpoint(fmt, multipart)
     if multipart:
-        part = "result" if fmt in ("cucumber", "behave") else "results"
+        # Verified live: every format's multipart part is "results" (Cucumber with "result"
+        # gets HTTP 400 "Unexpected field (result)").
         resp = ctx.xray.rest("POST", path, multipart={"fields": {}, "files": {
             "info": ("info.json", json.dumps(info).encode("utf-8"), "application/json"),
-            part: ("results", data, ctype)}})
+            "results": ("results", data, ctype)}})
     else:
         params: Dict[str, str] = {}
         if fmt in XML_FORMATS:
@@ -135,7 +136,11 @@ def import_execution_results(ctx, args):
         if params:
             kw["params"] = params
         resp = ctx.xray.rest("POST", path, **kw)
-    issue = (resp.get("testExecIssue") if isinstance(resp, dict) else None) or {}
+    # Verified live (plain and multipart): Xray Cloud answers {"id", "key", "self"} of the
+    # Test Execution; "testExecIssue" (Xray Server/DC shape) is accepted too.
+    resp_d = resp if isinstance(resp, dict) else {}
+    issue = resp_d.get("testExecIssue") if isinstance(resp_d.get("testExecIssue"), dict) \
+        else resp_d
     key = issue.get("key") or exec_key
     out: Dict[str, Any] = {"testExecKey": key, "created": not exec_key}
     warnings: List[str] = []

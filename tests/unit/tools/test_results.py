@@ -35,7 +35,7 @@ def runs_response(statuses):
 def make(tmp_path, yaml=YAML, statuses=("PASSED", "FAILED", "PASSED"), **kw):
     ctx = make_context(yaml, tmp_path=tmp_path, responses={RUNS: runs_response(statuses)}, **kw)
     ctx.xray.rest_responses[("POST", "import/execution/junit")] = {
-        "testExecIssue": {"id": "100", "key": "PROJ-9"}}
+        "id": "100", "key": "PROJ-9", "self": "https://x/rest/api/2/issue/100"}
     return ctx
 
 
@@ -68,7 +68,7 @@ def test_junit_file_plain_endpoint_params(tmp_path):
 def test_new_execution_with_fields_uses_multipart_info(tmp_path):
     ctx = make(tmp_path, YAML_FIELDS)
     ctx.xray.rest_responses[("POST", "import/execution/junit/multipart")] = {
-        "testExecIssue": {"id": "100", "key": "PROJ-9"}}
+        "id": "100", "key": "PROJ-9", "self": "https://x/rest/api/2/issue/100"}
     out, err = call(ctx, format="junit", content="<testsuites/>", summary="Nightly",
                     testPlanKey="PROJ-5", testEnvironments=["chrome"])
     assert not err, out
@@ -94,7 +94,7 @@ def test_required_execution_field_missing_refused_before_upload(tmp_path):
 def test_required_field_satisfied_by_fields(tmp_path):
     ctx = make(tmp_path, YAML_REQ)
     ctx.xray.rest_responses[("POST", "import/execution/junit/multipart")] = {
-        "testExecIssue": {"id": "100", "key": "PROJ-9"}}
+        "id": "100", "key": "PROJ-9", "self": "https://x/rest/api/2/issue/100"}
     out, err = call(ctx, format="junit", content="<x/>", fields={"Backend": "Web"})
     assert not err, out
     info = json.loads(ctx.xray.rest_calls[0][2]["multipart"]["files"]["info"][1])
@@ -142,7 +142,7 @@ def test_cucumber_and_xray_json_endpoints(tmp_path):
     ctx = make(tmp_path)
     for fmt, path in (("cucumber", "import/execution/cucumber"),
                       ("behave", "import/execution/behave"), ("xray", "import/execution")):
-        ctx.xray.rest_responses[("POST", path)] = {"testExecIssue": {"id": "7", "key": "PROJ-7"}}
+        ctx.xray.rest_responses[("POST", path)] = {"id": "7", "key": "PROJ-7", "self": "https://x/rest/api/2/issue/7"}
         out, err = call(ctx, format=fmt, content="[]")
         assert not err, out
         m, p, kw = ctx.xray.rest_calls[-1]
@@ -160,18 +160,18 @@ def test_json_format_with_exec_or_env_params_refused(tmp_path):
 def test_json_format_new_execution_with_fields_multipart(tmp_path):
     ctx = make(tmp_path)
     ctx.xray.rest_responses[("POST", "import/execution/cucumber/multipart")] = {
-        "testExecIssue": {"id": "7", "key": "PROJ-7"}}
+        "id": "7", "key": "PROJ-7", "self": "https://x/rest/api/2/issue/7"}
     out, err = call(ctx, format="cucumber", content="[]", summary="S")
     assert not err, out
     files = ctx.xray.rest_calls[0][2]["multipart"]["files"]
-    assert "result" in files and "results" not in files and "info" in files
+    assert "results" in files and "result" not in files and "info" in files
 
 
 def test_summary_counts_by_status(tmp_path):
     ctx = make(tmp_path, statuses=["PASSED", "FAILED", "PASSED", "TODO"])
     out, _ = call(ctx, format="junit", content="<x/>", detail=True)
     assert out["summary"] == {"total": 4, "byStatus": {"PASSED": 2, "FAILED": 1, "TODO": 1}}
-    assert out["response"] == {"testExecIssue": {"id": "100", "key": "PROJ-9"}}
+    assert out["response"] == {"id": "100", "key": "PROJ-9", "self": "https://x/rest/api/2/issue/100"}
     assert ctx.xray.calls_of(RUNS)[0]["testExecIssueIds"] == ["100"]
     out, _ = call(ctx, format="junit", content="<x/>")
     assert "response" not in out
@@ -195,3 +195,13 @@ def test_bad_format_refused(tmp_path):
     ctx = make(tmp_path)
     out, err = call(ctx, format="csv", content="x")
     assert err and ctx.xray.rest_calls == []
+
+
+def test_server_dc_response_shape_still_read(tmp_path):
+    """Xray Server/DC answers {"testExecIssue": {...}}; Cloud answers {"id", "key", "self"}."""
+    ctx = make(tmp_path)
+    ctx.xray.rest_responses[("POST", "import/execution/junit")] = {
+        "testExecIssue": {"id": "100", "key": "PROJ-9"}}
+    out, err = call(ctx, format="junit", content="<x/>")
+    assert not err and out["testExecKey"] == "PROJ-9" and out["summary"]["total"] == 3
+    assert "warnings" not in out
