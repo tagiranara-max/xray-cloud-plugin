@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from .. import resultmatch as rm
-from ..context import check_issue_in_project, dedupe, require_project
+from ..context import ISSUE_KEY_RE, check_issue_in_project, dedupe, require_project
 from ..errors import ToolError
 from ..fields import build_jira_fields
 from .. import localfiles
@@ -378,19 +378,20 @@ def _resolve_scenarios(ctx, pk: str, cases: List[rm.ScenarioCase],
 
 
 def _resolve_xml(ctx, pk: str, fmt: str, cases: List[rm.XmlCase],
-                 explicit: Dict[str, str]) -> Resolution:
-    summaries: Dict[str, str] = {}
+                 explicit: Dict[str, str], known: Dict[str, str]) -> Resolution:
+    summaries: Dict[str, str] = dict(known)  # key -> summary of Tests already looked up
     if fmt == "robot":
         # A key-shaped Robot tag maps the test only when that issue is a Test; other tags
         # (requirement links, dates such as ISO-8601) are left alone. A Test of another
         # project is refused. report_keys keeps only the Tests, so key injection replaces
         # just those tags.
         tagged = [k for c in cases for k in c.report_keys]
-        summaries = rm.existing_tests(ctx, tagged) if tagged else {}
-        for k in summaries:
+        tests = rm.existing_tests(ctx, tagged) if tagged else {}
+        for k in tests:
             check_issue_in_project(k, pk)
+        summaries.update(tests)
         for c in cases:
-            c.report_keys = [k for k in c.report_keys if k in summaries]
+            c.report_keys = [k for k in c.report_keys if k in tests]
     pre = [c.report_keys for c in cases]
     notes: List[str] = []
 
@@ -412,10 +413,9 @@ def _resolve_xml(ctx, pk: str, fmt: str, cases: List[rm.XmlCase],
 
 def _robot_renames(ctx, cases: List[rm.XmlCase], res: Resolution, explicit: Dict[str, str],
                    summaries: Dict[str, str]) -> List[Dict[str, str]]:
-    """Existing tests a Robot key tag (in the file, or added for testKeys) maps to whose
+    """Existing tests a Robot result maps to (by key tag, testKeys or definition) whose
     summary differs from the Robot test's name: Xray renames them (verified live)."""
-    by_tag = [(c, k) for c, k in zip(cases, res.keys)
-              if k and (c.name in explicit or k in c.report_keys)]
+    by_tag = [(c, k) for c, k in zip(cases, res.keys) if k]
     unknown = [k for _, k in by_tag if k not in summaries]
     if unknown:
         summaries = dict(summaries, **rm.existing_tests(ctx, unknown))
@@ -506,6 +506,17 @@ _UPDATING = {"junit": ("properties", "property", {"test_summary", "test_descript
 
 
 def _strip_updates(el, fmt: str) -> List[str]:
+    if fmt == "robot":
+        # Xray adds a matched test's plain tags to its labels (verified live); key-shaped
+        # tags (test keys, requirement links) stay.
+        removed = []
+        for box in el.findall("tags"):
+            for t in list(box):
+                text = (t.text or "").strip()
+                if not ISSUE_KEY_RE.fullmatch(text):
+                    box.remove(t)
+                    removed.append(text)
+        return removed
     if fmt not in _UPDATING:
         return []
     container, item, names = _UPDATING[fmt]
@@ -544,7 +555,8 @@ def _apply_xml(root, fmt: str, cases: List[rm.XmlCase], res: Resolution,
     if stripped:
         names = sorted({n for v in stripped.values() for n in v})
         warnings.append("Removed %s from %d case(s) matched to existing tests, because Xray "
-                        "would overwrite those tests' fields with them: %s"
+                        "would overwrite those tests' fields (summary, description, labels) "
+                        "with them: %s"
                         % (", ".join(names), len(stripped), ", ".join(list(stripped)[:20])))
     return changed, warnings
 
@@ -677,11 +689,21 @@ def import_execution_results(ctx, args):
         multipart = True
         info = _exec_info(pk, args.get("summary") or "Imported results (%s)" % fmt, extra,
                           plan_key, envs)
+    # testKeys must name existing Tests: anything else would be a link to Xray (a Robot tag)
+    # or a failed upload, and the result could fall back to Xray creating a test.
+    known: Dict[str, str] = {}
+    if explicit:
+        wanted = sorted(set(explicit.values()))
+        known = rm.existing_tests(ctx, wanted)
+        bad = [k for k in wanted if k not in known]
+        if bad:
+            raise ToolError("testKeys must name existing Tests of %s; these are not: %s"
+                            % (pk, ", ".join(bad)), notTests=bad)
     # Match every result to a test (reads only).
     if scen:
         res = _resolve_scenarios(ctx, pk, scen, explicit)
     elif fmt in XML_FORMATS:
-        res = _resolve_xml(ctx, pk, fmt, xml_cases, explicit)
+        res = _resolve_xml(ctx, pk, fmt, xml_cases, explicit, known)
     else:
         pre_keyed = sum(1 for t in (report.get("tests") or [])
                         if isinstance(t, dict) and t.get("testKey"))

@@ -54,9 +54,13 @@ Before the user answers about Cucumber or Behave, tell them what a created test 
 
 Result names are unique per result: when two features have a scenario with the same name, it is listed as `Feature: Scenario`; Xray JSON entries with the same summary are listed as `summary (definition)`. Use the names exactly as listed.
 
-For Robot results, a tag equal to a test key makes Xray rename that test to the Robot test's name. If any existing test would be renamed, the tool lists `renames` (key, current summary, new name) and asks `allowRenameTests`. Show the list, and pass `allowRenameTests: true` only after the user agrees; otherwise they can remove the tags or map the results differently.
+`testKeys` values must be existing Tests of the project; a story or other issue key is refused.
 
-Existing tests are otherwise left as they are: the tool removes `testInfo` from Xray JSON entries that name a test, and summary, description and label properties (for example JUnit `test_summary` and `tags`) from cases matched to existing tests; the result's `warnings` say so.
+When two scenarios with the same name in different features both match no test, creating tests makes one Cucumber test for both (named after the scenario). Tell the user, and map one of them with `testKeys` if they should be separate tests.
+
+For Robot results, Xray renames a matched test to the Robot test's name, whether it was matched by a key tag or by its definition. If any existing test would be renamed, the tool lists `renames` (key, current summary, new name) and asks `allowRenameTests`. Show the list, and pass `allowRenameTests: true` only after the user agrees; otherwise they can remove the tags or map the results differently.
+
+Existing tests are otherwise left as they are: the tool removes `testInfo` from Xray JSON entries that name a test, summary, description and label properties (for example JUnit `test_summary` and `tags`) from cases matched to existing tests, and plain Robot tags (which Xray would add as labels) from Robot tests matched to existing tests; the result's `warnings` say so.
 
 ## 6. Summarise
 

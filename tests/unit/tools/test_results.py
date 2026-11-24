@@ -480,6 +480,9 @@ def match_ctx(tmp_path, summaries=(), definitions=(), yaml=YAML, runs=None, befo
             state["uploaded"] = True
             return {"id": "9", "key": "PROJ-9"}
         ctx.xray.rest_responses[("POST", path)] = answer
+    # By default every key asked about is an existing Test.
+    ctx.xray.responses[KEYS] = lambda v: rows_by(
+        [(k, "Test " + k, None) for k in v["jql"][len("issue in ("):-1].split(", ")])
     ctx.xray.responses["ResultExecId"] = {"getTestExecutions": {"results": [{"issueId": "9"}]}}
     ctx.xray.responses[RUNS] = lambda v: run_tests_response(
         list(runs or []) if state["uploaded"] else list(before or []))
@@ -758,7 +761,9 @@ def test_robot_key_tag_that_renames_a_test_needs_an_answer(tmp_path):
     assert [q["id"] for q in out["questions"]] == ["allowRenameTests"]
     out, err = call(ctx, format="robot", content=ROBOT, allowRenameTests=True)
     assert not err and "status" not in out, out
-    assert ctx.xray.rest_calls[0][2]["data"] == ROBOT.encode()
+    import xml.etree.ElementTree as ET
+    tags = [t.text for t in ET.fromstring(ctx.xray.rest_calls[0][2]["data"]).iter("tag")]
+    assert tags == ["PROJ-5", "PROJ-77"]  # smoke would become a label: removed
 
 
 def test_robot_same_name_needs_no_rename_answer(tmp_path):
@@ -781,7 +786,7 @@ def test_robot_test_keys_rename_check_and_only_test_tags_replaced(tmp_path):
                     allowRenameTests=True)
     assert not err, out
     tags = [t.text for t in ET.fromstring(ctx.xray.rest_calls[0][2]["data"]).iter("tag")]
-    assert tags == ["PROJ-77", "smoke", "PROJ-6"]
+    assert tags == ["PROJ-77", "PROJ-6"]
 
 
 def test_matched_junit_case_loses_properties_that_would_update_the_test(tmp_path):
@@ -871,3 +876,39 @@ def test_xray_json_test_info_entries_go_through_the_gate(tmp_path):
     # matched by definition: sent by key, so Xray does not overwrite PROJ-1's summary
     assert body["tests"][1] == {"testKey": "PROJ-1", "status": "PASSED"}
     assert body["tests"][2] == {"testKey": "PROJ-8", "status": "FAILED"}
+
+
+ROBOT_DEF = ('<robot><suite name="S"><test name="Login"><tags><tag>smoke</tag></tags></test>'
+             '<test name="New"><tags><tag>smoke</tag></tags></test></suite></robot>')
+
+
+def test_robot_definition_match_that_renames_needs_an_answer(tmp_path):
+    """Xray renames a test matched by definition too, and turns plain tags into labels on it
+    (verified live); a test it creates may keep them."""
+    import xml.etree.ElementTree as ET
+    ctx = match_ctx(tmp_path, definitions=[("PROJ-5", "Old name", "S.Login")])
+    ctx.xray.responses[KEYS] = rows_by([("PROJ-5", "Old name", None)])
+    out, err = call(ctx, format="robot", content=ROBOT_DEF, allowCreateTests=True)
+    assert out["status"] == "needs_answer" and out["renames"] == [
+        {"key": "PROJ-5", "summary": "Old name", "newName": "Login"}], out
+    out, err = call(ctx, format="robot", content=ROBOT_DEF, allowCreateTests=True,
+                    allowRenameTests=True)
+    assert not err, out
+    tests = ET.fromstring(ctx.xray.rest_calls[0][2]["data"]).iter("test")
+    assert [[t.text for t in x.iter("tag")] for x in tests] == [[], ["smoke"]]
+    assert any("label" in w for w in out["warnings"]), out
+
+
+@pytest.mark.parametrize("fmt,content,name", [
+    ("cucumber", None, "Login"),
+    ("robot", '<robot><suite name="S"><test name="T"/></suite></robot>', "S.T"),
+    ("junit", '<testsuite><testcase classname="a" name="b"/></testsuite>', "a.b"),
+])
+def test_test_keys_must_be_existing_tests(tmp_path, fmt, content, name):
+    ctx = match_ctx(tmp_path)
+    ctx.xray.responses[KEYS] = rows_by([("PROJ-1", "x", None)])  # PROJ-2 is a story
+    content = content or cucumber_report(untagged("Login"))
+    out, err = call(ctx, format=fmt, content=content, testKeys={name: "PROJ-2"},
+                    allowCreateTests=True)
+    assert err and "PROJ-2" in out["error"] and "not" in out["error"], out
+    assert ctx.xray.rest_calls == []
