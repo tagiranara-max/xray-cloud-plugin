@@ -75,7 +75,7 @@ everything created, including the tests Xray creates for JUnit test cases, delet
 | Item | Outcome |
 |---|---|
 | `import_execution_results` JUnit, new execution with `summary` | ok: multipart `import/execution/junit/multipart` with parts `info` (Jira fields, summary applied) and `results`; response `{id, key, self}`; runs and `byStatus` match the file |
-| `import_execution_results` Cucumber JSON into an existing execution | ok (sent as Xray JSON with `testExecutionKey`): same execution, one run per `@TEST_` key, failure message as run comment, Scenario Outline rows as `examples` statuses (`PASSED`, `FAILED`) |
+| `import_execution_results` Cucumber JSON into an existing execution | ok (sent as Xray JSON with `testExecutionKey`): same execution, one run per `@TEST_` key, failure message as run comment, Scenario Outline rows as `examples` statuses (`PASSED`, `FAILED`). The converter also counts a failed Background (Cucumber JSON emits it as its own element before each scenario) and failing scenario or step hooks as FAILED; repeated non-outline scenarios of one key keep the worst status (unit-tested) |
 | `import_execution_results` Cucumber JSON, new execution with `testEnvironments` | ok: multipart with `info.xrayFields.environments`; the execution carries the environment |
 | `import_execution_results` Xray JSON (plain `import/execution`) | ok: new execution, `byStatus` from `getTestRuns` |
 | `import_feature_file` on `regression/sample.feature` (run-id prefixed copy) | ok: multipart part `file` (with `projectKey` query parameter); response keys `updatedOrCreatedTests`, `updatedOrCreatedPreconditions` (`[{id, key, self}]`) and `errors`; 2 tests (scenario, scenario outline) and 1 Pre-Condition. A re-import of the same file updates the same keys (Xray matches by name). `testInfo` / `precondInfo` parts are as documented; not exercised live (the test project needs no extra fields) |
@@ -84,7 +84,7 @@ everything created, including the tests Xray creates for JUnit test cases, delet
 | `get_requirement_coverage` | ok: the Jira link type is `Test` (inward "is tested by", outward "tests"), so `issue in linkedIssues("<KEY>", "is tested by")` finds the covering tests; latest status per test via `getTestRuns(testIssueIds) { test { issueId } ... }` |
 | `coverageStatus` | available: `getCoverableIssues(jql) { results { status { name description } } }` (`CoverableIssue.status(environment, isFinal, version, testPlan)`) gave `NOTRUN` before any run and `OK` after a passed run; an issue that is not a requirement type returns no rows (`coverageStatus: null`). Added to `get_requirement_coverage` |
 | `find_related_tests` | ok: the created test is found by label, by term and by issue key (`matchedBy` `labels`, `terms`, `issueKeys`); all three at once give one row with all three kinds and the latest status |
-| `dev/parity_audit.py` | ok: 66 mutations, 30 queries; every mutation has a row in "API parity" below |
+| `dev/parity_audit.py` | ok: 66 mutations, 30 queries on the audited tenant; every one of those mutations has a row in "API parity" below |
 
 ## Comparison with Xray's native import
 
@@ -125,8 +125,10 @@ matches the forum report: Background steps are not shown as run steps.
 
 Every GraphQL mutation the server uses and every REST import/export endpoint, with the tool
 that exposes it. `dev/parity_audit.py` lists the mutations and queries of the live schema (read-only,
-needs credentials). Completed from its output on the live tenant (Plan 2, Task 8): every mutation
-of the live schema has a row, which `tests/live/test_live_plan2.py` checks. A cell is
+needs credentials). Completed from its output for the audited tenant (Plan 2, Task 8; 66
+mutations): every mutation of that tenant's schema has a row, which
+`tests/live/test_live_plan2.py` checks. Other tenants or later Xray releases may add mutations;
+rerun the audit. A cell is
 `tool: <name>[, <name>...]` or `not exposed: <reason>`; `tests/unit/test_parity_doc.py` checks
 that every named tool is registered.
 

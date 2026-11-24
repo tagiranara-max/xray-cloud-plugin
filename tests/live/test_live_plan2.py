@@ -11,6 +11,7 @@ import io
 import json
 import re
 import time
+import uuid
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any, Callable, Dict, List
@@ -19,7 +20,8 @@ import pytest
 
 from xray_cloud.gherkin.parse import parse_feature
 
-from .conftest import HAS_JIRA, HAS_PROJECT, HAS_XRAY, LIVE_LABEL, RUN_ID, Live
+from .conftest import (HAS_JIRA, HAS_PROJECT, HAS_XRAY, LIVE_LABEL, RUN_ID,
+                       SUMMARY_PREFIX, Live)
 from .test_live_write import ENV_NAME, REGRESSION, prefixed_copy
 
 REPO = Path(__file__).resolve().parents[2]
@@ -31,16 +33,67 @@ query ExecRuns($jql: String!) { getTestExecutions(jql: $jql, limit: 1) { results
 """
 
 
+class TestLive(Live):
+    """A Live whose summaries carry, besides the run id, a token unique to one test, so the
+    teardown can find (and delete) whatever that test created but never got to track."""
+    __test__ = False
+
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        self.token = "t" + uuid.uuid4().hex[:8]
+
+    def summary(self, text: str) -> str:  # type: ignore[override]
+        return "%s %s %s %s" % (SUMMARY_PREFIX, RUN_ID, self.token, text)
+
+    def _exists(self, key: str) -> bool:
+        """The search index can still list a just-deleted issue; ask Jira directly."""
+        try:
+            self.jira("GET", "/rest/api/3/issue/%s" % key, params={"fields": "summary"})
+            return True
+        except Exception as e:
+            if "404" in str(e) or "does not exist" in str(e).lower():
+                return False
+            raise
+
+    def own_leftovers(self) -> List[str]:
+        """Issues of the project whose summary carries this test's token."""
+        jql = 'project = %s AND summary ~ "%s"' % (self.project, self.token)
+        if self.ctx.jira is not None:
+            data = self.jira("GET", "/rest/api/3/search/jql",
+                             params={"jql": jql, "fields": "summary", "maxResults": 100})
+            return [i["key"] for i in (data or {}).get("issues") or []
+                    if self.token in (i.get("fields") or {}).get("summary", "")
+                    and self._exists(i["key"])]
+        keys: List[str] = []
+        for q in self._QUERY.values():
+            data = self.gql('query L($jql: String!) { %s(jql: $jql, limit: 100) '
+                            '{ results { jira(fields: ["key", "summary"]) } } }' % q,
+                            {"jql": jql})
+            keys += [r["jira"]["key"] for r in (data.get(q) or {}).get("results") or []
+                     if self.token in (r["jira"].get("summary") or "")]
+        return keys
+
+
 @pytest.fixture
 def fresh(tmp_path):
     if not (HAS_XRAY and HAS_PROJECT):
         pytest.skip("XRAY_CLIENT_ID/SECRET and XRAY_TEST_PROJECT not set")
-    lv = Live(tmp_path)
+    lv = TestLive(tmp_path)
     assert lv.env["CLAUDE_PLUGIN_DATA"].startswith(str(tmp_path))
     yield lv
     failed = lv.cleanup()
-    assert not failed and not lv.denied, "cleanup incomplete: failed=%s denied=%s" % (
-        failed, lv.denied)
+    # Anything this test created without tracking it (e.g. a lookup failed before the tests
+    # Xray made for JUnit cases were tracked) still carries the token: delete it too.
+    orphans = [k for k in lv.own_leftovers() if k not in lv.denied]
+    if orphans:
+        lv.created = []
+        lv.track("auto", *orphans)
+        failed += lv.cleanup()
+    left = lv.own_leftovers()
+    assert not failed and not lv.denied and not left, (
+        "cleanup incomplete: failed=%s denied=%s untracked orphans deleted=%s left=%s"
+        % (failed, lv.denied, orphans, left))
+    assert not orphans, "untracked issues had to be deleted by token: %s" % orphans
 
 
 def eventually(fn: Callable[[], Any], ok: Callable[[Any], bool], timeout: float = 90) -> Any:
@@ -53,19 +106,24 @@ def eventually(fn: Callable[[], Any], ok: Callable[[Any], bool], timeout: float 
         time.sleep(5)
 
 
-def exec_runs(lv: Live, key: str) -> dict:
-    rows = lv.gql(EXEC_RUNS, {"jql": "issue = %s" % key})["getTestExecutions"]["results"]
+def exec_runs(lv: Live, key: str, min_runs: int = 0) -> dict:
+    """The execution with its runs; retried while the JQL lookup lags behind the import."""
+    def read() -> List[dict]:
+        return lv.gql(EXEC_RUNS, {"jql": "issue = %s" % key})["getTestExecutions"]["results"]
+    rows = eventually(read, lambda r: bool(r) and len(
+        r[0]["testRuns"]["results"]) >= min_runs)
     assert rows, key
     return rows[0]
 
 
-def track_run_tests(lv: Live, key: str) -> List[dict]:
-    """Track the tests Xray created for result entries (their summaries carry the run id)."""
-    runs = exec_runs(lv, key)["testRuns"]["results"]
+def track_run_tests(lv: TestLive, key: str, expected: int) -> List[dict]:
+    """Track the tests Xray created for result entries (their summaries carry the token)."""
+    runs = exec_runs(lv, key, expected)["testRuns"]["results"]
     for r in runs:
         jira = r["test"]["jira"]
-        if RUN_ID in (jira.get("summary") or ""):
+        if lv.token in (jira.get("summary") or ""):
             lv.track("test", jira["key"])
+    assert len(runs) == expected, runs
     return runs
 
 
@@ -151,7 +209,7 @@ def test_feature_import_export_results_and_run_history(fresh, results_log):
     ex = res["testExecKey"]
     assert ex, res
     lv.track("testExecution", ex)
-    runs = track_run_tests(lv, ex)
+    runs = track_run_tests(lv, ex, 2)
     assert res["created"] is True and "warnings" not in res, res
     assert sorted(res["response"]) == ["id", "key", "self"], res["response"]
     assert res["summary"] == {"total": 2, "byStatus": {"PASSED": 1, "FAILED": 1}}, res
@@ -198,7 +256,7 @@ def test_feature_import_export_results_and_run_history(fresh, results_log):
                    testEnvironments=[ENV_NAME])
     ex2 = res2["testExecKey"]
     lv.track("testExecution", ex2)
-    track_run_tests(lv, ex2)
+    track_run_tests(lv, ex2, 1)
     assert res2["created"] is True and ex2 != ex, res2
     assert res2["summary"] == {"total": 1, "byStatus": {"FAILED": 1}}, res2
     assert exec_runs(lv, ex2)["testEnvironments"] == [ENV_NAME]
