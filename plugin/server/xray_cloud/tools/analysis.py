@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 
 from ..context import check_issue_key, require_project
 from ..registry import REGISTRY
-from ..related import MAX_PAGES, PAGE, latest_statuses_checked, run_on
+from ..related import Criteria, MAX_PAGES, MAX_RELATED, PAGE, find_related, latest_statuses_checked, run_on
 from .tests import _BASE_JIRA, _GET_TESTS, _LIMIT, _jira_list, _schema, fetch_test
 
 _HISTORY = """
@@ -111,3 +111,28 @@ def get_requirement_coverage(ctx, args):
                       "lastRunOn": st["on"] if st else None})
     return {"requirement": key, "tests": tests, "truncated": truncated,
             "counts": {"total": max(real_total, len(tests)), "byLastStatus": by_status, "neverRun": never}}
+
+
+_STRS = {"type": "array", "items": {"type": "string"}}
+
+
+@REGISTRY.tool(
+    "find_related_tests",
+    "Find tests related to an area, matching ANY of: terms (text search), issueKeys "
+    "(requirements the tests cover), labels, components, folder (path, with descendants). "
+    "At least one is required. Each test appears once with matchedBy listing the criteria it "
+    "matched; most matches first. Each row has the latest run status (null if never run). "
+    "limit defaults to 50, max 200; truncated is true when results were cut off.",
+    _schema({"terms": _STRS, "issueKeys": _STRS, "labels": _STRS, "components": _STRS,
+             "folder": {"type": "string"},
+             "limit": {"type": "integer", "minimum": 1, "maximum": MAX_RELATED}}, []))
+def find_related_tests(ctx, args):
+    pk = args["projectKey"]
+    require_project(ctx, pk, write=False)
+    crit = Criteria(terms=list(args.get("terms") or []),
+                    issue_keys=list(args.get("issueKeys") or []),
+                    labels=list(args.get("labels") or []),
+                    components=list(args.get("components") or []),
+                    folder=args.get("folder") or None)
+    tests, truncated = find_related(ctx, pk, crit, args.get("limit", 50), with_truncated=True)
+    return {"tests": tests, "truncated": truncated}

@@ -124,4 +124,6 @@ def test_every_limit_param_is_capped_at_100():
     limits = [(t["name"], t["inputSchema"]["properties"]["limit"]) for t in REGISTRY.list()
               if "limit" in t["inputSchema"].get("properties", {})]
     assert limits
-    assert [n for n, s in limits if s.get("maximum") != 100] == []
+    # find_related_tests caps the merged result set (paged internally), not one Xray page
+    assert [n for n, s in limits
+            if s.get("maximum") != (200 if n == "find_related_tests" else 100)] == []

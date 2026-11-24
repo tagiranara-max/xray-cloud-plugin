@@ -159,3 +159,115 @@ def test_coverage_untimestamped_run_counts_not_never_run():
     out, _ = call(ctx, "get_requirement_coverage", issueKey="PROJ-7")
     assert out["tests"][0]["lastStatus"] == "TODO" and out["tests"][0]["lastRunOn"] is None
     assert out["counts"]["neverRun"] == 0 and out["counts"]["byLastStatus"] == {"TODO": 1}
+
+
+# ---- find_related_tests -------------------------------------------------
+
+def rel_row(n, folder=None, labels=None):
+    return {"issueId": str(n), "folder": {"path": folder} if folder else None,
+            "jira": {"key": "PROJ-%d" % n, "summary": "t%d" % n, "labels": labels or []}}
+
+
+def rel_ctx(by_jql=None, folder_rows=None, runs=None):
+    """by_jql: function(jql) -> rows; folder_rows: rows for the folder query."""
+    def tests(v):
+        rows = by_jql(v["jql"]) if by_jql else []
+        return {"getTests": {"total": len(rows), "results": rows[v["start"]:v["start"] + v["limit"]]}}
+
+    def in_folder(v):
+        rows = folder_rows or []
+        return {"getTests": {"total": len(rows), "results": rows[v["start"]:v["start"] + v["limit"]]}}
+    return make_context(YAML, responses={
+        "RelatedTests": tests, "RelatedTestsInFolder": in_folder,
+        "GetProjectSettings": {"getProjectSettings": {"projectId": "77"}},
+        "LatestTestStatuses": {"getTestRuns": {"total": 0, "results": runs or []}}})
+
+
+def test_each_kind_builds_its_query():
+    from xray_cloud import related
+    assert related._jql_for("terms", ['checkout "x]\\y', "refund"], "PROJ") == \
+        'project = "PROJ" AND (text ~ "checkout x y" OR text ~ "refund")'
+    assert related._jql_for("issueKeys", ["PROJ-1", "STORY-2"], "PROJ") == (
+        'project = "PROJ" AND (issue in linkedIssues("PROJ-1", "is tested by") '
+        'OR issue in linkedIssues("STORY-2", "is tested by"))')
+    assert related._jql_for("labels", ["a", 'b"c'], "PROJ") == \
+        'project = "PROJ" AND (labels in ("a", "b\\"c"))'
+    assert related._jql_for("components", ["Backend"], "PROJ") == \
+        'project = "PROJ" AND (component in ("Backend"))'
+
+
+def test_bad_issue_key_refused():
+    ctx = rel_ctx(lambda j: [])
+    out, err = call(ctx, "find_related_tests", issueKeys=['X-1") OR ("a'])
+    assert err and not ctx.xray.calls_of("RelatedTests")
+
+
+def test_merge_dedupes_and_records_matched_by():
+    def by(jql):
+        if "text ~" in jql:
+            return [rel_row(1, "/A", ["x"]), rel_row(2)]
+        if "labels in" in jql:
+            return [rel_row(1, "/A", ["x"])]
+        return []
+    ctx = rel_ctx(by)
+    out, err = call(ctx, "find_related_tests", terms=["checkout"], labels=["x"])
+    assert not err and out["truncated"] is False
+    assert [t["key"] for t in out["tests"]] == ["PROJ-1", "PROJ-2"]
+    t1 = out["tests"][0]
+    assert t1["matchedBy"] == ["terms", "labels"] and t1["folder"] == "/A"
+    assert t1["labels"] == ["x"] and t1["lastStatus"] is None
+    assert all(c["jql"].startswith('project = "PROJ" AND (')
+               for c in ctx.xray.calls_of("RelatedTests"))
+
+
+def test_rank_by_match_count_then_key_and_last_status():
+    def by(jql):
+        if "text ~" in jql:
+            return [rel_row(5), rel_row(3)]
+        return [rel_row(9), rel_row(5)]
+    runs = [{"test": {"issueId": "5"}, "status": {"name": "FAILED"}, "startedOn": None,
+             "finishedOn": "2026-01-01T00:00:00Z", "testExecution": {"jira": {"key": "PROJ-90"}}}]
+    ctx = rel_ctx(by, runs=runs)
+    out, _ = call(ctx, "find_related_tests", terms=["a"], labels=["b"])
+    assert [t["key"] for t in out["tests"]] == ["PROJ-5", "PROJ-3", "PROJ-9"]
+    assert out["tests"][0]["lastStatus"] == "FAILED" and out["tests"][1]["lastStatus"] is None
+
+
+def test_limit_cap_200_and_truncated_flag():
+    big = [rel_row(n) for n in range(1, 501)]
+    ctx = rel_ctx(lambda j: big)
+    out, err = call(ctx, "find_related_tests", terms=["a"], limit=200)
+    assert not err and len(out["tests"]) == 200 and out["truncated"] is True
+    # never asks for more than limit rows in total
+    asked = sum(c["limit"] for c in ctx.xray.calls_of("RelatedTests"))
+    assert asked == 200
+    out, err = call(ctx, "find_related_tests", terms=["a"], limit=201)
+    assert err
+    out, err = call(rel_ctx(lambda j: big[:3]), "find_related_tests", terms=["a"], limit=5)
+    assert len(out["tests"]) == 3 and out["truncated"] is False
+
+
+def test_truncated_when_merged_exceeds_limit():
+    def by(jql):
+        return [rel_row(1), rel_row(2)] if "text ~" in jql else [rel_row(3), rel_row(4)]
+    out, _ = call(rel_ctx(by), "find_related_tests", terms=["a"], labels=["b"], limit=3)
+    assert len(out["tests"]) == 3 and out["truncated"] is True
+
+
+def test_no_criteria_refused():
+    ctx = rel_ctx()
+    out, err = call(ctx, "find_related_tests")
+    assert err and "criterion" in json.dumps(out)
+    assert not ctx.xray.calls
+    out, err = call(ctx, "find_related_tests", terms=["[]"])
+    assert err
+
+
+def test_folder_criterion_uses_getTests_folder():
+    ctx = rel_ctx(folder_rows=[rel_row(1, "/Shop/Returns")])
+    out, err = call(ctx, "find_related_tests", folder="Shop/Returns/")
+    assert not err
+    assert out["tests"][0]["matchedBy"] == ["folder"] and out["tests"][0]["folder"] == "/Shop/Returns"
+    v = ctx.xray.calls_of("RelatedTestsInFolder")[0]
+    assert v["projectId"] == "77" and v["path"] == "/Shop/Returns"
+    assert not ctx.xray.calls_of("RelatedTests")
