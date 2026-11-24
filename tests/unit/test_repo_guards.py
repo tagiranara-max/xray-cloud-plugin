@@ -17,7 +17,14 @@ FORBIDDEN_SHA256 = {
     "2c4dcd884aae621e654b22326136b4de47147ac0476e77728d08adf6bd663526",
     "b62f282368d65b865ab69b4f8f855809a294b602d73eaabf788262cb26d6a351",
     "7a9d8c4ad3c66b7a1399aaa4be2b8886ec956685507898cf96be159ef44ae629",
+    "047f46874b7b64b86e17eb3b679657f80b2c4e659acdcfdf1f81ffdb092463c0",
+    "21464651041b2f313089dda6c58a81d7cff5a400419469a8fba2ce5c94dea74b",
+    "bb0c5a9fd6a46579937bdee8bf64471a861201bfd37e2674ba47d63eee4c1eea",
 }
+
+# Hex-encoded substrings that must not appear anywhere in tracked text, in any case
+# (stored encoded so this file does not contain them either).
+FORBIDDEN_SUBSTRINGS_HEX = ("706179", "63617368")
 
 EXCLUDE = [".git", "tests/fixtures", ".pytest_cache", "__pycache__"]
 
@@ -90,6 +97,16 @@ def test_no_company_strings():
         if sha256(tok.lower()) in FORBIDDEN_SHA256
     ]
     assert hits == []
+
+
+def test_no_forbidden_substrings():
+    needles = [bytes.fromhex(h).decode() for h in FORBIDDEN_SUBSTRINGS_HEX]
+    hits = set()
+    for path, tok in iter_word_tokens(REPO, exclude=EXCLUDE + git_ignored_dirs()):
+        low = tok.lower()
+        if any(n in low for n in needles):
+            hits.add(path)
+    assert sorted(hits) == []
 
 
 def test_tokenizer_catches_subtokens(tmp_path):
