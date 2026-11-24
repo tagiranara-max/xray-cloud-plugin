@@ -116,6 +116,20 @@ def test_coverage_status_from_xray():
     assert out["coverageStatus"] is None and out["coverageStatusDescription"] is None
 
 
+def test_coverage_status_error_keeps_tests_and_counts():
+    from xray_cloud.errors import ToolError
+
+    def boom(_):
+        raise ToolError("Xray request failed with HTTP 502")
+    tests = [{"issueId": "1", "jira": {"key": "PROJ-1", "summary": "a"}}]
+    ctx = cov_ctx(tests, [lrun("1", "PASSED", "2026-01-01")], status=boom)
+    out, err = call(ctx, "get_requirement_coverage", issueKey="OTHER-5")
+    assert not err, out
+    assert out["counts"] == {"total": 1, "byLastStatus": {"PASSED": 1}, "neverRun": 0}
+    assert out["coverageStatus"] is None and out["coverageStatusDescription"] is None
+    assert len(out["warnings"]) == 1 and "HTTP 502" in out["warnings"][0]
+
+
 def test_coverage_never_run_counted():
     tests = [{"issueId": "1", "jira": {"key": "PROJ-1", "summary": "a"}},
              {"issueId": "2", "jira": {"key": "PROJ-2", "summary": "b"}}]

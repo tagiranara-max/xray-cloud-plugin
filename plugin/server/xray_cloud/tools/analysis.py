@@ -131,7 +131,11 @@ def get_requirement_coverage(ctx, args):
     out = {"requirement": key, "tests": tests, "truncated": truncated,
            "counts": {"total": max(real_total, len(tests)), "byLastStatus": by_status,
                       "neverRun": never}}
-    out.update(_coverage_status(ctx, key))
+    try:
+        out.update(_coverage_status(ctx, key))
+    except Exception as e:  # the tests and counts above stay useful without it
+        out.update({"coverageStatus": None, "coverageStatusDescription": None,
+                    "warnings": ["Xray's coverage status could not be read: %s" % e]})
     return out
 
 
