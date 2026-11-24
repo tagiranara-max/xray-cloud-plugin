@@ -223,7 +223,7 @@ def scenarios_to_xray(cases: List[rm.ScenarioCase], keys: List[Optional[str]], p
     for c, key in zip(cases, keys):
         if key is None and not create:
             continue
-        gk = ("key", key) if key else ("new", c.name)
+        gk = ("key", key) if key else ("new", c.summary)
         results: List[Result] = []
         for bg in c.background:
             results += _results(bg)
@@ -272,6 +272,7 @@ def _tag_scenarios(cases: List[rm.ScenarioCase], keys: List[Optional[str]], fmt:
 # ---- matching: which test each result goes to ---------------------------------------------
 
 CAP = 50  # list lengths in a needs_answer result
+CANDIDATES = 10  # candidate keys shown per ambiguous result
 
 
 @dataclass
@@ -281,6 +282,7 @@ class Resolution:
     missing: List[str]                    # names that match no test
     matched: int                          # names resolved (plus pre-keyed Xray JSON entries)
     notes: List[str] = field(default_factory=list)
+    renames: List[Dict[str, str]] = field(default_factory=list)  # Robot: {key, summary, newName}
 
 
 def _resolve(names: List[str], pre: List[List[str]], terms: List[Optional[str]],
@@ -328,7 +330,7 @@ def _check_test_keys(value: Any, pk: str) -> Dict[str, str]:
     return {str(n).strip(): k for n, k in value.items()}
 
 
-def _needs_answer(res: Resolution, fmt: str) -> dict:
+def _needs_answer(res: Resolution, fmt: str, allow_rename: bool) -> dict:
     questions = []
     if res.ambiguous:
         questions.append({"id": "testKeys", "question": (
@@ -344,11 +346,24 @@ def _needs_answer(res: Resolution, fmt: str) -> dict:
             "no AI label)? Or map them to existing tests with testKeys {name: KEY}, or leave "
             "them out with skipMissing." % (len(res.missing), what)),
             "options": [True, False], "context": {"missing": len(res.missing)}})
-    amb = [{"name": n, "candidates": c} for n, c in res.ambiguous.items()]
+    if res.renames and not allow_rename:
+        questions.append({"id": "allowRenameTests", "question": (
+            "Xray renames a test that a Robot tag maps to the Robot test's name. %d existing "
+            "test(s) would be renamed (see renames). Allow that?" % len(res.renames)),
+            "options": [True, False], "context": {"renames": len(res.renames)}})
+    amb = []
+    for n, c in res.ambiguous.items():
+        item: Dict[str, Any] = {"name": n, "candidates": c[:CANDIDATES]}
+        if len(c) > CANDIDATES:
+            item["candidatesCount"] = len(c)
+        amb.append(item)
     out: Dict[str, Any] = {"status": "needs_answer", "questions": questions,
                            "matched": res.matched, "ambiguous": amb[:CAP],
                            "ambiguousCount": len(amb), "missing": res.missing[:CAP],
                            "missingCount": len(res.missing)}
+    if res.renames and not allow_rename:
+        out["renames"] = res.renames[:CAP]
+        out["renameCount"] = len(res.renames)
     if res.notes:
         out["notes"] = res.notes
     out["nothingImported"] = True
@@ -357,20 +372,26 @@ def _needs_answer(res: Resolution, fmt: str) -> dict:
 
 def _resolve_scenarios(ctx, pk: str, cases: List[rm.ScenarioCase],
                        explicit: Dict[str, str]) -> Resolution:
-    names = [c.name for c in cases]
-    return _resolve(names, [c.tag_keys for c in cases], names,
-                    lambda ts: rm.find_by_summary(ctx, pk, ts), explicit)
+    return _resolve([c.name for c in cases], [c.tag_keys for c in cases],
+                    [c.summary for c in cases], lambda ts: rm.find_by_summary(ctx, pk, ts),
+                    explicit)
 
 
 def _resolve_xml(ctx, pk: str, fmt: str, cases: List[rm.XmlCase],
                  explicit: Dict[str, str]) -> Resolution:
-    pre = [c.report_keys for c in cases]
+    summaries: Dict[str, str] = {}
     if fmt == "robot":
-        # A Robot tag that is an issue key maps the test only when that issue is a Test
-        # (other keys, e.g. requirements, are links).
-        tagged = [k for c in cases if c.name not in explicit for k in c.report_keys]
-        tests = rm.existing_tests(ctx, tagged) if tagged else set()
-        pre = [[k for k in p if k in tests] for p in pre]
+        # A key-shaped Robot tag maps the test only when that issue is a Test; other tags
+        # (requirement links, dates such as ISO-8601) are left alone. A Test of another
+        # project is refused. report_keys keeps only the Tests, so key injection replaces
+        # just those tags.
+        tagged = [k for c in cases for k in c.report_keys]
+        summaries = rm.existing_tests(ctx, tagged) if tagged else {}
+        for k in summaries:
+            check_issue_in_project(k, pk)
+        for c in cases:
+            c.report_keys = [k for k in c.report_keys if k in summaries]
+    pre = [c.report_keys for c in cases]
     notes: List[str] = []
 
     def lookup(defs):
@@ -384,7 +405,29 @@ def _resolve_xml(ctx, pk: str, fmt: str, cases: List[rm.XmlCase],
     names = [c.name for c in cases]
     res = _resolve(names, pre, names, lookup, explicit)
     res.notes = notes
+    if fmt == "robot":
+        res.renames = _robot_renames(ctx, cases, res, explicit, summaries)
     return res
+
+
+def _robot_renames(ctx, cases: List[rm.XmlCase], res: Resolution, explicit: Dict[str, str],
+                   summaries: Dict[str, str]) -> List[Dict[str, str]]:
+    """Existing tests a Robot key tag (in the file, or added for testKeys) maps to whose
+    summary differs from the Robot test's name: Xray renames them (verified live)."""
+    by_tag = [(c, k) for c, k in zip(cases, res.keys)
+              if k and (c.name in explicit or k in c.report_keys)]
+    unknown = [k for _, k in by_tag if k not in summaries]
+    if unknown:
+        summaries = dict(summaries, **rm.existing_tests(ctx, unknown))
+    out: List[Dict[str, str]] = []
+    seen = set()
+    for c, k in by_tag:
+        current = summaries.get(k)
+        if current is not None and current.strip() != c.summary.strip() and \
+                (k, c.summary) not in seen:
+            seen.add((k, c.summary))
+            out.append({"key": k, "summary": current, "newName": c.summary})
+    return out
 
 
 def _xray_cases(report: dict) -> List[Tuple[int, str, Optional[str]]]:
@@ -400,7 +443,25 @@ def _xray_cases(report: dict) -> List[Tuple[int, str, Optional[str]]]:
         generic = str(ti.get("type") or "").lower() == "generic" and \
             isinstance(ti.get("definition"), str) and ti["definition"]
         out.append((i, name, ti["definition"] if generic else None))
-    return out
+    # Entries with the same summary are named apart (summary + definition, else the entry
+    # number), so testKeys and skipMissing act per entry.
+    counts: Dict[str, int] = {}
+    for _, n, _ in out:
+        counts[n] = counts.get(n, 0) + 1
+    named = []
+    for i, n, d in out:
+        if counts[n] > 1:
+            ti = report["tests"][i]["testInfo"]
+            detail = ti.get("definition") or ti.get("scenario")
+            n = "%s (%s)" % (n, str(detail).strip().splitlines()[0] if detail else
+                             "entry %d" % (i + 1))
+        named.append((i, n, d))
+    seen: Dict[str, int] = {}
+    unique = []
+    for i, n, d in named:
+        seen[n] = seen.get(n, 0) + 1
+        unique.append((i, n if seen[n] == 1 else "%s #%d" % (n, i + 1), d))
+    return unique
 
 
 def _inject_xml_key(el, fmt: str, key: str, old: List[str]) -> None:
@@ -434,20 +495,58 @@ def _inject_xml_key(el, fmt: str, key: str, old: List[str]) -> None:
         p.text = key
 
 
+# Entries that make Xray overwrite an existing test's fields. JUnit test_summary and tags
+# verified live (summary and labels of a test matched by key or by definition were
+# overwritten); test_description and the TestNG/NUnit names are removed as a precaution.
+_UPDATING = {"junit": ("properties", "property", {"test_summary", "test_description", "tags"}),
+             "testng": ("attributes", "attribute", {"test_summary", "test_description",
+                                                    "summary", "description", "labels", "tags"}),
+             "nunit": ("properties", "property", {"test_summary", "test_description",
+                                                  "Description", "labels", "Labels", "tags"})}
+
+
+def _strip_updates(el, fmt: str) -> List[str]:
+    if fmt not in _UPDATING:
+        return []
+    container, item, names = _UPDATING[fmt]
+    removed = []
+    for box in el.findall(container):
+        for p in list(box):
+            if p.tag == item and p.get("name") in names:
+                box.remove(p)
+                removed.append(p.get("name"))
+    return removed
+
+
 def _apply_xml(root, fmt: str, cases: List[rm.XmlCase], res: Resolution,
-               explicit: Dict[str, str], skipped: set) -> bool:
+               explicit: Dict[str, str], skipped: set) -> Tuple[bool, List[str]]:
+    """Skip, add keys for testKeys, and remove the entries that would update a matched test.
+    Returns (changed, warnings)."""
     parents = {child: parent for parent in root.iter() for child in parent}
     changed = False
+    stripped: Dict[str, List[str]] = {}
     for c, key in zip(cases, res.keys):
         if c.name in skipped:
             parent = parents.get(c.element)
             if parent is not None:
                 parent.remove(c.element)
                 changed = True
-        elif c.name in explicit and c.report_keys != [key]:
+            continue
+        if c.name in explicit and c.report_keys != [key]:
             _inject_xml_key(c.element, fmt, key, c.report_keys)
             changed = True
-    return changed
+        if key:
+            removed = _strip_updates(c.element, fmt)
+            if removed:
+                changed = True
+                stripped.setdefault(c.name, removed)
+    warnings = []
+    if stripped:
+        names = sorted({n for v in stripped.values() for n in v})
+        warnings.append("Removed %s from %d case(s) matched to existing tests, because Xray "
+                        "would overwrite those tests' fields with them: %s"
+                        % (", ".join(names), len(stripped), ", ".join(list(stripped)[:20])))
+    return changed, warnings
 
 
 _EXEC_ID = """
@@ -495,6 +594,10 @@ def _exec_info(pk: str, summary: str, extra: Dict[str, Any], plan_key: Optional[
     "again with testKeys {name: KEY} for chosen tests, skipMissing: true to leave unmatched "
     "results out, or allowCreateTests: true (only after the user agreed) to let new Test issues "
     "be created for them; created tests are listed in createdTests and get no AI label. "
+    "Existing tests are never changed silently: Robot key tags that would rename a test "
+    "return needs_answer with `renames` (answer allowRenameTests); testInfo next to a known "
+    "test and XML summary/description/label properties of matched cases are removed before "
+    "upload (warnings say so). "
     "Every key (testExecKey, testPlanKey, testKeys, keys in the report) must belong to "
     "projectKey. Cucumber/Behave results for an existing execution (or with tests to create) "
     "are sent as Xray JSON, one status per test, failures as comment. testPlanKey and "
@@ -513,6 +616,9 @@ def _exec_info(pk: str, summary: str, extra: Dict[str, Any], plan_key: Optional[
                                   "test. Only with the user's consent. Default false."},
              "skipMissing": {"type": "boolean", "description":
                              "Leave results that match no test out of the import."},
+             "allowRenameTests": {"type": "boolean", "description":
+                                  "Robot: let Xray rename existing tests that a key tag maps "
+                                  "to the Robot test's name. Only with the user's consent."},
              "detail": {"type": "boolean"}}, ["format"]),
     write=True)
 def import_execution_results(ctx, args):
@@ -583,8 +689,10 @@ def import_execution_results(ctx, args):
                        [d for _, _, d in xray_entries],
                        lambda ds: rm.find_by_definition(ctx, pk, ds)[0], explicit, pre_keyed)
         # Entries Xray would match by definition itself stay as they are.
-    if res.ambiguous or (res.missing and not allow_create and not skip_missing):
-        return _needs_answer(res, fmt)
+    allow_rename = bool(args.get("allowRenameTests"))
+    if res.ambiguous or (res.missing and not allow_create and not skip_missing) or \
+            (res.renames and not allow_rename):
+        return _needs_answer(res, fmt, allow_rename)
     skipped = set(res.missing) if skip_missing else set()
     creating = allow_create and bool(res.missing)
     names = [c.name for c in scen] or [c.name for c in xml_cases] or \
@@ -608,23 +716,35 @@ def import_execution_results(ctx, args):
         elif _tag_scenarios(scen, res.keys, fmt):
             data = json.dumps(report).encode("utf-8")
     elif fmt in XML_FORMATS:
-        if _apply_xml(root, fmt, xml_cases, res, explicit, skipped):
+        changed_xml, xml_warnings = _apply_xml(root, fmt, xml_cases, res, explicit, skipped)
+        warnings.extend(xml_warnings)
+        if changed_xml:
             data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
-            if fmt == "robot" and explicit:
-                warnings.append("Xray renames a test that a Robot tag maps to the Robot test's "
-                                "name.")
+        if res.renames:
+            warnings.append("Xray renamed %d test(s) to their Robot test names (allowed by "
+                            "allowRenameTests)." % len(res.renames))
     else:
+        # Every entry with a known test goes by testKey alone: Xray overwrites a test's
+        # summary and definition from testInfo, even next to a testKey (verified live).
         tests = report.get("tests") or []
-        by_index = {i: n for i, n, _ in xray_entries}
+        by_index = {i: (n, k) for (i, n, _), k in zip(xray_entries, res.keys)}
         new_tests = []
+        dropped_info = 0
         for i, t in enumerate(tests):
-            n = by_index.get(i)
-            if n in skipped:
+            n, key = by_index.get(i, (None, None))
+            if n is not None and n in skipped:
                 continue
-            if n is not None and n in explicit:
+            if isinstance(t, dict) and t.get("testKey") and "testInfo" in t:
                 t = {k: v for k, v in t.items() if k != "testInfo"}
-                t["testKey"] = explicit[n]
+                dropped_info += 1
+            elif key:
+                t = {k: v for k, v in t.items() if k != "testInfo"}
+                t["testKey"] = key
             new_tests.append(t)
+        if dropped_info:
+            warnings.append("Removed testInfo from %d entr(ies) that have a testKey, because "
+                            "Xray would overwrite those tests' summary and definition with it."
+                            % dropped_info)
         rewritten = dict(report, tests=new_tests) if new_tests != tests else report
         changed = _with_target(rewritten, exec_key, plan_key, envs, project=pk)
         if changed is not None or rewritten is not report:

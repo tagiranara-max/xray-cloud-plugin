@@ -35,7 +35,9 @@ _EXAMPLE_ROW_ID = re.compile(r";[^;]*;\d+$")
 
 @dataclass
 class ScenarioCase:
-    name: str                 # scenario name (outline rows: the outline's name), trimmed
+    name: str                 # the name shown and used in testKeys: the summary, prefixed
+                              # with "<Feature>: " when other features have the same name
+    summary: str              # scenario name (outline rows: the outline's name), trimmed
     feature: str
     element: dict             # the report element (tags are rewritten in place when needed)
     tag_keys: List[str]       # keys named by @TEST_ / testKeyTag tags, sorted, unique
@@ -107,9 +109,18 @@ def scenario_cases(report: Any, fmt: str, pk: str, key_tag: Optional[str]) -> Li
                 if m:
                     check_issue_in_project(m.group(1), pk)
                     keys.append(m.group(1))
-            out.append(ScenarioCase(scenario_name(el, fname, fmt), fname, el,
-                                    sorted(set(keys)), is_outline_row(el), background))
+            summary = scenario_name(el, fname, fmt)
+            out.append(ScenarioCase(summary, summary, fname, el, sorted(set(keys)),
+                                    is_outline_row(el), background))
             background = []
+    # The same scenario name in several features: name each result after its feature, so
+    # testKeys and skipMissing act per result (the summary lookup still uses the bare name).
+    features: Dict[str, set] = {}
+    for c in out:
+        features.setdefault(c.summary, set()).add(c.feature)
+    for c in out:
+        if len(features[c.summary]) > 1:
+            c.name = "%s: %s" % (c.feature or "?", c.summary)
     return out
 
 
@@ -180,12 +191,14 @@ def _xml_items(root, fmt: str) -> List[Tuple[str, str, Any, List[str]]]:
 
 
 def xml_cases(root, fmt: str, pk: str) -> List[XmlCase]:
-    """The cases of a JUnit/TestNG/NUnit/Robot report. Keys the file names must belong to `pk`
-    (Robot: every issue-key tag counts)."""
+    """The cases of a JUnit/TestNG/NUnit/Robot report. Keys the file names must belong to `pk`.
+    Robot: every key-shaped tag is only a candidate (dates like ISO-8601, requirement links);
+    which are Tests, and whether those are in `pk`, is checked later with existing_tests."""
     out = []
     for definition, summary, el, keys in _xml_items(root, fmt):
-        for k in keys:
-            check_issue_in_project(k, pk)
+        if fmt != "robot":
+            for k in keys:
+                check_issue_in_project(k, pk)
         out.append(XmlCase(definition, summary, el, sorted(set(keys))))
     return out
 
@@ -213,7 +226,7 @@ query ResultMatchDefinitions($jql: String!, $testType: TestTypeInput, $limit: In
 """
 _KEYS = """
 query ResultMatchKeys($jql: String!, $limit: Int!) {
-  getTests(jql: $jql, limit: $limit) { results { issueId jira(fields: ["key"]) } }
+  getTests(jql: $jql, limit: $limit) { results { issueId jira(fields: ["key", "summary"]) } }
 }
 """
 
@@ -300,26 +313,36 @@ def find_by_definition(ctx: ServerContext, pk: str,
     return out, complete
 
 
-def _test_keys(ctx: ServerContext, keys: List[str]) -> set:
+def _test_keys(ctx: ServerContext, keys: List[str]) -> Dict[str, str]:
     data = ctx.xray.graphql(_KEYS, {"jql": "issue in (%s)" % ", ".join(keys), "limit": PAGE})
-    return {k for k in ((r.get("jira") or {}).get("key")
-                        for r in ((data.get("getTests") or {}).get("results")) or []) if k}
+    out: Dict[str, str] = {}
+    for r in ((data.get("getTests") or {}).get("results")) or []:
+        j = r.get("jira") or {}
+        if j.get("key"):
+            out[j["key"]] = str(j.get("summary") or "")
+    return out
 
 
-def existing_tests(ctx: ServerContext, keys: Sequence[str]) -> set:
-    """Which of these keys are Test issues (keys must already be validated). JQL rejects a
-    whole `issue in (...)` when one key does not exist, so a failing chunk is retried key by
-    key; a key that still fails is not a test."""
-    found: set = set()
+_NO_SUCH_ISSUE = re.compile(r"does not exist|is invalid|not valid|no project", re.IGNORECASE)
+
+
+def existing_tests(ctx: ServerContext, keys: Sequence[str]) -> Dict[str, str]:
+    """{key: summary} of the keys that are Test issues (keys must be key-shaped). JQL rejects
+    a whole `issue in (...)` when one key does not exist, so such a chunk is retried key by
+    key; a key JQL still rejects is not a test. Other errors are raised."""
+    found: Dict[str, str] = {}
     keys = list(dict.fromkeys(keys))
     for i in range(0, len(keys), PAGE):
         chunk = keys[i:i + PAGE]
         try:
-            found |= _test_keys(ctx, chunk)
-        except ToolError:
+            found.update(_test_keys(ctx, chunk))
+        except ToolError as e:
+            if not _NO_SUCH_ISSUE.search(str(e)):
+                raise
             for k in chunk:
                 try:
-                    found |= _test_keys(ctx, [k])
-                except ToolError:
-                    pass
+                    found.update(_test_keys(ctx, [k]))
+                except ToolError as e2:
+                    if not _NO_SUCH_ISSUE.search(str(e2)):
+                        raise
     return found

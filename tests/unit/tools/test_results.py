@@ -731,10 +731,120 @@ def test_junit_keyed_cases_need_no_lookup(tmp_path):
 def test_robot_key_tag_that_is_not_a_test_does_not_count(tmp_path):
     ctx = match_ctx(tmp_path)
     ctx.xray.responses[KEYS] = rows_by([])  # PROJ-3 is a story, not a test
-    xml = ('<robot><suite name="S"><test name="T"><tags><tag>PROJ-3</tag></tags></test>'
-           '</suite></robot>')
+    xml = ('<robot><suite name="S"><test name="T"><tags><tag>PROJ-3</tag><tag>ISO-8601</tag>'
+           '<tag>OTHER-4</tag></tags></test></suite></robot>')
     out, err = call(ctx, format="robot", content=xml)
     assert out["status"] == "needs_answer" and out["missing"] == ["S.T"], out
+
+
+def test_robot_tag_naming_a_test_of_another_project_refused(tmp_path):
+    ctx = match_ctx(tmp_path)
+    ctx.xray.responses[KEYS] = rows_by([("OTHER-4", "T", None)])
+    xml = '<robot><suite name="S"><test name="T"><tags><tag>OTHER-4</tag></tags></test></suite></robot>'
+    out, err = call(ctx, format="robot", content=xml)
+    assert err and "OTHER-4" in json.dumps(out) and ctx.xray.rest_calls == []
+
+
+ROBOT = ('<robot><suite name="S"><test name="Login"><tags><tag>PROJ-5</tag>'
+         '<tag>PROJ-77</tag><tag>smoke</tag></tags></test></suite></robot>')
+
+
+def test_robot_key_tag_that_renames_a_test_needs_an_answer(tmp_path):
+    ctx = match_ctx(tmp_path)  # PROJ-77 is a requirement (not a test)
+    ctx.xray.responses[KEYS] = rows_by([("PROJ-5", "Old name", None)])
+    out, err = call(ctx, format="robot", content=ROBOT)
+    assert out["status"] == "needs_answer" and ctx.xray.rest_calls == [], out
+    assert out["renames"] == [{"key": "PROJ-5", "summary": "Old name", "newName": "Login"}]
+    assert [q["id"] for q in out["questions"]] == ["allowRenameTests"]
+    out, err = call(ctx, format="robot", content=ROBOT, allowRenameTests=True)
+    assert not err and "status" not in out, out
+    assert ctx.xray.rest_calls[0][2]["data"] == ROBOT.encode()
+
+
+def test_robot_same_name_needs_no_rename_answer(tmp_path):
+    ctx = match_ctx(tmp_path)
+    ctx.xray.responses[KEYS] = rows_by([("PROJ-5", "Login", None)])
+    out, err = call(ctx, format="robot", content=ROBOT)
+    assert not err and "status" not in out, out
+
+
+def test_robot_test_keys_rename_check_and_only_test_tags_replaced(tmp_path):
+    import xml.etree.ElementTree as ET
+    ctx = match_ctx(tmp_path)
+    ctx.xray.responses[KEYS] = lambda v: rows_by(
+        [r for r in [("PROJ-5", "Login", None), ("PROJ-6", "Other", None)]
+         if r[0] in v["jql"]])
+    out, err = call(ctx, format="robot", content=ROBOT, testKeys={"S.Login": "PROJ-6"})
+    assert out["status"] == "needs_answer" and out["renames"] == [
+        {"key": "PROJ-6", "summary": "Other", "newName": "Login"}], out
+    out, err = call(ctx, format="robot", content=ROBOT, testKeys={"S.Login": "PROJ-6"},
+                    allowRenameTests=True)
+    assert not err, out
+    tags = [t.text for t in ET.fromstring(ctx.xray.rest_calls[0][2]["data"]).iter("tag")]
+    assert tags == ["PROJ-77", "smoke", "PROJ-6"]
+
+
+def test_matched_junit_case_loses_properties_that_would_update_the_test(tmp_path):
+    import xml.etree.ElementTree as ET
+    ctx = match_ctx(tmp_path, definitions=[("PROJ-1", "c", "a.B.c")])
+    xml = ('<testsuite><testcase classname="a.B" name="c"><properties>'
+           '<property name="test_summary" value="New"/><property name="tags" value="x"/>'
+           '<property name="test_description" value="d"/><property name="requirements" '
+           'value="PROJ-9"/></properties></testcase></testsuite>')
+    out, err = call(ctx, format="junit", content=xml)
+    assert not err, out
+    props = [p.get("name") for p in ET.fromstring(ctx.xray.rest_calls[0][2]["data"]).iter("property")]
+    assert props == ["requirements"]
+    assert any("test_summary" in w for w in out["warnings"]), out
+
+
+def test_created_junit_case_keeps_its_properties(tmp_path):
+    ctx = match_ctx(tmp_path)
+    xml = ('<testsuite><testcase classname="a.B" name="c"><properties>'
+           '<property name="test_summary" value="New"/></properties></testcase></testsuite>')
+    out, err = call(ctx, format="junit", content=xml, allowCreateTests=True)
+    assert not err and ctx.xray.rest_calls[0][2]["data"] == xml.encode(), out
+
+
+def test_ambiguous_candidates_capped(tmp_path):
+    ctx = match_ctx(tmp_path, summaries=[("PROJ-%d" % i, "Twin", None) for i in range(1, 15)])
+    out, err = call(ctx, format="cucumber", content=cucumber_report(untagged("Twin")),
+                    testExecKey="PROJ-9")
+    amb = out["ambiguous"][0]
+    assert len(amb["candidates"]) == 10 and amb["candidatesCount"] == 14, out
+
+
+def test_same_scenario_name_in_two_features_resolved_separately(tmp_path):
+    ctx = match_ctx(tmp_path, summaries=[("PROJ-1", "Login", None)])
+    report = json.dumps([{"name": "A", "elements": [untagged("Login")]},
+                         {"name": "B", "elements": [untagged("Login")]}])
+    out, err = call(ctx, format="cucumber", content=report, testExecKey="PROJ-9",
+                    testKeys={"B: Login": "PROJ-2"})
+    assert not err, out
+    body = json.loads(ctx.xray.rest_calls[0][2]["data"])
+    assert [t["testKey"] for t in body["tests"]] == ["PROJ-1", "PROJ-2"]
+
+
+def test_xray_json_test_key_entries_lose_test_info(tmp_path):
+    """Xray overwrites a test's summary and definition from testInfo even when testKey is
+    given (verified live), so testInfo is dropped."""
+    ctx = match_ctx(tmp_path)
+    report = {"tests": [{"testKey": "PROJ-2", "status": "PASSED",
+                         "testInfo": {"summary": "x", "type": "Generic", "definition": "d"}}]}
+    out, err = call(ctx, format="xray", content=json.dumps(report))
+    assert not err, out
+    body = json.loads(ctx.xray.rest_calls[0][2]["data"])
+    assert body["tests"] == [{"testKey": "PROJ-2", "status": "PASSED"}]
+    assert out["warnings"], out
+
+
+def test_xray_json_colliding_summaries_named_apart(tmp_path):
+    ctx = match_ctx(tmp_path)
+    report = {"tests": [
+        {"testInfo": {"summary": "Same", "type": "Generic", "definition": "a.b"}, "status": "PASSED"},
+        {"testInfo": {"summary": "Same", "type": "Generic", "definition": "a.c"}, "status": "PASSED"}]}
+    out, err = call(ctx, format="xray", content=json.dumps(report))
+    assert out["missing"] == ["Same (a.b)", "Same (a.c)"], out
 
 
 def test_invalid_xml_refused_before_upload(tmp_path):
@@ -758,5 +868,6 @@ def test_xray_json_test_info_entries_go_through_the_gate(tmp_path):
                     testKeys={"New one": "PROJ-8"})
     assert not err, out
     body = json.loads(ctx.xray.rest_calls[0][2]["data"])
-    assert body["tests"][1]["testInfo"]["summary"] == "gen"
+    # matched by definition: sent by key, so Xray does not overwrite PROJ-1's summary
+    assert body["tests"][1] == {"testKey": "PROJ-1", "status": "PASSED"}
     assert body["tests"][2] == {"testKey": "PROJ-8", "status": "FAILED"}

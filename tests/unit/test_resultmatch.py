@@ -121,6 +121,14 @@ def test_robot_definition_is_suite_chain_dot_test_and_key_tags():
         ("Top.T3", "T3", [])]
 
 
+def test_robot_key_shaped_tags_of_any_project_are_kept_for_the_test_check():
+    """Robot tags such as ISO-8601 or other projects' requirement keys are only candidates;
+    whether they are Tests is checked later, so parsing must not refuse them."""
+    cases = xml_cases("robot", '<robot><suite name="S"><test name="T"><tags><tag>ISO-8601</tag>'
+                               '<tag>OTHER-2</tag><tag>PROJ-1</tag></tags></test></suite></robot>')
+    assert cases[0].report_keys == ["ISO-8601", "OTHER-2", "PROJ-1"]
+
+
 def test_xml_report_keys_of_other_projects_refused():
     with pytest.raises(ToolError, match="OTHER-1"):
         xml_cases("junit", '<testsuite><testcase name="x"><properties><property name="test_key" '
@@ -184,10 +192,10 @@ def test_find_by_definition_reports_an_incomplete_scan(monkeypatch):
     assert not complete and found == {"d1": ["PROJ-1"], "zz": []}
 
 
-def test_existing_tests_filters_non_tests():
+def test_existing_tests_filters_non_tests_and_gives_summaries():
     ctx = make_context(responses={"ResultMatchKeys": rows_response([
         ("PROJ-1", "a", None)])})
-    assert rm.existing_tests(ctx, ["PROJ-1", "PROJ-2"]) == {"PROJ-1"}
+    assert rm.existing_tests(ctx, ["PROJ-1", "PROJ-2"]) == {"PROJ-1": "a"}
     assert ctx.xray.calls_of("ResultMatchKeys")[0]["jql"] == "issue in (PROJ-1, PROJ-2)"
 
 
@@ -197,4 +205,22 @@ def test_existing_tests_survives_a_key_jql_rejects():
             raise ToolError("Xray GraphQL error: issue PROJ-404 does not exist")
         return rows_response([("PROJ-1", "a", None)] if "PROJ-1" in v["jql"] else [])
     ctx = make_context(responses={"ResultMatchKeys": answer})
-    assert rm.existing_tests(ctx, ["PROJ-1", "PROJ-404"]) == {"PROJ-1"}
+    assert rm.existing_tests(ctx, ["PROJ-1", "PROJ-404"]) == {"PROJ-1": "a"}
+
+
+def test_existing_tests_reraises_other_errors():
+    def answer(v):
+        raise ToolError("Xray request failed with HTTP 500")
+    ctx = make_context(responses={"ResultMatchKeys": answer})
+    with pytest.raises(ToolError, match="500"):
+        rm.existing_tests(ctx, ["PROJ-1"])
+
+
+def test_scenario_names_qualified_by_feature_when_they_collide():
+    rep_ = [{"name": "Accounts", "elements": [el("Login"), el("Logout"),
+                                                el("Login", keyword="Scenario Outline")]},
+            {"name": "Admin", "elements": [el("Login")]}]
+    cases = rm.scenario_cases(rep_, "cucumber", "PROJ", None)
+    assert [(c.name, c.summary) for c in cases] == [
+        ("Accounts: Login", "Login"), ("Logout", "Logout"), ("Accounts: Login", "Login"),
+        ("Admin: Login", "Login")]
