@@ -9,7 +9,7 @@ from ..config import ProjectSettings, project_dir
 from ..context import (ServerContext, dedupe, is_permission_error, partial_failure,
                        permission_denied, require_project, require_write)
 from ..errors import ToolError
-from ..fields import build_jira_fields
+from .. import requiredfields
 from ..gherkin.parse import ParsedFeature, parse_feature
 from ..gherkin.tagrules import TagRule, parse_rules
 from ..jira_client import LINK_TYPE
@@ -389,12 +389,39 @@ def _per_test(plan: List[ImportAction]) -> List[dict]:
     return out
 
 
-def _test_extras(project: ProjectSettings, feature: ParsedFeature, analysis: TagAnalysis,
+class _Fields:
+    """Required-field resolution for one import: asks on apply (requiredfields.resolve);
+    the preview only collects the questions."""
+
+    def __init__(self, ctx, project: ProjectSettings, apply: bool, remember: bool) -> None:
+        self.ctx, self.project, self.apply, self.remember = ctx, project, apply, remember
+        self.questions: List[dict] = []
+        self.applied: Dict[str, Dict[str, Any]] = {}
+        self._asked = set()
+
+    def __call__(self, item_type: str, fields, raw_fields, param: str = "fields",
+                 record: bool = True) -> dict:
+        if self.apply:
+            out, applied = requiredfields.resolve(self.ctx, self.project, item_type, fields,
+                                                  raw_fields, self.remember, param=param,
+                                                  record=record)
+        else:
+            r = requiredfields.compute(self.ctx, self.project, item_type, fields, raw_fields)
+            out, applied = r.fields, r.applied
+            new = [f for f in r.missing if (item_type, f["id"]) not in self._asked]
+            self._asked.update((item_type, f["id"]) for f in new)
+            self.questions.extend(requiredfields.questions(self.project, item_type, new, param))
+        if applied:
+            self.applied.setdefault(item_type, {}).update(applied)
+        return out
+
+
+def _test_extras(resolve: _Fields, feature: ParsedFeature, analysis: TagAnalysis,
                  args: dict) -> Dict[int, dict]:
     """Jira fields per new test: the call's fields plus the rule fields of that test. A rule
     value that differs from the call's value for the same field refuses the file."""
     call_fields = dict(args.get("fields") or {})
-    base = build_jira_fields(project, "test", call_fields, args.get("rawFields"))
+    base = resolve("test", call_fields, args.get("rawFields"))
     out: Dict[int, dict] = {}
     for i, st in enumerate(analysis.scenarios):
         rule_fields = st.outcome.fields
@@ -410,8 +437,8 @@ def _test_extras(project: ProjectSettings, feature: ParsedFeature, analysis: Tag
                                st.outcome.sources.get(name, "a tag rule"),
                                feature.scenarios[i].name, feature.scenarios[i].line),
                             field=name)
-        out[i] = build_jira_fields(project, "test", dict(call_fields, **rule_fields),
-                                   args.get("rawFields"))
+        out[i] = resolve("test", dict(call_fields, **rule_fields), args.get("rawFields"),
+                         record=False)  # a rule value is never remembered
     return out
 
 
@@ -488,10 +515,12 @@ def create_tests_from_feature(ctx, args):
                         questions=[choices.question(n, contexts[n]) for n in unanswered])
 
     # -- fields for every item type that may be created: refuse the whole file first
-    test_extras = _test_extras(project, feature, analysis, args)
-    pre_extra = (build_jira_fields(project, "precondition", args.get("preconditionFields"), None)
+    resolve = _Fields(ctx, project, apply, bool(args.get("remember", False)))
+    test_extras = _test_extras(resolve, feature, analysis, args)
+    pre_extra = (resolve("precondition", args.get("preconditionFields"), None,
+                         "preconditionFields")
                  if feature.backgrounds and not opts.inline else {})
-    set_extra = (build_jira_fields(project, "testSet", args.get("testSetFields"), None)
+    set_extra = (resolve("testSet", args.get("testSetFields"), None, "testSetFields")
                  if opts.create_test_set or analysis.tag_sets else {})
     create_dups = list(args.get("createDuplicates") or [])
     bad = [i for i in create_dups if i >= len(feature.scenarios)]
@@ -511,7 +540,7 @@ def create_tests_from_feature(ctx, args):
         shown["tagRules"] = {"count": len(rules), "source": rules_source}
         out: Dict[str, Any] = {"preview": True, "feature": feature.name, "path": rel,
                                "questions": [choices.question(n, contexts[n])
-                                             for n in unanswered],
+                                             for n in unanswered] + resolve.questions,
                                "choices": shown,
                                "actions": [a.to_dict() for a in plan],
                                "perTest": _per_test(plan), "testSets": _preview_sets(plan),
@@ -525,6 +554,9 @@ def create_tests_from_feature(ctx, args):
             out["hint"] = ("answer the questions (ask the user once), then call again with the "
                            "answers; until then the actions assume createTestSet=true, "
                            "backgrounds=preconditions, tagsAsLabels=true and no AI label")
+        elif resolve.questions:
+            out["hint"] = ("required fields have no value: ask the user, then call again with "
+                           "each answer in the question's `param` ({field id: value})")
         elif skipped:
             out["hint"] = ("scenarios with possible duplicates are skipped on apply unless "
                            "their scenarioIndex is in createDuplicates; pass apply: true to import")
@@ -536,6 +568,7 @@ def create_tests_from_feature(ctx, args):
     # All validation passed: remember the call's answers, then write (ruling R5).
     choices.remember(ctx, pk, {n: args.get(n) for n in QUESTION_IDS},
                      bool(args.get("remember", False)))
+    requiredfields.commit(ctx)
     run = _Run(ctx, pk, plan, skip, test_extras, pre_extra, set_extra)
     result = run.run()
     out = {"feature": feature.name, "path": rel, "created": run.created, "updated": run.updated,
@@ -545,6 +578,8 @@ def create_tests_from_feature(ctx, args):
     out["testSetMemberships"] = run.memberships
     if run.fields_applied:
         out["fieldsApplied"] = run.fields_applied
+    for item_type, applied in resolve.applied.items():
+        requiredfields.add_applied(out, item_type, applied)
     out["notDone"] = not_done
     if skipped:
         out["skippedDuplicates"] = skipped

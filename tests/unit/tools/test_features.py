@@ -219,13 +219,16 @@ def test_missing_required_field_refuses_whole_file_before_calls(project):
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", apply=True,
                     featureFilePath="features/login flow.feature", testSetFields={"Area": "X"},
                     **ans())
-    assert err and res["error"] == "Missing required fields"
+    assert not err and res["status"] == "needs_answer"
     assert res["missingFields"] == [{"name": "Team", "id": "customfield_2"}]
+    assert res["questions"][0]["param"] == "preconditionFields"
     assert ctx.xray.calls == []
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", apply=True,
                     featureFilePath="features/login flow.feature", preconditionFields={"Team": "A"},
                     **ans())
-    assert err and res["missingFields"] == [{"name": "Area", "id": "customfield_3"}]
+    assert res["status"] == "needs_answer"
+    assert res["missingFields"] == [{"name": "Area", "id": "customfield_3"}]
+    assert res["questions"][0]["param"] == "testSetFields"
     # createTestSet=false: testSet fields are not needed
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", apply=True,
                     **ans(createTestSet=False), preconditionFields={"Team": "A"},
@@ -411,6 +414,9 @@ class RecJira:
 
     def link_requirement(self, key, req):
         self.links.append((key, req))
+
+    def create_meta(self, pk, issue_type):
+        return []
 
 
 def _existing_world():
@@ -644,7 +650,8 @@ def test_required_test_set_field_for_tag_sets_validated_before_any_call(tmp_path
     path = feature_file(tmp_path, "Feature: F\n  @area=ui\n  Scenario: A\n    Given a\n")
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
                     apply=True, **ans(createTestSet=False))
-    assert err and res["missingFields"] == [{"name": "Area", "id": "customfield_3"}]
+    assert not err and res["status"] == "needs_answer"
+    assert res["missingFields"] == [{"name": "Area", "id": "customfield_3"}]
     assert ctx.xray.calls == []
 
 
@@ -1003,3 +1010,33 @@ def test_preview_on_approved_unlisted_project(project):
     res, err = call(ctx, "create_tests_from_feature", projectKey="P",
                     featureFilePath="features/login flow.feature")
     assert not err and res["preview"] is True and writes(ctx) == []
+
+
+class MetaJira(RecJira):
+    """Jira with create-meta: Severity is required on every item type."""
+
+    def create_meta(self, pk, issue_type):
+        return [{"id": "customfield_8", "name": "Severity", "required": True,
+                 "schemaType": "option", "allowedValues": ["High", "Low"]}]
+
+
+class NoFormChannel:
+    supports_elicitation = False
+
+
+def test_discovered_required_fields_are_preview_questions_then_applied(project):
+    ctx = ctx_for(project)
+    ctx.jira = MetaJira()
+    ctx.channel = NoFormChannel()
+    args = ans(createTestSet=False, backgrounds="inline")
+    res = preview(ctx, LOGIN, **args)
+    assert [(q["id"], q["param"]) for q in res["questions"]] == [("customfield_8", "fields")]
+    assert writes(ctx) == []
+    res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=LOGIN,
+                    apply=True, **args)
+    assert not err and res["status"] == "needs_answer" and writes(ctx) == []
+    res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=LOGIN,
+                    apply=True, fields={"Severity": "High"}, **args)
+    assert not err, res
+    sent = [v["jira"]["fields"] for v in ctx.xray.calls_of("CreateTest")]
+    assert sent and all(f["customfield_8"] == {"value": "High"} for f in sent)

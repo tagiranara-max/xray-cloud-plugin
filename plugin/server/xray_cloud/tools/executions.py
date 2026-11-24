@@ -10,7 +10,8 @@ from ..context import (PartialFailure, ServerContext, check_issue_key, dedupe,
                        delete_preview, partial_failure, permission_guard, require_project,
                        with_permission_reason)
 from ..errors import ToolError
-from ..fields import build_jira_fields, build_run_fields
+from .. import requiredfields
+from ..fields import build_run_fields
 from ..localfiles import read_local_file
 from ..registry import REGISTRY
 from .containers import (_KEYS, _SEARCH, Kind, _add, _check_keys, _key, _REMOVE,
@@ -18,7 +19,7 @@ from .containers import (_KEYS, _SEARCH, Kind, _add, _check_keys, _key, _REMOVE,
                          resolve_test_ids)
 from .test_plans import PLAN
 from .test_sets import SET
-from .tests import _LIMIT, _OBJ, _lenient, _schema, build_search_jql
+from .tests import _LIMIT, _OBJ, _REMEMBER, _lenient, _schema, build_search_jql
 
 EXEC = Kind("TestExecution", "test execution")
 
@@ -129,12 +130,15 @@ def _plan_keys(args: dict) -> List[str]:
     _schema({"summary": {"type": "string"}, "description": {"type": "string"},
              "environments": {"type": "array", "items": {"type": "string"}},
              "testPlanKey": {"type": "string"}, "testKeys": _KEYS, "testSetKeys": _KEYS,
-             "fields": _OBJ, "rawFields": _OBJ}, ["summary"]),
+             "fields": _OBJ, "rawFields": _OBJ, "remember": _REMEMBER}, ["summary"]),
     write=True)
 def create_test_execution(ctx, args):
     pk, summary = args["projectKey"], args["summary"]
     project = require_project(ctx, pk, write=True)
-    extra = build_jira_fields(project, "testExecution", args.get("fields"), args.get("rawFields"))
+    extra, applied = requiredfields.resolve(
+        ctx, project, "testExecution", args.get("fields"), args.get("rawFields"),
+        bool(args.get("remember", False)),
+        provided=["description"] if args.get("description") is not None else [])
     _check_keys(pk, args.get("testKeys"), args.get("testSetKeys"), _plan_keys(args))
     plan = None
     explicit = bool(args.get("testKeys") or args.get("testSetKeys"))
@@ -146,6 +150,7 @@ def create_test_execution(ctx, args):
     if args.get("description") is not None:
         jira_fields["description"] = args["description"]
     jira_fields.update(extra)
+    requiredfields.commit(ctx)
     data = ctx.xray.graphql(_CREATE, {"jira": {"fields": jira_fields},
                                       "testEnvironments": args.get("environments") or None})
     node = (data.get("createTestExecution") or {}).get("testExecution") or {}
@@ -153,6 +158,7 @@ def create_test_execution(ctx, args):
     if not key:
         raise ToolError("Xray did not return a key for the created test execution")
     out: Dict[str, Any] = {"key": key, "summary": summary, "created": True}
+    requiredfields.add_applied(out, "testExecution", applied)
     warnings = list((data.get("createTestExecution") or {}).get("warnings") or [])
     try:
         if test_ids:

@@ -9,6 +9,7 @@ from ..context import (ISSUE_KEY_RE, ServerContext, check_issue_in_project, comp
                        require_project, resolve_project_id)
 from .. import choices
 from ..errors import ToolError
+from .. import requiredfields
 from ..fields import build_jira_fields
 from ..folderops import add_ids_to_folder, ensure_folder, normalize_folder_path
 from ..notdone import NO_JIRA_FIX, NO_JIRA_REASON
@@ -238,12 +239,17 @@ mutation CreateTest($jira: JSON!, $testType: UpdateTestTypeInput, $gherkin: Stri
 # Internal arg (not in the schema): a container's already-resolved label; never remembered.
 RESOLVED_AI_LABEL = "_resolvedAiLabel"
 
+_REMEMBER = {"type": "boolean", "description":
+             "Make a differing value of a required field replace the remembered one (default: "
+             "remembered only when nothing is remembered for that field yet)."}
+
 _AI_LABEL_PARAMS = {
     "aiLabel": {"type": "string", "description":
                 "The user's own label that marks newly created tests as AI-created; there is no "
                 "default. Empty string = don't mark. Asked once per project, then remembered."},
     "remember": {"type": "boolean", "description":
-                 "Make a differing aiLabel replace the remembered one (default: this call only)."}}
+                 "Make a differing aiLabel, or a differing value of a required field, replace "
+                 "the remembered one (default: this call only)."}}
 
 
 def check_ai_label(label: Any) -> None:
@@ -308,7 +314,6 @@ def create_test(ctx, args):
     if args.get("folderPath") is not None:  # validate before any API call
         folder_path = normalize_folder_path(args["folderPath"], allow_root=False)
     check_ai_label(args.get("aiLabel"))
-    extra = build_jira_fields(project, "test", args.get("fields"), args.get("rawFields"))
     inner = RESOLVED_AI_LABEL in args  # called by a container that already resolved/remembered
     if inner:
         label = args[RESOLVED_AI_LABEL]
@@ -321,8 +326,15 @@ def create_test(ctx, args):
         if dups:
             return {"status": "possible_duplicates", "candidates": dups,
                     "hint": "pass allowDuplicates: true to create anyway"}
+    # Required fields last, so an answer given by elicitation is not lost to an earlier
+    # question of this call.
+    extra, applied = requiredfields.resolve(
+        ctx, project, "test", args.get("fields"), args.get("rawFields"),
+        bool(args.get("remember", False)),
+        provided=["description"] if args.get("description") is not None else [])
     if not inner:
         remember_ai_label(ctx, pk, args)
+    requiredfields.commit(ctx)
     jira_fields: Dict[str, Any] = {"project": {"key": pk}, "summary": summary}
     if args.get("description") is not None:
         jira_fields["description"] = args["description"]
@@ -342,6 +354,7 @@ def create_test(ctx, args):
     if not key:
         raise ToolError("Xray did not return a key for the created test")
     out = {"key": key, "summary": summary, "testType": test_type, "created": True}
+    requiredfields.add_applied(out, "test", applied)
     warnings = (data.get("createTest") or {}).get("warnings")
     if warnings:
         out["warnings"] = warnings

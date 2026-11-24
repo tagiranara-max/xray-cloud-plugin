@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 from ..context import (ServerContext, check_issue_in_project, dedupe, delete_preview,
                        partial_failure, permission_guard, require_project)
 from ..errors import ToolError
-from ..fields import build_jira_fields
+from .. import requiredfields
 from ..registry import REGISTRY
 from .tests import (_AI_LABEL_PARAMS, _LIMIT, _OBJ, MAX_LIMIT, TEST_TYPES, _schema,
                     build_search_jql, check_ai_label, create_test, find_duplicates,
@@ -211,7 +211,9 @@ def register(kind: Kind, with_sets: bool) -> None:
         "summary": {"type": "string"}, "description": {"type": "string"},
         "testKeys": _KEYS, "newTests": _NEW_TESTS,
         "createDuplicates": {"type": "array", "items": {"type": "integer", "minimum": 0}},
-        "fields": _OBJ, "rawFields": _OBJ}
+        "fields": _OBJ, "rawFields": _OBJ,
+        "testFields": {"type": "object", "description":
+                       "Field values applied to the newTests (field name or id -> value)."}}
     if with_sets:
         props["testSetKeys"] = _KEYS
     props.update(_AI_LABEL_PARAMS)  # applies to newTests only
@@ -228,15 +230,20 @@ def register(kind: Kind, with_sets: bool) -> None:
     def create(ctx, args):
         pk, summary = args["projectKey"], args["summary"]
         project = require_project(ctx, pk, write=True)
-        extra = build_jira_fields(project, kind.item, args.get("fields"), args.get("rawFields"))
+        remember = bool(args.get("remember", False))
         new_tests = args.get("newTests") or []
+        test_applied: Dict[str, Any] = {}
         ai_args: Dict[str, Any] = {}
         if new_tests:  # the AI label applies to newTests only; otherwise it is not applicable
             check_ai_label(args.get("aiLabel"))
             label, needs_answer = resolve_ai_label(ctx, pk, args, {"newTests": len(new_tests)})
             if needs_answer:
                 return needs_answer
-            ai_args = {RESOLVED_AI_LABEL: label}
+            ai_args = {RESOLVED_AI_LABEL: label, "remember": remember}
+        # Required fields after the AI-label question, so an elicited answer is not lost.
+        extra, applied = requiredfields.resolve(
+            ctx, project, kind.item, args.get("fields"), args.get("rawFields"), remember,
+            provided=["description"] if args.get("description") is not None else [])
         direct, via_sets = members_of(ctx, pk, args)
         create_dups = args.get("createDuplicates") or []
         bad = [i for i in create_dups if i >= len(new_tests)]
@@ -244,11 +251,15 @@ def register(kind: Kind, with_sets: bool) -> None:
             raise ToolError("createDuplicates index out of range: %s" % bad)
         if new_tests:
             # create_test applies the project's test fields (required/defaults) to every new
-            # test: check them now so a missing required field cannot orphan the container.
-            build_jira_fields(project, "test", None, None)
+            # test: resolve them now so a missing required field cannot orphan the container.
+            _, test_applied = requiredfields.resolve(ctx, project, "test", args.get("testFields"),
+                                                     None, remember, param="testFields")
+            if args.get("testFields"):
+                ai_args["fields"] = args["testFields"]
         direct_map = resolve_test_id_map(ctx, pk, direct)  # fail before creating anything
         if new_tests:  # all validation passed: remember a call-supplied label before writing
             remember_ai_label(ctx, pk, args)
+        requiredfields.commit(ctx)
         jira_fields: Dict[str, Any] = {"project": {"key": pk}, "summary": summary}
         if args.get("description") is not None:
             jira_fields["description"] = args["description"]
@@ -259,6 +270,7 @@ def register(kind: Kind, with_sets: bool) -> None:
         if not key:
             raise ToolError("Xray did not return a key for the created %s" % label)
         out: Dict[str, Any] = {"key": key, "summary": summary, "created": True}
+        requiredfields.add_applied(out, kind.item, applied)
         warnings = list((data.get("create" + cap) or {}).get("warnings") or [])
         created = [key]
         try:
@@ -277,6 +289,7 @@ def register(kind: Kind, with_sets: bool) -> None:
                                   created, e)
         if len(created) > 1:
             out["createdTests"] = created[1:]
+            requiredfields.add_applied(out, "test", test_applied)
         if skipped:
             out["skippedDuplicates"] = skipped
             out["hint"] = "pass the skipped indexes in createDuplicates to create them anyway"

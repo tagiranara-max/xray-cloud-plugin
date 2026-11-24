@@ -47,6 +47,10 @@ class ServerContext:
         # Arguments of the tool call being handled that handlers do not see (allowProject);
         # set by Registry.call.
         self.call_args: Dict[str, Any] = {}
+        # Jira create-meta per (project, item type) for this server run (requiredfields).
+        self.create_meta_cache: Dict[Any, Any] = {}
+        # Required-field answers of the current call, remembered on requiredfields.commit.
+        self.pending_fields: Dict[Any, Any] = {}
 
     @property
     def site(self) -> str:

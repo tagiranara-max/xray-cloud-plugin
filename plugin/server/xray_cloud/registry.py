@@ -5,6 +5,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Set
 
+from . import requiredfields
 from .approval import ALLOW_PROJECT_PARAM
 from .context import is_permission_error, permission_denied, require_write
 from .errors import NeedsAnswer, ToolError
@@ -155,6 +156,7 @@ class Registry:
             # ctx.call_args is per-context state: it relies on tool calls being handled serially.
             if tool.approval:
                 ctx.call_args = {"allowProject": clean.pop("allowProject", None)}
+            requiredfields.reset(ctx)  # answers of an earlier call never leak into this one
             try:
                 result = tool.handler(ctx, clean)
             except ToolError as e:
@@ -163,6 +165,7 @@ class Registry:
                                             project_key=clean.get("projectKey")) from None
                 raise
             finally:
+                requiredfields.reset(ctx)
                 if tool.approval:
                     ctx.call_args = {}
             return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]}
