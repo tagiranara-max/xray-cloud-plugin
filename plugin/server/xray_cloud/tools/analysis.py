@@ -23,6 +23,23 @@ query GetTestRunHistory($testIssueIds: [String], $limit: Int!, $start: Int!) {
 }
 """
 
+# Xray's own requirement status (OK, NOK, NOTRUN, UNCOVERED, ...). Verified live: the
+# CoverableIssue.status field answers for an issue whose type is a requirement type in the
+# Xray settings; for any other issue getCoverableIssues returns no rows.
+_COVERAGE_STATUS = """
+query RequirementCoverageStatus($jql: String!) {
+  getCoverableIssues(jql: $jql, limit: 1) { results { status { name description } } }
+}
+"""
+
+
+def _coverage_status(ctx, key: str) -> Dict[str, Any]:
+    rows = ((ctx.xray.graphql(_COVERAGE_STATUS, {"jql": "issue = %s" % key})
+             .get("getCoverableIssues") or {}).get("results")) or []
+    status = (rows[0].get("status") or {}) if rows else {}
+    return {"coverageStatus": status.get("name"),
+            "coverageStatusDescription": status.get("description")}
+
 
 def _all_runs(ctx, test_id: str) -> List[dict]:
     rows: List[dict] = []
@@ -78,7 +95,9 @@ def get_test_runs(ctx, args):
     "get_requirement_coverage",
     "Tests covering a requirement (a story, epic or other issue of any project, linked with "
     "'is tested by'), each with the status and time of its latest run, plus counts: total, "
-    "byLastStatus and neverRun. projectKey is the Xray project the tests live in.",
+    "byLastStatus and neverRun, and Xray's own coverageStatus of the requirement (e.g. OK, NOK, "
+    "NOTRUN, UNCOVERED; null when the issue type is not a requirement type in Xray). "
+    "projectKey is the Xray project the tests live in.",
     _schema({"issueKey": {"type": "string"}}, ["issueKey"]))
 def get_requirement_coverage(ctx, args):
     pk, key = args["projectKey"], args["issueKey"]
@@ -109,8 +128,11 @@ def get_requirement_coverage(ctx, args):
         tests.append({"key": jira.get("key"), "summary": jira.get("summary"),
                       "lastStatus": st["status"] if st else None,
                       "lastRunOn": st["on"] if st else None})
-    return {"requirement": key, "tests": tests, "truncated": truncated,
-            "counts": {"total": max(real_total, len(tests)), "byLastStatus": by_status, "neverRun": never}}
+    out = {"requirement": key, "tests": tests, "truncated": truncated,
+           "counts": {"total": max(real_total, len(tests)), "byLastStatus": by_status,
+                      "neverRun": never}}
+    out.update(_coverage_status(ctx, key))
+    return out
 
 
 _STRS = {"type": "array", "items": {"type": "string"}}

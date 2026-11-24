@@ -73,10 +73,16 @@ def test_flaky_only_with_pass_and_fail():
     assert flaky("PASSED", "TODO") is False
 
 
-def cov_ctx(tests, runs):
+NOK = {"getCoverableIssues": {"results": [
+    {"status": {"name": "NOK", "description": "At least one test has FAILED."}}]}}
+NOT_COVERABLE = {"getCoverableIssues": {"results": []}}
+
+
+def cov_ctx(tests, runs, status=NOK):
     return make_context(YAML, responses={
         "SearchTests": get_tests(tests), "LatestTestStatuses": {
-            "getTestRuns": {"total": len(runs), "results": runs}}})
+            "getTestRuns": {"total": len(runs), "results": runs}},
+        "RequirementCoverageStatus": status})
 
 
 def lrun(tid, status, on, key="PROJ-90"):
@@ -98,6 +104,16 @@ def test_coverage_lists_tests_with_last_status_and_counts():
     assert out["counts"] == {"total": 2, "byLastStatus": {"PASSED": 1, "FAILED": 1}, "neverRun": 0}
     jql = ctx.xray.calls_of("SearchTests")[0]["jql"]
     assert jql == 'issue in linkedIssues("OTHER-5", "is tested by")'
+
+
+def test_coverage_status_from_xray():
+    ctx = cov_ctx([], [])
+    out, _ = call(ctx, "get_requirement_coverage", issueKey="OTHER-5")
+    assert out["coverageStatus"] == "NOK"
+    assert out["coverageStatusDescription"] == "At least one test has FAILED."
+    assert ctx.xray.calls_of("RequirementCoverageStatus") == [{"jql": "issue = OTHER-5"}]
+    out, _ = call(cov_ctx([], [], NOT_COVERABLE), "get_requirement_coverage", issueKey="OTHER-5")
+    assert out["coverageStatus"] is None and out["coverageStatusDescription"] is None
 
 
 def test_coverage_never_run_counted():
@@ -133,7 +149,8 @@ def test_coverage_truncated_when_tests_cap_hit_and_real_total():
     tests = [{"issueId": "1", "jira": {"key": "PROJ-1", "summary": "a"}}]
     ctx = make_context(YAML, responses={
         "SearchTests": {"getTests": {"total": 250, "results": tests}},
-        "LatestTestStatuses": {"getTestRuns": {"total": 0, "results": []}}})
+        "LatestTestStatuses": {"getTestRuns": {"total": 0, "results": []}},
+        "RequirementCoverageStatus": NOK})
     out, _ = call(ctx, "get_requirement_coverage", issueKey="PROJ-7")
     assert out["truncated"] is True and out["counts"]["total"] == 250
 
@@ -143,7 +160,8 @@ def test_coverage_truncated_when_status_cap_hit():
     ctx = make_context(YAML, responses={
         "SearchTests": get_tests(tests),
         "LatestTestStatuses": {"getTestRuns": {"total": 9999,
-                                               "results": [lrun("1", "PASSED", "2026-01-01")] * 100}}})
+                                               "results": [lrun("1", "PASSED", "2026-01-01")] * 100}},
+        "RequirementCoverageStatus": NOK})
     out, _ = call(ctx, "get_requirement_coverage", issueKey="PROJ-7")
     assert out["truncated"] is True
 
