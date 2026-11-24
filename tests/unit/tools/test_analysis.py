@@ -6,7 +6,7 @@ from conftest import make_context
 from xray_cloud.registry import REGISTRY
 import xray_cloud.tools  # noqa: F401
 
-YAML = "projects:\n  PROJ:{}\n".replace("{}", " {}")
+YAML = "projects:\n  PROJ: {}\n"
 
 
 def trun(status, started=None, finished=None, key="PROJ-90", envs=None, defects=None):
@@ -120,9 +120,42 @@ def test_coverage_no_tests_skips_run_query():
 def test_invalid_key_and_unknown_project():
     ctx = cov_ctx([], [])
     assert call(ctx, "get_requirement_coverage", issueKey='X-1") OR (')[1]
+    assert ctx.xray.calls == []
     assert call(ctx, "get_requirement_coverage", issueKey="X-1", projectKey="NOPE")[1]
 
 
 def test_analysis_tools_are_read_tools():
     for n in ("get_test_runs", "get_requirement_coverage"):
         assert REGISTRY.get(n).write is False
+
+
+def test_coverage_truncated_when_tests_cap_hit_and_real_total():
+    tests = [{"issueId": "1", "jira": {"key": "PROJ-1", "summary": "a"}}]
+    ctx = make_context(YAML, responses={
+        "SearchTests": {"getTests": {"total": 250, "results": tests}},
+        "LatestTestStatuses": {"getTestRuns": {"total": 0, "results": []}}})
+    out, _ = call(ctx, "get_requirement_coverage", issueKey="PROJ-7")
+    assert out["truncated"] is True and out["counts"]["total"] == 250
+
+
+def test_coverage_truncated_when_status_cap_hit():
+    tests = [{"issueId": "1", "jira": {"key": "PROJ-1", "summary": "a"}}]
+    ctx = make_context(YAML, responses={
+        "SearchTests": get_tests(tests),
+        "LatestTestStatuses": {"getTestRuns": {"total": 9999,
+                                               "results": [lrun("1", "PASSED", "2026-01-01")] * 100}}})
+    out, _ = call(ctx, "get_requirement_coverage", issueKey="PROJ-7")
+    assert out["truncated"] is True
+
+
+def test_coverage_not_truncated_normally():
+    out, _ = call(cov_ctx([], []), "get_requirement_coverage", issueKey="PROJ-7")
+    assert out["truncated"] is False
+
+
+def test_coverage_untimestamped_run_counts_not_never_run():
+    tests = [{"issueId": "1", "jira": {"key": "PROJ-1", "summary": "a"}}]
+    ctx = cov_ctx(tests, [lrun("1", "TODO", None)])
+    out, _ = call(ctx, "get_requirement_coverage", issueKey="PROJ-7")
+    assert out["tests"][0]["lastStatus"] == "TODO" and out["tests"][0]["lastRunOn"] is None
+    assert out["counts"]["neverRun"] == 0 and out["counts"]["byLastStatus"] == {"TODO": 1}

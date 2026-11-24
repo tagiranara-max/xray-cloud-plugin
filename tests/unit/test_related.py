@@ -57,3 +57,20 @@ def test_short_page_stops_paging():
 
     related.latest_statuses(ctx_with(handler), ["1"])
     assert seen == [0]
+
+
+def test_checked_flags_page_cap_and_plain_matches():
+    full = {"getTestRuns": {"total": 9999, "results": [run("1", "PASSED", None, "2026-01-01")] * 100}}
+    ctx = ctx_with(full)
+    out, truncated = related.latest_statuses_checked(ctx, ["1"])
+    assert truncated is True and out == related.latest_statuses(ctx, ["1"])
+    short = ctx_with({"getTestRuns": {"total": 1, "results": [run("1", "PASSED", None, "2026-01-01")]}})
+    assert related.latest_statuses_checked(short, ["1"])[1] is False
+
+
+def test_untimestamped_run_counts_and_loses_to_timestamped():
+    ctx = ctx_with({"getTestRuns": {"total": 3, "results": [
+        run("1", "TODO"), run("2", "TODO"), run("2", "PASSED", None, "2026-01-01")]}})
+    out = related.latest_statuses(ctx, ["1", "2"])
+    assert out["1"]["status"] == "TODO" and out["1"]["on"] is None
+    assert out["2"]["status"] == "PASSED"

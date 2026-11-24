@@ -5,8 +5,8 @@ from typing import Any, Dict, List
 
 from ..context import check_issue_key, require_project
 from ..registry import REGISTRY
-from ..related import MAX_PAGES, PAGE, latest_statuses, run_on
-from .tests import _LIMIT, _schema, _search, fetch_test
+from ..related import MAX_PAGES, PAGE, latest_statuses_checked, run_on
+from .tests import _BASE_JIRA, _GET_TESTS, _LIMIT, _jira_list, _schema, fetch_test
 
 _HISTORY = """
 query GetTestRunHistory($testIssueIds: [String], $limit: Int!, $start: Int!) {
@@ -84,9 +84,18 @@ def get_requirement_coverage(ctx, args):
     pk, key = args["projectKey"], args["issueKey"]
     require_project(ctx, pk, write=False)
     check_issue_key(key)
-    results = _search(ctx, 'issue in linkedIssues("%s", "is tested by")' % key, 100, False)
-    latest = latest_statuses(ctx, [str(r["issueId"]) for r in results if r.get("issueId")]) \
-        if results else {}
+    jql = 'issue in linkedIssues("%s", "is tested by")' % key
+    data = ctx.xray.graphql(_GET_TESTS % ("", _jira_list(_BASE_JIRA)), {"jql": jql, "limit": 100})
+    found = data.get("getTests") or {}
+    results = found.get("results") or []
+    real_total = found.get("total")
+    real_total = real_total if isinstance(real_total, int) else len(results)
+    truncated = real_total > len(results)
+    latest: Dict[str, Dict[str, Any]] = {}
+    if results:
+        latest, capped = latest_statuses_checked(
+            ctx, [str(r["issueId"]) for r in results if r.get("issueId")])
+        truncated = truncated or capped
     tests: List[Dict[str, Any]] = []
     by_status: Dict[str, int] = {}
     never = 0
@@ -100,5 +109,5 @@ def get_requirement_coverage(ctx, args):
         tests.append({"key": jira.get("key"), "summary": jira.get("summary"),
                       "lastStatus": st["status"] if st else None,
                       "lastRunOn": st["on"] if st else None})
-    return {"requirement": key, "tests": tests,
-            "counts": {"total": len(tests), "byLastStatus": by_status, "neverRun": never}}
+    return {"requirement": key, "tests": tests, "truncated": truncated,
+            "counts": {"total": max(real_total, len(tests)), "byLastStatus": by_status, "neverRun": never}}
