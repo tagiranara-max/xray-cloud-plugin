@@ -96,46 +96,84 @@ def _with_target(report: Any, exec_key: Optional[str], plan_key: Optional[str],
 
 _TEST_TAG = re.compile(r"^@TEST_([A-Z][A-Z0-9_]*-[1-9][0-9]*)$")
 _FAILED = {"failed", "undefined", "ambiguous"}
+# cucumber-jvm / cucumber-js ids of Scenario Outline example rows end in ";<examples>;<row>"
+_EXAMPLE_ROW_ID = re.compile(r";[^;]*;\d+$")
+
+Result = Tuple[str, str, str]  # (status, label, error message)
 
 
-def _element_status(element: dict) -> Tuple[str, Optional[str]]:
-    """(Xray status, first failure) of one Cucumber JSON scenario element: FAILED when a step
-    or hook failed (or is undefined/ambiguous), PASSED when every step passed, else TODO."""
-    statuses: List[str] = []
-    failure: Optional[str] = None
-    for group in ("before", "steps", "after"):
-        for st in element.get(group) or []:
-            res = (st.get("result") or {}) if isinstance(st, dict) else {}
-            status = str(res.get("status") or "").lower()
-            statuses.append(status)
-            if status in _FAILED and failure is None:
-                name = ("%s%s" % (st.get("keyword") or "", st.get("name") or "")).strip() \
-                    or group
-                failure = "%s: %s" % (name, res.get("error_message") or status)
-    if any(s in _FAILED for s in statuses):
-        return "FAILED", (failure or "")[:2000]
-    steps = [str(((st.get("result") or {}).get("status") or "")).lower()
-             for st in element.get("steps") or [] if isinstance(st, dict)]
-    if steps and all(s == "passed" for s in statuses):
+def _results(element: dict) -> List[Result]:
+    """Every result of one Cucumber JSON element in run order: scenario hooks, and each step
+    with its own before/after hooks (as cucumber-jvm emits them)."""
+    out: List[Result] = []
+
+    def add(item: Any, label: str) -> None:
+        res = (item.get("result") or {}) if isinstance(item, dict) else {}
+        out.append((str(res.get("status") or "").lower(), label,
+                    str(res.get("error_message") or "")))
+
+    for hook in element.get("before") or []:
+        add(hook, "Before hook")
+    for st in element.get("steps") or []:
+        if not isinstance(st, dict):
+            continue
+        name = ("%s%s" % (st.get("keyword") or "", st.get("name") or "")).strip() or "step"
+        for hook in st.get("before") or []:
+            add(hook, "Before step hook (%s)" % name)
+        add(st, name)
+        for hook in st.get("after") or []:
+            add(hook, "After step hook (%s)" % name)
+    for hook in element.get("after") or []:
+        add(hook, "After hook")
+    return out
+
+
+def _status(results: List[Result], has_steps: bool) -> Tuple[str, Optional[str]]:
+    """(Xray status, first failure): FAILED when a step or hook failed (or is undefined/
+    ambiguous), PASSED when there are steps and everything passed, else TODO."""
+    for status, label, error in results:
+        if status in _FAILED:
+            return "FAILED", ("%s: %s" % (label, error or status))[:2000]
+    if has_steps and all(st == "passed" for st, _, _ in results):
         return "PASSED", None
     return "TODO", None
 
 
+def _is_background(el: dict) -> bool:
+    return el.get("type") == "background" or \
+        str(el.get("keyword") or "").strip().lower() == "background"
+
+
+def _is_outline_row(el: dict) -> bool:
+    keyword = str(el.get("keyword") or "").strip().lower()
+    return keyword in ("scenario outline", "scenario template") or \
+        bool(_EXAMPLE_ROW_ID.search(str(el.get("id") or "")))
+
+
+_RANK = {"FAILED": 2, "TODO": 1, "PASSED": 0}
+
+
 def cucumber_to_xray(report: Any, pk: str) -> dict:
     """Convert a Cucumber JSON report to Xray JSON (tests by @TEST_<KEY> tag). Every scenario
-    must carry exactly one @TEST_ key of the project; otherwise nothing is sent. A key with
-    several scenarios (Scenario Outline rows) gets one example status per row."""
+    must carry exactly one @TEST_ key of the project; otherwise nothing is sent. A Background
+    element's results count for the scenario that follows it. Scenario Outline rows of one key
+    give one example status per row; other repeats of a key keep the worst status."""
     if not isinstance(report, list):
         raise ToolError("Cucumber JSON results must be a list of features")
-    by_key: Dict[str, List[Tuple[str, Optional[str]]]] = {}
+    # key -> [(status, failure, is outline row)]
+    by_key: Dict[str, List[Tuple[str, Optional[str], bool]]] = {}
     untagged: List[str] = []
     for feature in report:
         if not isinstance(feature, dict):
             raise ToolError("Cucumber JSON results must be a list of feature objects")
+        background: List[Result] = []
         for el in feature.get("elements") or []:
-            if not isinstance(el, dict) or el.get("type") == "background" or \
-                    str(el.get("keyword") or "").strip().lower() == "background":
+            if not isinstance(el, dict):
                 continue
+            if _is_background(el):
+                background = _results(el)
+                continue
+            carried, background = background, []
             keys = sorted({m.group(1) for m in (_TEST_TAG.match(str((t or {}).get("name") or ""))
                                                 for t in el.get("tags") or []) if m})
             where = "%s / %s" % (feature.get("name") or feature.get("uri") or "?",
@@ -144,7 +182,8 @@ def cucumber_to_xray(report: Any, pk: str) -> dict:
                 untagged.append(where)
                 continue
             check_issue_in_project(keys[0], pk)
-            by_key.setdefault(keys[0], []).append(_element_status(el))
+            status, failure = _status(carried + _results(el), bool(el.get("steps")))
+            by_key.setdefault(keys[0], []).append((status, failure, _is_outline_row(el)))
     if untagged:
         raise ToolError("Cucumber results can go into an existing execution only when every "
                         "scenario is tagged with one @TEST_<KEY> (Xray Cloud's Cucumber import "
@@ -155,17 +194,31 @@ def cucumber_to_xray(report: Any, pk: str) -> dict:
         raise ToolError("The Cucumber report has no scenarios")
     tests: List[Dict[str, Any]] = []
     for key, rows in by_key.items():
-        statuses = [st for st, _ in rows]
-        overall = ("FAILED" if "FAILED" in statuses else
-                   "PASSED" if all(st == "PASSED" for st in statuses) else "TODO")
-        item: Dict[str, Any] = {"testKey": key, "status": overall}
-        comments = [c for _, c in rows if c]
+        statuses = [st for st, _, _ in rows]
+        item: Dict[str, Any] = {"testKey": key,
+                                "status": max(statuses, key=lambda st: _RANK[st])}
+        comments = [c for _, c, _ in rows if c]
         if comments:
             item["comment"] = "\n".join(comments)[:4000]
-        if len(rows) > 1:
+        if len(rows) > 1 and all(outline for _, _, outline in rows):
             item["examples"] = statuses
         tests.append(item)
     return {"tests": tests}
+
+
+def _exec_info(pk: str, summary: str, extra: Dict[str, Any], plan_key: Optional[str],
+               envs: List[str]) -> dict:
+    """The multipart `info` part: Jira fields of the new Test Execution plus xrayFields."""
+    info: Dict[str, Any] = {"fields": {"project": {"key": pk}, "summary": summary,
+                                       "issuetype": {"name": "Test Execution"}, **extra}}
+    xf: Dict[str, Any] = {}
+    if plan_key:
+        xf["testPlanKey"] = plan_key
+    if envs:
+        xf["environments"] = envs
+    if xf:
+        info["xrayFields"] = xf
+    return info
 
 
 @REGISTRY.tool(
@@ -209,16 +262,8 @@ def import_execution_results(ctx, args):
         extra = build_jira_fields(project, "testExecution", args.get("fields"),
                                   args.get("rawFields"))
         multipart = True
-        info = {"fields": {"project": {"key": pk},
-                           "summary": args.get("summary") or "Imported results (%s)" % fmt,
-                           "issuetype": {"name": "Test Execution"}, **extra}}
-        xf: Dict[str, Any] = {}
-        if plan_key:
-            xf["testPlanKey"] = plan_key
-        if envs:
-            xf["environments"] = envs
-        if xf:
-            info["xrayFields"] = xf
+        info = _exec_info(pk, args.get("summary") or "Imported results (%s)" % fmt, extra,
+                          plan_key, envs)
     elif fmt == "behave" and exec_key:
         raise ToolError("Behave results cannot go into an existing execution: Xray Cloud's "
                         "Behave endpoints always create a new Test Execution. Omit testExecKey.")
@@ -236,10 +281,7 @@ def import_execution_results(ctx, args):
         # The plain Cucumber/Behave endpoints take no parameters: a new execution through
         # the multipart endpoint carries them in info.xrayFields.
         multipart = True
-        info = {"fields": {"project": {"key": pk}, "summary": "Imported results (%s)" % fmt,
-                           "issuetype": {"name": "Test Execution"}},
-                "xrayFields": dict(([("testPlanKey", plan_key)] if plan_key else [])
-                                   + ([("environments", envs)] if envs else []))}
+        info = _exec_info(pk, "Imported results (%s)" % fmt, {}, plan_key, envs)
     ctype = "text/xml" if fmt in XML_FORMATS else "application/json"
     path = _endpoint(sent_as, multipart)
     if multipart:

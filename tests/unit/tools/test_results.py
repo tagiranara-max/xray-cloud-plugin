@@ -172,9 +172,12 @@ def _step(status, name="it works", error=None):
     return {"keyword": "Then ", "name": name, "result": res}
 
 
-def _scenario(tags, *steps, kind="scenario"):
-    return {"type": kind, "keyword": "Scenario", "name": "S %s" % tags,
-            "tags": [{"name": t} for t in tags], "steps": list(steps)}
+def _scenario(tags, *steps, kind="scenario", outline=False, el_id=None):
+    el = {"type": kind, "keyword": "Scenario Outline" if outline else "Scenario",
+          "name": "S %s" % tags, "tags": [{"name": t} for t in tags], "steps": list(steps)}
+    if el_id:
+        el["id"] = el_id
+    return el
 
 
 def cucumber_report(*elements):
@@ -191,8 +194,8 @@ def test_cucumber_into_existing_execution_sent_as_xray_json(tmp_path):
     report = cucumber_report(
         _scenario(["@smoke", "@TEST_PROJ-1"], _step("passed"), _step("passed")),
         _scenario(["@TEST_PROJ-2"], _step("passed"), _step("failed", "x", "boom")),
-        _scenario(["@TEST_PROJ-3"], _step("passed")),     # outline row 1
-        _scenario(["@TEST_PROJ-3"], _step("undefined")),  # outline row 2
+        _scenario(["@TEST_PROJ-3"], _step("passed"), outline=True),     # outline row 1
+        _scenario(["@TEST_PROJ-3"], _step("undefined"), outline=True),  # outline row 2
         _scenario(["@TEST_PROJ-4"], _step("skipped")))
     out, err = call(ctx, format="cucumber", content=report, testExecKey="PROJ-9",
                     testEnvironments=["chrome"])
@@ -233,6 +236,61 @@ def test_cucumber_into_existing_execution_refuses_other_project_and_bad_json(tmp
     out, err = call(ctx, format="cucumber", content="[]", testExecKey="PROJ-9")
     assert err and "no scenarios" in out["error"]
     assert ctx.xray.rest_calls == []
+
+
+def converted(ctx, report):
+    out, err = call(ctx, format="cucumber", content=report, testExecKey="PROJ-9")
+    assert not err, out
+    return json.loads(ctx.xray.rest_calls[-1][2]["data"])["tests"]
+
+
+def existing_ctx(tmp_path):
+    ctx = make(tmp_path)
+    ctx.xray.rest_responses[("POST", "import/execution")] = {"id": "9", "key": "PROJ-9"}
+    return ctx
+
+
+def test_cucumber_failed_background_fails_the_next_scenario(tmp_path):
+    """Cucumber JSON emits the Background as its own element before each scenario; when a
+    Background step fails, the scenario's steps are skipped. That run is FAILED, not TODO."""
+    bg = lambda status, err=None: {"type": "background", "keyword": "Background",
+                                   "steps": [_step(status, "the app is running", err)]}
+    report = json.dumps([{"name": "F", "elements": [
+        bg("failed", "no app"), _scenario(["@TEST_PROJ-1"], _step("skipped")),
+        bg("passed"), _scenario(["@TEST_PROJ-2"], _step("passed"))]}])
+    assert converted(existing_ctx(tmp_path), report) == [
+        {"testKey": "PROJ-1", "status": "FAILED", "comment": "Then the app is running: no app"},
+        {"testKey": "PROJ-2", "status": "PASSED"}]
+
+
+def test_cucumber_repeated_plain_scenario_keeps_worst_status_without_examples(tmp_path):
+    report = cucumber_report(_scenario(["@TEST_PROJ-1"], _step("passed")),
+                             _scenario(["@TEST_PROJ-1"], _step("skipped")),
+                             _scenario(["@TEST_PROJ-2"], _step("failed", "x", "e")),
+                             _scenario(["@TEST_PROJ-2"], _step("passed")))
+    assert converted(existing_ctx(tmp_path), report) == [
+        {"testKey": "PROJ-1", "status": "TODO"},
+        {"testKey": "PROJ-2", "status": "FAILED", "comment": "Then x: e"}]
+
+
+def test_cucumber_outline_rows_recognised_by_example_row_id(tmp_path):
+    report = cucumber_report(
+        _scenario(["@TEST_PROJ-1"], _step("passed"), el_id="login;failed-login;;2"),
+        _scenario(["@TEST_PROJ-1"], _step("passed"), el_id="login;failed-login;rows;3"))
+    assert converted(existing_ctx(tmp_path), report) == [
+        {"testKey": "PROJ-1", "status": "PASSED", "examples": ["PASSED", "PASSED"]}]
+
+
+def test_cucumber_failing_hooks_fail_the_test(tmp_path):
+    step_hook = dict(_step("passed"), after=[{"result": {"status": "failed",
+                                                         "error_message": "screenshot"}}])
+    scen_hook = dict(_scenario(["@TEST_PROJ-2"], _step("passed")),
+                     before=[{"result": {"status": "failed", "error_message": "db down"}}])
+    report = cucumber_report(_scenario(["@TEST_PROJ-1"], step_hook), scen_hook)
+    assert converted(existing_ctx(tmp_path), report) == [
+        {"testKey": "PROJ-1", "status": "FAILED",
+         "comment": "After step hook (Then it works): screenshot"},
+        {"testKey": "PROJ-2", "status": "FAILED", "comment": "Before hook: db down"}]
 
 
 def test_behave_into_existing_execution_refused(tmp_path):
