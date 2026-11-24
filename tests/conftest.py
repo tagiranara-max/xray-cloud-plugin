@@ -86,6 +86,14 @@ class FakeXray:
         resp = self.rest_responses[key]
         return resp(kwargs) if callable(resp) else resp
 
+    def rest_bytes(self, method, path, **kwargs):
+        self.rest_calls.append((method, path, kwargs))
+        key = (method.upper(), path)
+        if key not in self.rest_responses:
+            raise AssertionError("FakeXray: unexpected REST call %s %s" % (method, path))
+        resp = self.rest_responses[key]
+        return resp(kwargs) if callable(resp) else resp
+
     def download(self, url: str) -> bytes:
         self.download_calls.append(url)
         if url not in self.downloads:

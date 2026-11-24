@@ -346,3 +346,17 @@ def test_rest_raw_data_sent_untouched(fake):
     call = fake.calls[1]
     assert call.body == raw and call.headers["Content-Type"] == "text/xml"
     assert call.url.endswith("import/execution/junit?projectKey=P")
+
+
+def test_rest_bytes_returns_raw_body(fake):
+    body = b"PK\x03\x04\xff\xfe binary"
+    fake.push(auth_ok(), Response(200, {}, body))
+    c = make(fake)
+    assert c.rest_bytes("GET", "export/cucumber", params={"keys": "A-1;A-2"}) == body
+    assert fake.calls[1].url == "https://xray.cloud.getxray.app/api/v2/export/cucumber?keys=A-1%3BA-2"
+    assert fake.calls[1].headers["Authorization"] == "Bearer " + TOKEN
+    fake.push(Response(503, {}, b""), Response(200, {}, b"x"))
+    assert c.rest_bytes("GET", "export/cucumber") == b"x"  # GET is retried
+    fake.push(Response(400, {}, b"nope"))
+    with pytest.raises(ToolError):
+        c.rest_bytes("GET", "export/cucumber")

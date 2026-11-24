@@ -164,13 +164,25 @@ class XrayClient:
             raise ToolError("GraphQL response missing data")
         return data
 
+    def _rest_request(self, method: str, path: str, params: Optional[dict], headers: dict,
+                      body: Optional[bytes]) -> Response:
+        """Shared REST send path (auth, rate limit, retries); raises on a non-2xx status."""
+        url = self._api + path.lstrip("/")
+        if params:
+            url += "?" + urlencode(params, doseq=True)
+        resp = self._send(method.upper(), url, headers, body, retry=method.upper() == "GET")
+        if not 200 <= resp.status < 300:
+            raise self._http_error(resp)
+        return resp
+
+    def rest_bytes(self, method: str, path: str, *, params: Optional[dict] = None) -> bytes:
+        """Like rest() for a request without a body, but returns the response body undecoded."""
+        return self._rest_request(method, path, params, {}, None).body
+
     def rest(self, method: str, path: str, *, json_body: Any = None,
              multipart: Optional[dict] = None, params: Optional[dict] = None,
              data: Optional[bytes] = None, content_type: Optional[str] = None) -> Any:
         """data (with content_type) sends raw bytes untouched as the request body."""
-        url = self._api + path.lstrip("/")
-        if params:
-            url += "?" + urlencode(params, doseq=True)
         headers: Dict[str, str] = {}
         body: Optional[bytes] = None
         if multipart is not None:
@@ -183,9 +195,7 @@ class XrayClient:
         elif json_body is not None:
             body = json.dumps(json_body).encode("utf-8")
             headers["Content-Type"] = "application/json"
-        resp = self._send(method.upper(), url, headers, body, retry=method.upper() == "GET")
-        if not 200 <= resp.status < 300:
-            raise self._http_error(resp)
+        resp = self._rest_request(method, path, params, headers, body)
         text = _text(resp.body)
         if not text.strip():
             return None
