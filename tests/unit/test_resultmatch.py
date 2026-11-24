@@ -189,3 +189,12 @@ def test_existing_tests_filters_non_tests():
         ("PROJ-1", "a", None)])})
     assert rm.existing_tests(ctx, ["PROJ-1", "PROJ-2"]) == {"PROJ-1"}
     assert ctx.xray.calls_of("ResultMatchKeys")[0]["jql"] == "issue in (PROJ-1, PROJ-2)"
+
+
+def test_existing_tests_survives_a_key_jql_rejects():
+    def answer(v):
+        if "PROJ-404" in v["jql"]:
+            raise ToolError("Xray GraphQL error: issue PROJ-404 does not exist")
+        return rows_response([("PROJ-1", "a", None)] if "PROJ-1" in v["jql"] else [])
+    ctx = make_context(responses={"ResultMatchKeys": answer})
+    assert rm.existing_tests(ctx, ["PROJ-1", "PROJ-404"]) == {"PROJ-1"}

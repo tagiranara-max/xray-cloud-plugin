@@ -300,16 +300,26 @@ def find_by_definition(ctx: ServerContext, pk: str,
     return out, complete
 
 
+def _test_keys(ctx: ServerContext, keys: List[str]) -> set:
+    data = ctx.xray.graphql(_KEYS, {"jql": "issue in (%s)" % ", ".join(keys), "limit": PAGE})
+    return {k for k in ((r.get("jira") or {}).get("key")
+                        for r in ((data.get("getTests") or {}).get("results")) or []) if k}
+
+
 def existing_tests(ctx: ServerContext, keys: Sequence[str]) -> set:
-    """Which of these keys are Test issues (keys must already be validated)."""
+    """Which of these keys are Test issues (keys must already be validated). JQL rejects a
+    whole `issue in (...)` when one key does not exist, so a failing chunk is retried key by
+    key; a key that still fails is not a test."""
     found: set = set()
     keys = list(dict.fromkeys(keys))
     for i in range(0, len(keys), PAGE):
         chunk = keys[i:i + PAGE]
-        data = ctx.xray.graphql(_KEYS, {"jql": "issue in (%s)" % ", ".join(chunk),
-                                        "limit": PAGE})
-        for r in ((data.get("getTests") or {}).get("results")) or []:
-            k = (r.get("jira") or {}).get("key")
-            if k:
-                found.add(k)
+        try:
+            found |= _test_keys(ctx, chunk)
+        except ToolError:
+            for k in chunk:
+                try:
+                    found |= _test_keys(ctx, [k])
+                except ToolError:
+                    pass
     return found
