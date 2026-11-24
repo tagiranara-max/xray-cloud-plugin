@@ -12,7 +12,7 @@ Map a change to candidate Xray tests, judge each one from its steps and run hist
 Ask for the base branch (default: the repository's main branch), the Xray project key (for example `PROJ`) and anything else the user wants considered.
 
 - Changed files: `git diff --name-only <base>...HEAD`. For a pull request, use its changed-files list or the diff the user gives.
-- Issue keys: match `[A-Z][A-Z0-9]+-\d+` in the branch name and in commit messages (`git log <base>..HEAD --format=%s%n%b`). Deduplicate.
+- Issue keys: match `[A-Z][A-Z0-9]+-\d+` in the branch name and in commit messages (`git log <base>..HEAD --format=%s%n%b`). Deduplicate. The pattern also matches things that are not issue keys, such as `UTF-8` or `SHA-256`: keep only keys whose project prefix is a real Jira project you saw in the branch or commit context (for example the prefix of the branch name or of the ticket the user mentioned).
 
 Show the user the files and keys you found, and let them correct either.
 
@@ -23,7 +23,7 @@ Show the user the files and keys you found, and let them correct either.
    - `terms`: words taken from changed path segments and module names, at most 10, most specific first (skip generic ones such as `src`, `index` or `test`);
    - `labels` and `components`: only those the user names.
 
-   At least one criterion is required. Each test appears once, with `matchedBy` listing why it matched, its `lastStatus` and the `truncated` flag. If `truncated` is true, say so: the list is incomplete.
+   At least one criterion is required. If `find_related_tests` errors on an issue key, drop that key and call it again. Each test appears once, with `matchedBy` listing why it matched, its `lastStatus` and the `truncated` flag. If `truncated` is true, say so: the list is incomplete.
 2. For each issue key call `get_requirement_coverage`. It returns the covering `tests`, the `counts` (including `neverRun`) and `truncated`. A requirement with no covering tests is itself a finding: report it as a coverage gap.
 
 Rank candidates: tests matched by an issue key first, then by number of criteria in `matchedBy`.

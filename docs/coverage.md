@@ -21,7 +21,7 @@ schema (introspection): fields, arguments, variable types and required arguments
 | Run defects | – | `TestRun.defects` returns Jira issue ids, not keys (tool description says so) |
 | Permissions | a missing Delete Issues permission surfaced as a raw Xray message | clear `permission_denied` errors (see README "Permissions") |
 | Result import response | read `testExecIssue {id, key}` (Xray Server/DC shape): `testExecKey` came back null and the run summary was never read | Xray Cloud answers `{"id", "key", "self"}` on the plain and the multipart endpoints (both shapes are accepted) |
-| Result import multipart | Cucumber/Behave sent the results part as `result` | every format's part is `results` (`result` gets HTTP 400 "Unexpected field (result)"); `info` holds the Test Execution fields |
+| Result import multipart | Cucumber/Behave sent the results part as `result` | the part is `results`: verified live for JUnit and Cucumber (`result` gets HTTP 400 "Unexpected field (result)"); Behave multipart not run live (same documented shape); `info` holds the Test Execution fields |
 | Cucumber results into an existing execution | refused | Xray Cloud's Cucumber endpoints always create a new execution (`info.xrayFields.testExecKey` -> HTTP 400 "invalid fields: testExecKey"; a `testExecKey` query parameter and `info.key` are ignored). The tool converts the report to Xray JSON with `testExecutionKey` (one status per `@TEST_<KEY>` scenario, outline rows as example statuses, failures as comment); untagged scenarios are refused before upload. Behave into an existing execution is refused |
 
 ## Verified behaviour
