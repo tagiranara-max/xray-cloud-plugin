@@ -15,3 +15,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: pip install pytest
       - run: pytest -q -m "not live"
+      # Not --strict: strict mode fails on the missing `version` (deliberately absent) and `author`.
+      # Skipped when the claude CLI is not installed on the runner.
+      - run: |
+          if command -v claude >/dev/null; then
+            claude plugin validate ./plugin
+          else
+            echo "claude CLI not installed; skipping plugin validation"
+          fi

@@ -137,11 +137,41 @@ Tools act with the permissions of the user behind the Xray API key (and, for Jir
 | `move_folder` | Move a folder with its contents under another folder |
 | `delete_folder` | Delete a folder and its subfolders (tests are kept) |
 | `create_tests_from_feature` | Import a Gherkin `.feature` file (preview, then apply) |
+| `import_execution_results` | Import test results (xray, cucumber, behave, junit, testng, nunit, robot) into a new or existing test execution |
+| `import_feature_file` | Import a `.feature` file or a `.zip` of them with Xray's native importer (no duplicate check, choices, tag rules or AI label) |
+| `export_cucumber_features` | Export Cucumber tests as `.feature` files into a local directory (never overwrites unless asked) |
+| `get_test_runs` | Run history of one test: statuses, counts, last status and flaky flag |
+| `get_requirement_coverage` | Tests covering a requirement, each with the status of its latest run |
+| `find_related_tests` | Find tests related to an area by terms, requirement keys, labels, components or folder |
 | `get_create_fields` | List an issue type's fields: from Jira with the token, otherwise from your settings file |
 | `list_project_versions` | List a Jira project's versions (needs the Jira token) |
 | `analyze_feature_tags` | Summarise the tags in `.feature` files and show which tag rules match (read-only) |
 | `set_preferences` | Change the remembered import choices and tag rules of a project (writes only the plugin's own file) |
 | `get_status` | Show the plugin's state: region, credentials configured (never their values), settings file, projects, Jira, and the effective import choices with their source |
+
+## Results and native feature import/export
+
+- **`import_execution_results`** uploads a result file (JUnit, TestNG, NUnit, Robot, Cucumber JSON, Behave JSON or Xray JSON) into a new or existing test execution. The file is sent byte for byte (UTF-8, max 25 MB); give either `filePath` or `content`.
+- **`import_feature_file`** uses Xray's native importer for a `.feature` file or a `.zip` of them. It is faster and a good fit for bulk loads, but it does no duplicate check, asks no questions, applies no tag rules, adds no AI label and has no preview.
+- **`create_tests_from_feature`** is the plugin's own import (see Feature import below): duplicate check, import choices, tag rules, the AI label and a preview before anything is written. Use it for everyday imports; use `import_feature_file` when you want Xray's native result as is.
+- **`export_cucumber_features`** writes Cucumber tests (by key or saved filter) as `.feature` files into a local directory and refuses to overwrite existing files unless you ask.
+
+## Analysis
+
+Read-only tools for questions about test history and impact:
+
+- **`get_test_runs`**: the run history of one test, with counts by status, the last status and a flaky flag (both PASSED and FAILED among the runs).
+- **`get_requirement_coverage`**: the tests that cover a requirement and the latest status of each, with counts and never-run tests.
+- **`find_related_tests`**: tests related to an area by text, requirement keys, labels, components or folder; each test appears once with the criteria it matched (at most 200 results).
+
+## Skills
+
+Skills guide Claude through multi-step workflows on top of the tools:
+
+- **`xray-setup`**: create or update the settings file (projects, field IDs, defaults, import choices, tag rules) with you.
+- **`import-results`**: import a test result file into Xray as a test execution and check for flaky tests.
+- **`import-tests`**: import tests from `.feature` files and from tabular or markdown sources.
+- **`predict-affected-tests`**: predict which tests a code change affects and optionally create an execution for the at-risk ones.
 
 ## Feature import
 

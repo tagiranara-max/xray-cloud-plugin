@@ -98,3 +98,52 @@ matches the forum report: Background steps are not shown as run steps.
   POST, PUT and DELETE are never retried.
 - The test environment `xray-cloud-live` created by the live suite stays in the project: Xray
   has no API to delete environments.
+
+## API parity
+
+Every GraphQL mutation the server uses and every REST import/export endpoint, with the tool
+that exposes it. `dev/parity_audit.py` lists the mutations and queries of the live schema (read-only,
+needs credentials); mutations of the live schema not listed here are not yet audited. A cell is
+`tool: <name>[, <name>...]` or `not exposed: <reason>`; `tests/unit/test_parity_doc.py` checks
+that every named tool is registered.
+
+| API | Exposed as |
+|---|---|
+| `createTest` | tool: create_test, create_tests_from_feature |
+| `updateTestType` | tool: update_test_type |
+| `updateGherkinTestDefinition` | tool: edit_test |
+| `deleteTest` | tool: delete_test |
+| `addTestStep` | tool: add_test_steps, move_test_step |
+| `updateTestStep` | tool: edit_test_step, move_test_step |
+| `removeTestStep` | tool: remove_test_step |
+| `createTestSet` | tool: create_test_set, create_tests_from_feature |
+| `addTestsToTestSet` | tool: add_tests_to_test_set |
+| `removeTestsFromTestSet` | tool: remove_tests_from_test_set |
+| `deleteTestSet` | tool: delete_test_set |
+| `createTestPlan` | tool: create_test_plan |
+| `addTestsToTestPlan` | tool: add_tests_to_test_plan |
+| `removeTestsFromTestPlan` | tool: remove_tests_from_test_plan |
+| `deleteTestPlan` | tool: delete_test_plan |
+| `addTestExecutionsToTestPlan` | tool: add_test_executions_to_test_plan |
+| `createTestExecution` | tool: create_test_execution |
+| `addTestsToTestExecution` | tool: add_tests_to_test_execution |
+| `removeTestsFromTestExecution` | tool: remove_tests_from_test_execution |
+| `deleteTestExecution` | tool: delete_test_execution |
+| `addTestEnvironmentsToTestExecution` | tool: add_test_environments_to_test_execution |
+| `removeTestEnvironmentsFromTestExecution` | tool: remove_test_environments_from_test_execution |
+| `updateTestRun` | tool: update_test_run |
+| `updateTestRunStatus` | tool: update_test_run |
+| `updateTestRunStep` | tool: update_test_run |
+| `addDefectsToTestRun` | tool: update_test_run |
+| `addEvidenceToTestRun` | tool: update_test_run |
+| `createPrecondition` | tool: create_tests_from_feature |
+| `updatePrecondition` | tool: create_tests_from_feature |
+| `addTestsToPrecondition` | tool: create_tests_from_feature |
+| `createFolder` | tool: create_folder |
+| `renameFolder` | tool: rename_folder |
+| `moveFolder` | tool: move_folder |
+| `deleteFolder` | tool: delete_folder |
+| `addTestsToFolder` | tool: add_tests_to_folder |
+| REST `import/execution*` (JUnit, TestNG, NUnit, Robot, Cucumber, Behave, Xray JSON, with `/multipart`) | tool: import_execution_results |
+| REST `import/feature` | tool: import_feature_file |
+| REST `export/cucumber` | tool: export_cucumber_features |
