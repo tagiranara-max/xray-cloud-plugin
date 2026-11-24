@@ -1,0 +1,78 @@
+{
+  "name": "xray-cloud",
+  "displayName": "Xray Cloud",
+  "description": "Manage Xray Cloud tests, test sets, plans, executions and runs from Claude Code through a zero-install Python MCP server.",
+  "license": "MIT",
+  "userConfig": {
+    "xray_client_id": {
+      "type": "string",
+      "title": "Xray client ID",
+      "description": "Xray Cloud API key client ID. Leave empty to use the XRAY_CLIENT_ID environment variable.",
+      "sensitive": true,
+      "required": false
+    },
+    "xray_client_secret": {
+      "type": "string",
+      "title": "Xray client secret",
+      "description": "Xray Cloud API key client secret. Leave empty to use the XRAY_CLIENT_SECRET environment variable.",
+      "sensitive": true,
+      "required": false
+    },
+    "xray_region": {
+      "type": "string",
+      "title": "Xray region",
+      "description": "Xray Cloud region: global, eu or au.",
+      "options": ["global", "eu", "au"],
+      "default": "global",
+      "required": false
+    },
+    "settings_file": {
+      "type": "file",
+      "title": "Settings file",
+      "description": "Optional explicit path to the Xray settings file (YAML or JSON) listing projects and fields.",
+      "required": false
+    },
+    "jira_site_url": {
+      "type": "string",
+      "title": "Jira site URL",
+      "description": "Optional, enables Jira tools. Example: https://yourcompany.atlassian.net",
+      "required": false
+    },
+    "jira_email": {
+      "type": "string",
+      "title": "Jira email",
+      "description": "Optional, email of the Jira account used for Jira tools.",
+      "required": false
+    },
+    "jira_api_token": {
+      "type": "string",
+      "title": "Jira API token",
+      "description": "Optional, Jira API token that enables Jira tools.",
+      "sensitive": true,
+      "required": false
+    },
+    "read_only": {
+      "type": "boolean",
+      "title": "Read-only mode",
+      "description": "When true, every write tool refuses to run.",
+      "default": false,
+      "required": false
+    }
+  },
+  "mcpServers": {
+    "xray": {
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/main.py"],
+      "env": {
+        "XRAY_CLIENT_ID": "${user_config.xray_client_id}",
+        "XRAY_CLIENT_SECRET": "${user_config.xray_client_secret}",
+        "XRAY_REGION": "${user_config.xray_region}",
+        "XRAY_SETTINGS_FILE": "${user_config.settings_file}",
+        "JIRA_SITE_URL": "${user_config.jira_site_url}",
+        "JIRA_EMAIL": "${user_config.jira_email}",
+        "JIRA_API_TOKEN": "${user_config.jira_api_token}",
+        "XRAY_READ_ONLY": "${user_config.read_only}"
+      }
+    }
+  }
+}

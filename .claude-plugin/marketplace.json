@@ -1,0 +1,11 @@
+{
+  "name": "xray-cloud-plugin",
+  "owner": { "name": "Tagira Nara" },
+  "plugins": [
+    {
+      "name": "xray-cloud",
+      "source": "./plugin",
+      "description": "Manage Xray Cloud tests, test sets, plans, executions and runs from Claude Code."
+    }
+  ]
+}

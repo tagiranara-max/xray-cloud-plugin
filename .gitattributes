@@ -1,0 +1,2 @@
+# Gherkin fixtures: keep exact bytes (BOM, CRLF, tabs) for parser tests.
+tests/fixtures/gherkin/** -text

@@ -1,0 +1,49 @@
+# Copy to .xray/settings.yml in your repository (or ~/.config/xray-cloud/settings.yml).
+# Never put credentials in this file; the server rejects keys that look like secrets.
+projects:                          # the keys are the project allowlist
+  PROJ:
+    fields:
+      test:
+        component:                 # friendly name you use in `fields`
+          id: customfield_12345    # Jira field id (or a system id such as fixVersions)
+          type: option             # option | options | string | number | version | versions | user | raw
+          required: true
+          default: Backend
+      testExecution:
+        fixVersion:
+          id: fixVersions
+          type: versions
+          required: true           # no default: the agent must ask you
+      testPlan: {}
+      testSet: {}
+      precondition: {}
+      testRun:                     # Xray test-run custom fields, matched by name or id
+        version:
+          name: Version
+          required: false
+lifecycleLabels: [ai-draft, needs-refinement, automation-candidate, automated, obsolete]
+duplicateCheck: true
+
+# Optional import choices (see README "Choices and preferences"). Every key is optional: an absent one
+# is asked once and remembered per project. A value here always wins over a remembered one.
+# featureImport:
+#   createTestSet: true            # group the imported tests in a Test Set named after the Feature
+#   backgrounds: preconditions     # preconditions | inline
+#   tagsAsLabels: true
+#   unmatchedTags: keep            # keep (default) | skip
+#   tagRules:                      # EXAMPLE ONLY: no rules are built in; tag names are made up
+#     - tag: group                 # @group=alpha or @group:alpha
+#       split: ","                 # @group=alpha,beta gives alpha and beta
+#       testSet: "{value}"         # Test Set per value (reused by exact name, else created)
+#     - tag: team
+#       field: { component: "{value}" }   # friendly name from projects.<KEY>.fields.test
+#       label: "team-{value}"
+#     - match: "(wip|draft)"       # regex form: the whole tag must match
+#       label: "to-review"
+#     - tag: internal
+#       skip: true
+# aiCreated:
+#   label: my-ai-label             # your own label for what the AI creates; null = don't mark
+#   scope: tests                   # tests | all (also new Pre-Conditions and Test Sets)
+# Per project, under projects.<KEY>: featureImport / aiCreated override the top level key by
+# key; a project's tagRules replace the top-level list.
