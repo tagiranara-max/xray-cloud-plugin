@@ -153,3 +153,81 @@ def test_server_context_channel_defaults_to_none():
     env = {"HOME": "/nonexistent"}
     ctx = ServerContext(env, SettingsStore(env), None)
     assert ctx.channel is None
+
+
+def _cancel(request_id):
+    return {"jsonrpc": "2.0", "method": "notifications/cancelled",
+            "params": {"requestId": request_id, "reason": "user"}}
+
+
+def test_cancel_of_in_flight_call_ends_elicitation():
+    out, seen, _ = _serve([_init({"elicitation": {}}), _call(2), _cancel(2),
+                           {"jsonrpc": "2.0", "id": 5, "method": "ping"}])
+    assert seen == [None]
+    # elicit returned at the cancel; no response for the cancelled call; still serving
+    assert [o.get("id") for o in out] == [1, "xc-1", 5]
+
+
+def test_cancel_of_other_id_is_dropped_while_waiting():
+    _, seen, _ = _serve([_init({"elicitation": {}}), _call(2), _cancel(77),
+                         _answer({"action": "accept", "content": {"choice": "a"}})])
+    assert seen == [{"choice": "a"}]
+
+
+def test_cancel_of_queued_request_removes_it():
+    out, seen, _ = _serve([_init({"elicitation": {}}), _call(2), _call(3, "echo"),
+                           {"jsonrpc": "2.0", "id": 4, "method": "tools/list"}, _cancel(3),
+                           _answer({"action": "decline"})])
+    assert seen == [None]
+    assert [o.get("id") for o in out] == [1, "xc-1", 2, 4]
+
+
+def test_accept_without_dict_content_is_none():
+    for result in ({"action": "accept"}, {"action": "accept", "content": "yes"}):
+        _, seen, _ = _serve([_init({"elicitation": {}}), _call(2), _answer(result)])
+        assert seen == [None]
+
+
+def test_error_with_null_id_fails_pending_elicitation():
+    err = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}
+    out, seen, _ = _serve([_init({"elicitation": {}}), _call(2), err,
+                           _answer({"action": "accept", "content": {"choice": "a"}})])
+    assert seen == [None]  # the error ended the wait; the later answer is a stray
+    assert [o.get("id") for o in out] == [1, "xc-1", 2]
+
+
+def test_queued_request_that_elicits_runs_after_current():
+    out, seen, _ = _serve([_init({"elicitation": {}}), _call(2), _call(3),
+                           _answer({"action": "accept", "content": {"choice": "a"}}),
+                           _answer({"action": "accept", "content": {"choice": "b"}}, "xc-2")])
+    assert seen == [{"choice": "a"}, {"choice": "b"}]
+    assert [o.get("id") for o in out] == [1, "xc-1", 2, "xc-2", 3]
+
+
+def test_ping_answered_then_eof_with_requests_queued():
+    out, seen, _ = _serve([_init({"elicitation": {}}), _call(2), _call(3, "echo"), _call(4),
+                           {"jsonrpc": "2.0", "id": 9, "method": "ping"}])
+    # ping at once; EOF declines call 2; queued 3 is answered; queued 4 elicits nothing after EOF
+    assert [o.get("id") for o in out] == [1, "xc-1", 9, 2, 3, 4]
+    assert seen == [None, None]
+
+
+class _BrokenOut:
+    def write(self, s):
+        raise BrokenPipeError(32, "Broken pipe")
+
+    def flush(self):
+        pass
+
+
+def test_broken_pipe_ends_serve_quietly(capsys):
+    lines = [json.dumps(_init({})) + "\n", json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping"}) + "\n"]
+    serve(_registry([]), lambda: SimpleNamespace(channel=None), stdin=lines, stdout=_BrokenOut())
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_broken_pipe_during_elicit_returns_none():
+    ch = ClientChannel([], _BrokenOut())
+    ch.set_capabilities({"elicitation": {}})
+    assert ch.elicit("q", SCHEMA) is None
+    assert ch.closed is True

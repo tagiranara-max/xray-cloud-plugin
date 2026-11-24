@@ -68,10 +68,18 @@ def serve(registry: Registry, ctx_factory: Callable[[], Any], stdin=None, stdout
         elif is_response(msg):
             continue  # a client answer nothing is waiting for
         else:
+            channel.current_request_id = msg.get("id") if isinstance(msg, dict) else None
+            channel.current_cancelled = False
             try:
                 resp = _handle(registry, ctx_factory, state, msg)
             except Exception as e:
                 print("protocol error: %r" % (e,), file=sys.stderr)
                 resp = _error(msg.get("id") if isinstance(msg, dict) else None, -32603, "Internal error")
+            finally:
+                channel.current_request_id = None
+            if channel.current_cancelled:
+                resp = None  # MCP: no response to a cancelled request
         if resp is not None:
             channel.write(resp)
+        if channel.closed:
+            break  # the client went away (broken pipe): stop quietly

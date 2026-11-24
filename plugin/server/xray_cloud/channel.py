@@ -28,7 +28,10 @@ class ClientChannel:
         self._pending: Deque[Any] = deque()
         self._next_id = 0
         self.eof = False
+        self.closed = False  # stdout is gone (broken pipe): nothing more can be sent
         self.capabilities: dict = {}
+        self.current_request_id: Any = None  # id of the request serve() is handling
+        self.current_cancelled = False  # the client cancelled that request: send no response
 
     @property
     def supports_elicitation(self) -> bool:
@@ -37,9 +40,21 @@ class ClientChannel:
     def set_capabilities(self, caps: Any) -> None:
         self.capabilities = caps if isinstance(caps, dict) else {}
 
-    def write(self, msg: dict) -> None:
-        self._out.write(json.dumps(msg, ensure_ascii=False) + "\n")
-        self._out.flush()
+    def write(self, msg: dict) -> bool:
+        """Send one message. False (and `closed` set) when the client has gone away."""
+        if self.closed:
+            return False
+        try:
+            self._out.write(json.dumps(msg, ensure_ascii=False) + "\n")
+            self._out.flush()
+        except OSError:  # BrokenPipeError included
+            self.closed = True
+            return False
+        return True
+
+    def _drop_queued(self, request_id: Any) -> None:
+        self._pending = deque(m for m in self._pending
+                              if not (isinstance(m, dict) and "method" in m and m.get("id") == request_id))
 
     def _read(self) -> Any:
         """Next parsed message from stdin, PARSE_ERROR, or EOF. Skips blank lines."""
@@ -65,30 +80,44 @@ class ClientChannel:
     def elicit(self, message: str, schema: dict) -> Optional[dict]:
         """Ask the user via `elicitation/create`. Content on accept; None otherwise.
 
-        Decline, cancel, an error response, EOF, or a client that never declared the
-        elicitation capability all return None.
+        Decline, cancel, accept without object content, an error response (also one with
+        a null id), EOF, a closed stdout, a client that never declared the elicitation
+        capability, or `notifications/cancelled` for the request being handled all
+        return None.
         """
-        if not self.supports_elicitation or self.eof:
+        if not self.supports_elicitation or self.eof or self.closed:
             return None
         self._next_id += 1
         id_ = "xc-%d" % self._next_id
-        self.write({"jsonrpc": "2.0", "id": id_, "method": "elicitation/create",
-                    "params": {"message": message, "requestedSchema": schema}})
+        if not self.write({"jsonrpc": "2.0", "id": id_, "method": "elicitation/create",
+                           "params": {"message": message, "requestedSchema": schema}}):
+            return None
         while True:
             msg = self._read()
             if msg is EOF:
                 return None
             if is_response(msg):
+                if "error" in msg and msg.get("id") is None:
+                    return None  # the client could not even read our request's id
                 if msg.get("id") != id_:
                     continue  # stray or late response: nothing waits for it
                 result = msg.get("result")
                 if "error" in msg or not isinstance(result, dict) or result.get("action") != "accept":
                     return None
                 content = result.get("content")
-                return content if isinstance(content, dict) else {}
+                return content if isinstance(content, dict) else None
             if isinstance(msg, dict) and msg.get("method") == "ping" and "id" in msg:
-                self.write({"jsonrpc": "2.0", "id": msg["id"], "result": {}})
+                if not self.write({"jsonrpc": "2.0", "id": msg["id"], "result": {}}):
+                    return None
             elif isinstance(msg, dict) and "method" in msg and "id" not in msg:
-                continue  # notification
+                if msg.get("method") == "notifications/cancelled":
+                    params = msg.get("params")
+                    rid = params.get("requestId") if isinstance(params, dict) else None
+                    if rid is not None and rid == self.current_request_id:
+                        self.current_cancelled = True
+                        return None  # the call we are asking for was cancelled
+                    if rid is not None:
+                        self._drop_queued(rid)
+                continue  # other notifications are dropped
             else:
                 self._pending.append(msg)  # requests, parse errors, invalid messages
