@@ -269,7 +269,6 @@ def register(kind: Kind, with_sets: bool) -> None:
         direct_map = resolve_test_id_map(ctx, pk, direct)  # fail before creating anything
         if new_tests:  # all validation passed: remember a call-supplied label before writing
             remember_ai_label(ctx, pk, args)
-        requiredfields.commit(ctx)
         jira_fields: Dict[str, Any] = {"project": {"key": pk}, "summary": summary}
         if args.get("description") is not None:
             jira_fields["description"] = args["description"]
@@ -296,8 +295,21 @@ def register(kind: Kind, with_sets: bool) -> None:
                 out["addedTests"] = res["added"]
                 warnings.extend(res["warnings"])
         except Exception as e:
-            raise partial_failure("%s %s was created but a later step failed" % (cap, key),
-                                  created, e)
+            msg = "%s %s was created but a later step failed" % (cap, key)
+            if not requiredfields.is_refusal(e):
+                raise partial_failure(msg, created, e)
+            if len(created) == 1 and isinstance(e, requiredfields.RequiredFieldsRejected):
+                # nothing but the container was written: remove it, so the call can run
+                # again and ask for the new tests' fields (testFields)
+                try:
+                    ctx.xray.graphql(kind.q(_DELETE), {"issueId": node["issueId"]})
+                except Exception as de:
+                    raise requiredfields.refusal_failure(
+                        msg + " (deleting it again failed: %s)" % de, created, e,
+                        "testFields") from None
+                e.data["param"] = "testFields"
+                raise e from None
+            raise requiredfields.refusal_failure(msg, created, e, "testFields") from None
         if len(created) > 1:
             out["createdTests"] = created[1:]
             requiredfields.add_applied(out, "test", test_applied)

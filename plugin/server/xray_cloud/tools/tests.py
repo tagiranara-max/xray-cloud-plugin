@@ -336,7 +336,6 @@ def create_test(ctx, args):
         provided=["description"] if args.get("description") is not None else [])
     if not inner:
         remember_ai_label(ctx, pk, args)
-    requiredfields.commit(ctx)
     jira_fields: Dict[str, Any] = {"project": {"key": pk}, "summary": summary}
     if args.get("description") is not None:
         jira_fields["description"] = args["description"]

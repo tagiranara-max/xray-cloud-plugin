@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -486,6 +487,7 @@ def test_no_token_create_failure_asks_and_retry_succeeds(tmp_path):
     q = res["questions"][0]
     assert (q["id"], q["name"], q["type"], q["param"]) == \
         ("components", "Components", "array of component", "fields")
+    assert "exactly" in q["hint"] and "create a new one" in q["hint"]
     assert res["missingFields"] == [{"name": "Components", "id": "components"}]
     assert len(creates(ctx)) == 1  # the refused try; the second run asked before writing
     assert remembered(ctx) == {}
@@ -548,7 +550,17 @@ def test_other_create_errors_pass_through_and_retry_happens_once(tmp_path):
     ctx = make(tmp_path, responses=rejecting(["components"], error=JIRA_BY_NAME))
     res, err = call(ctx, "create_test", projectKey="PROJ", summary="S", aiLabel="",
                     allowDuplicates=True)
-    assert err and res["error"] == JIRA_BY_NAME and len(creates(ctx)) == 1
+    # an unparsed "Create issue failed!": the raw message and the field-ids guidance, asked
+    assert not err and res["status"] == "needs_answer", res
+    assert res["jiraError"] == JIRA_BY_NAME and JIRA_BY_NAME in res["message"]
+    assert "field ids" in res["message"] and res["questions"][0]["param"] == "fields"
+    assert len(creates(ctx)) == 1  # nothing retried automatically
+    # an error that is not Jira's create error passes unchanged
+    (tmp_path / "c").mkdir()
+    ctx = make(tmp_path / "c", responses=rejecting(["components"], error="HTTP 500: oops"))
+    res, err = call(ctx, "create_test", projectKey="PROJ", summary="S", aiLabel="",
+                    allowDuplicates=True)
+    assert err and res["error"] == "HTTP 500: oops" and len(creates(ctx)) == 1
     # Jira keeps naming the field although a value is sent: one retry, then the error
     def always(v):
         raise ToolError(JIRA_REQUIRED)
@@ -557,6 +569,7 @@ def test_other_create_errors_pass_through_and_retry_happens_once(tmp_path):
     res, err = call(ctx, "create_test", projectKey="PROJ", summary="S", aiLabel="",
                     allowDuplicates=True, rawFields={"components": [{"name": "Backend"}]})
     assert err and res["jiraError"] == JIRA_REQUIRED and "Nothing was created" in res["error"]
+    assert "`fields`" in res["error"]
     assert res["missingFields"] == [{"name": "Components", "id": "components"}]
     assert len(creates(ctx)) == 2
 
@@ -576,3 +589,71 @@ def test_no_token_container_create_failure_asks_for_its_item_type(tmp_path):
     assert not err and res["key"] == "PROJ-9", res
     assert remembered(ctx, "testSet") == {"components": [{"name": "Backend"}]}
     assert remembered(ctx, "test") == {}
+
+
+def test_error_naming_only_system_fields_passes_through(tmp_path):
+    text = "Create issue failed! - reporter: Reporter is required."
+    ctx = make(tmp_path, responses=rejecting(["components"], error=text))
+    res, err = call(ctx, "create_test", projectKey="PROJ", summary="S", aiLabel="",
+                    allowDuplicates=True)
+    assert err and res["error"] == text and len(creates(ctx)) == 1
+    assert ctx.reported_fields == {}
+
+
+def test_refused_create_remembers_no_answers(tmp_path):
+    ctx = make(tmp_path, meta=SEVERITY_ONLY, responses=rejecting(["customfield_9"], error=(
+        "Create issue failed! - customfield_9: Extra is required.")))
+    res, err = call(ctx, "create_test", projectKey="PROJ", summary="S", aiLabel="",
+                    allowDuplicates=True, fields={"Severity": "Low"})
+    assert not err and res["status"] == "needs_answer"
+    assert res["questions"][0]["id"] == "customfield_9"
+    assert remembered(ctx) == {}  # the refused create left nothing remembered
+    res, err = call(ctx, "create_test", projectKey="PROJ", summary="S", aiLabel="",
+                    allowDuplicates=True, fields={"Severity": "Low", "customfield_9": "x"})
+    assert not err and res["created"] is True
+    assert remembered(ctx) == {"customfield_3": {"value": "Low"}, "customfield_9": "x"}
+
+
+def _set_world(fail_from):
+    """CreateTestSet ok; CreateTest refused for Components from the fail_from-th call on."""
+    n = {"tests": 0}
+
+    def create_test(v):
+        n["tests"] += 1
+        if n["tests"] >= fail_from and not v["jira"]["fields"].get("components"):
+            raise ToolError(JIRA_REQUIRED)
+        return created("PROJ-%d" % n["tests"])["CreateTest"]
+    return {"CreateTest": create_test,
+            "CreateTestSet": {"createTestSet": {"testSet": {"issueId": "900",
+                                                            "jira": {"key": "PROJ-10"}},
+                                                "warnings": []}},
+            "DeleteTestSet": {"deleteTestSet": None},
+            "GetTestIssueIds": lambda v: {"getTests": {"results": [
+                {"issueId": k.split("-")[1], "jira": {"key": k}}
+                for k in re.findall(r"PROJ-\d+", json.dumps(v))]}},
+            "AddTestsToTestSet": {"addTestsToTestSet": {"addedTests": ["1"], "warning": None}}}
+
+
+def test_container_first_new_test_refused_deletes_container_and_asks(tmp_path):
+    ctx = make(tmp_path, responses=_set_world(1))
+    args = dict(projectKey="PROJ", summary="S", aiLabel="", newTests=[{"summary": "A"}],
+                createDuplicates=[0])
+    res, err = call(ctx, "create_test_set", **args)
+    assert not err and res["status"] == "needs_answer", res
+    assert res["questions"][0]["param"] == "testFields"
+    assert ctx.xray.calls_of("DeleteTestSet") == [{"issueId": "900"}]
+    assert len(ctx.xray.calls_of("CreateTestSet")) == 1  # the re-run asked before writing
+    res, err = call(ctx, "create_test_set", testFields={"components": "Backend"}, **args)
+    assert not err and res["key"] == "PROJ-10" and res["createdTests"] == ["PROJ-2"], res
+    assert remembered(ctx, "test") == {"components": [{"name": "Backend"}]}
+
+
+def test_container_later_new_test_refused_is_accurate_partial_failure(tmp_path):
+    ctx = make(tmp_path, responses=_set_world(2))
+    res, err = call(ctx, "create_test_set", projectKey="PROJ", summary="S", aiLabel="",
+                    newTests=[{"summary": "A"}, {"summary": "B"}], createDuplicates=[0, 1])
+    assert err and res["created"] == ["PROJ-10", "PROJ-1"], res
+    assert "Nothing was created" not in res["cause"] and "`testFields`" in res["cause"]
+    assert "Test was not created" in res["cause"]
+    assert res["missingFields"] == [{"name": "Components", "id": "components"}]
+    assert ctx.xray.calls_of("DeleteTestSet") == []

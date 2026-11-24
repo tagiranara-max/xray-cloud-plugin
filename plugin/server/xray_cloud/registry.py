@@ -164,7 +164,14 @@ class Registry:
                     # Jira named required fields and nothing was created: they are learned
                     # now, so running the call again asks for them (once).
                     requiredfields.reset(ctx)
-                    result = tool.handler(ctx, clean)
+                    try:
+                        result = tool.handler(ctx, clean)
+                    except requiredfields.RequiredFieldsRejected as again:
+                        raise ToolError(
+                            "%s Nothing was created. Call again with `%s` set to {field id: "
+                            "value}; %s." % (again.message, again.data.get("param", "fields"),
+                                             requiredfields.FIELD_IDS_GUIDANCE),
+                            **again.data) from None
             except ToolError as e:
                 if tool.write and is_permission_error(e):
                     raise permission_denied(e, action="run %s" % name,

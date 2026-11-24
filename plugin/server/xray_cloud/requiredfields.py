@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterable, Iterator, List, NamedTuple, Optional, Tuple
 
 from .config import FieldSpec, ProjectSettings
+from .context import is_permission_error
 from .errors import NeedsAnswer, ToolError
 from .fields import convert_value
 
@@ -46,7 +47,49 @@ _REQUIRED_ENTRY = re.compile(r"(?:^|(?<=- |, ))((?:(?! - )[^:,])+?): ([^:,]+?) i
 
 class RequiredFieldsRejected(ToolError):
     """Jira refused a create for missing required fields and nothing was created; the fields
-    are learned for the server run, so the registry runs the call once more to ask for them."""
+    are learned for the server run, so the registry runs the call once more to ask for them.
+    The message names only the item that was not created (the call may have written others)."""
+
+
+class CreateRefused(NeedsAnswer):
+    """Jira refused a create with an error naming no field we could read: the raw message is
+    shown and the user is asked which values to set. Nothing is retried automatically."""
+
+
+FIELD_IDS_GUIDANCE = ("use Jira field ids, not names (for example customfield_12345), with "
+                      "values in the shape Jira expects; see the field-ids guide "
+                      "(docs/field-ids.md) or get_create_fields with a Jira token")
+CREATE_FAILED = "Create issue failed!"
+
+
+def is_refusal(e: BaseException) -> bool:
+    return isinstance(e, (RequiredFieldsRejected, CreateRefused))
+
+
+def refusal_failure(message: str, created: List[str], e: ToolError,
+                    param: Optional[str] = None) -> ToolError:
+    """partial_failure for a create Jira refused after other items were written: the cause
+    names the item not created and the parameter for its values."""
+    from .context import partial_failure
+    err = partial_failure(message, created, ToolError(refused_note(e, param)))
+    for k in ("itemType", "missingFields", "jiraError"):
+        if e.data.get(k) is not None:
+            err.data[k] = e.data[k]
+    return err
+
+
+def refused_note(e: ToolError, param: Optional[str] = None) -> str:
+    """Cause text for a partial failure whose later create Jira refused: what was not created
+    and the parameter that takes the missing values, never "nothing was created"."""
+    tname = ITEM_TYPE_NAMES.get(e.data.get("itemType"), e.data.get("itemType") or "item")
+    fields = e.data.get("missingFields") or []
+    what = ("the required field(s) %s" % ", ".join("%s (%s)" % (f["name"], f["id"])
+                                                    for f in fields)) if fields else \
+        "Jira's error: %s" % e.data.get("jiraError", e.message)
+    param = param or e.data.get("param") or "fields"
+    return ("The new %s was not created: it needs %s. Give the values in `%s` ({field id: "
+            "value}) when creating the remaining items; do not repeat the whole call, which "
+            "would create the items listed as created again." % (tname, what, param))
 
 
 class Resolution(NamedTuple):
@@ -121,26 +164,41 @@ def learn(ctx: Any, pk: str, item_type: str, found: List[dict]) -> None:
 
 
 @contextmanager
-def creating(ctx: Any, pk: str, item_type: str) -> Iterator[None]:
-    """Wraps the create mutation of a new item: a Jira error naming required fields becomes
-    RequiredFieldsRejected (the fields learned, see learn); other errors pass unchanged."""
+def creating(ctx: Any, pk: str, item_type: str, param: str = "fields") -> Iterator[None]:
+    """Wraps the create mutation of a new item. On success the call's field answers are
+    remembered (commit). A Jira error naming required fields becomes RequiredFieldsRejected
+    (the fields learned, see learn); one naming only system fields passes unchanged; another
+    "Create issue failed!" error becomes CreateRefused; other errors pass unchanged."""
     try:
         yield
     except NeedsAnswer:
         raise
     except ToolError as e:
-        found = parse_required_error(e.message)
-        if not found:
-            raise
-        learn(ctx, pk, item_type, found)
         tname = ITEM_TYPE_NAMES.get(item_type, item_type)
+        parsed = parse_required_error(e.message)
+        found = [f for f in parsed if f["id"] not in SYSTEM_FIELDS]
+        if parsed and not found:
+            raise
+        if not found:
+            if CREATE_FAILED not in e.message or is_permission_error(e):
+                raise
+            raise CreateRefused(
+                "Jira refused the new %s in %s: %s Ask the user which field values to set, "
+                "then call again with `%s` set to {field id: value}; %s."
+                % (tname, pk, e.message, param, FIELD_IDS_GUIDANCE),
+                [{"id": param, "param": param, "type": "object",
+                  "question": "Jira refused the new %s in %s (%s). Which field values should "
+                              "be set?" % (tname, pk, e.message),
+                  "context": {"projectKey": pk, "itemType": item_type}}],
+                projectKey=pk, itemType=item_type, param=param,
+                jiraError=e.message) from None
+        learn(ctx, pk, item_type, found)
         raise RequiredFieldsRejected(
-            "Jira did not create the new %s in %s: the required field(s) %s have no value. "
-            "Nothing was created. Call again with `fields` set to {field id or name: value} "
-            "(values as Jira expects them; see the field-ids guide)."
+            "Jira refused the new %s in %s: the required field(s) %s have no value."
             % (tname, pk, ", ".join("%s (%s)" % (f["name"], f["id"]) for f in found)),
-            projectKey=pk, itemType=item_type, jiraError=e.message,
+            projectKey=pk, itemType=item_type, param=param, jiraError=e.message,
             missingFields=[{"name": f["name"], "id": f["id"]} for f in found]) from None
+    commit(ctx)
 
 
 def _discovered(meta: Optional[List[dict]], learned: List[dict]) -> Optional[List[dict]]:
@@ -357,6 +415,13 @@ def _type_label(f: dict) -> str:
     return str(f["type"] or "any")
 
 
+def _named_kind(f: dict) -> Optional[str]:
+    t = f["spec"].type if f["spec"] is not None else f["type"]
+    if t == "array":
+        return (f["meta"] or {}).get("schemaItems")
+    return t
+
+
 def questions(project: ProjectSettings, item_type: str, missing: List[dict],
               param: str, unique_ids: bool = False) -> List[dict]:
     """needs_answer questions for missing required fields: name, id, type, first 50 allowed
@@ -376,6 +441,9 @@ def questions(project: ProjectSettings, item_type: str, missing: List[dict],
             q["choices"] = allowed[:MAX_CHOICES]
             if len(allowed) > MAX_CHOICES:
                 q["moreChoices"] = len(allowed) - MAX_CHOICES
+        elif _named_kind(f) in ("component", "version"):
+            q["hint"] = ("must match an existing %s name exactly; Jira may create a new one"
+                         % _named_kind(f))
         out.append(q)
     return out
 

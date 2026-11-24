@@ -171,7 +171,8 @@ class _Run:
             labels = _merge_labels(a.labels, extra)
             fields.update(extra)
             fields["labels"] = labels
-            with requiredfields.creating(self.ctx, self.pk, "precondition"):
+            with requiredfields.creating(self.ctx, self.pk, "precondition",
+                                         "preconditionFields"):
                 data = self.gql(_CREATE_PRECONDITION, {
                     "jira": {"fields": fields}, "preconditionType": {"name": CUCUMBER},
                     "definition": a.definition, "testIssueIds": ids})
@@ -221,7 +222,7 @@ class _Run:
             fields.update(extra)
             if labels:
                 fields["labels"] = labels
-            with requiredfields.creating(self.ctx, self.pk, "testSet"):
+            with requiredfields.creating(self.ctx, self.pk, "testSet", "testSetFields"):
                 data = self.gql(SET.q(_CREATE), {"jira": {"fields": fields}})
             node = (data.get("createTestSet") or {}).get("testSet") or {}
             key = (node.get("jira") or {}).get("key")
@@ -269,8 +270,10 @@ class _Run:
                     raise permission_denied(e, action="run create_tests_from_feature",
                                             project_key=self.pk) from None
                 raise
-            err = partial_failure("Feature import stopped while %s; the issues listed were "
-                                  "already written" % self.step, self.created, e)
+            msg = ("Feature import stopped while %s; the issues listed were already written"
+                   % self.step)
+            err = (requiredfields.refusal_failure(msg, self.created, e)
+                   if requiredfields.is_refusal(e) else partial_failure(msg, self.created, e))
             err.data["updated"] = list(self.updated)
             err.data["failedStep"] = self.step
             if self.result.get("linkedRequirements"):
@@ -575,7 +578,6 @@ def create_tests_from_feature(ctx, args):
     # All validation passed: remember the call's answers, then write (ruling R5).
     choices.remember(ctx, pk, {n: args.get(n) for n in QUESTION_IDS},
                      bool(args.get("remember", False)))
-    requiredfields.commit(ctx)
     run = _Run(ctx, pk, plan, skip, test_extras, pre_extra, set_extra)
     result = run.run()
     out = {"feature": feature.name, "path": rel, "created": run.created, "updated": run.updated,

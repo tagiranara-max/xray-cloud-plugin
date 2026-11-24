@@ -163,8 +163,8 @@ matches the forum report: Background steps are not shown as run steps.
 ## Required Jira fields without the Jira token
 
 Probed live on 2026-11-24 with Xray credentials only (no Jira token in the probing process).
-Components was made required, temporarily, for the Test issue type of a throwaway project;
-the project had no components.
+Components was made required, temporarily, for the Test issue type of the live test project
+(the project the live suite writes to); that project had no components.
 
 | `createTest` with | Result |
 |---|---|
@@ -181,6 +181,20 @@ and runs the call once more, which asks for them like discovered fields (elicita
 simple fields, otherwise `needs_answer`); the answers are converted for known system fields
 (`components`, `fixVersions`, `priority`, ...) and remembered per field. A component name
 that does not exist yet may be created by Jira when the user can administer the project.
+
+- When such a refusal comes after the call already wrote other items (a container's later new
+  test, a feature import's Pre-Condition or Test Set), the call stops with `partial_failure`
+  naming the item not created and the parameter for its values (`testFields`,
+  `preconditionFields`, `testSetFields`). A container whose first new test is refused is
+  deleted again and the call asks, as above.
+- A "Create issue failed!" error naming no readable field returns `needs_answer` with Jira's
+  raw message and the field-ids guidance; nothing is retried automatically. An error naming
+  only system fields (for example the reporter) is passed through unchanged.
+- Answers are remembered only after the create they were used for succeeded.
+- Known gap: `import_execution_results` and `import_feature_file` go through Xray's REST
+  import, which is not wrapped; Jira's required-field error is passed through without asking.
+- No live test covers this path: it needs a field made required in Jira, a temporary change
+  by the project owner. It is covered by unit tests built from the recorded error text.
 
 ## Notes
 

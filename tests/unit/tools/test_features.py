@@ -295,6 +295,24 @@ def test_failure_after_some_creates_reports_created_keys(project, fail_on, creat
     assert "Xray rejected" in res["cause"]
 
 
+@pytest.mark.parametrize("op,param", [("CreatePrecondition", "preconditionFields"),
+                                      ("CreateTestSet", "testSetFields")])
+def test_later_item_type_refused_for_required_fields_is_accurate_partial_failure(
+        project, op, param):
+    ctx = ctx_for(project)
+    jira_error = "Create issue failed! - components: Components is required."
+
+    def refuse(_):
+        raise ToolError(jira_error)
+    ctx.xray.responses[op] = refuse
+    res, err = call(ctx, "create_tests_from_feature", projectKey="P", apply=True,
+                    featureFilePath="features/login flow.feature", **ans())
+    assert err and res["created"][:2] == ["P-101", "P-102"], res
+    assert "Nothing was created" not in res["cause"] and "`%s`" % param in res["cause"]
+    assert res["missingFields"] == [{"name": "Components", "id": "components"}]
+    assert res["jiraError"] == jira_error
+
+
 def test_permission_error_on_first_write_is_mapped(project):
     from xray_cloud.errors import ToolError
     ctx = ctx_for(project)
