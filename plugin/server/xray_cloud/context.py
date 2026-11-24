@@ -172,7 +172,7 @@ def require_project(ctx: ServerContext, project_key: str, *, write: bool) -> Pro
     if settings.path is None:
         if write:
             raise ToolError(
-                "No settings file found. Create .xray/settings.yml (see README.md#settings)",
+                "No settings file found. Create .xray/settings.yml (see README.md#settings) or run the xray-setup skill",
                 searched=[str(p) for p in settings_search_paths(ctx.env)])
         return ProjectSettings(project_key, fields={})
     project = settings.projects.get(project_key)

@@ -236,7 +236,7 @@ Some things cannot be done without Jira: labels, fields or requirement links on 
 - **Settings file:** your own file, found in this order: the path from the plugin prompt; `.xray/settings.yml` in the project Claude Code is working in; `~/.config/xray-cloud/settings.yml`. The plugin ships no settings. A settings file committed in your team's project makes the choices team-wide.
 - **Import choices and tag rules:** ask Claude to "change my import preferences" (`set_preferences`), or edit the settings file. A settings-file value always wins over a remembered one.
 - **`get_status`:** shows the plugin's state without secrets: region, whether credentials are configured, the settings file in use and the locations searched, projects, Jira, and each project's effective choices with where each came from (call, settings, remembered, default or unanswered).
-- **Guided setup:** a future `xray-setup` skill will walk through all of this.
+- **Guided setup:** the `xray-setup` skill walks through all of this: it finds or creates the settings file, discovers field IDs (Jira token, Atlassian MCP, or manual steps), offers import choices, the AI-created label and tag rules, shows the diff, asks before saving and ends with `get_status`.
 
 ## Limitations
 
