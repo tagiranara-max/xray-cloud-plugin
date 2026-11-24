@@ -53,12 +53,13 @@ def test_all_four_skills_present():
         assert (SKILLS_DIR / name / "SKILL.md").is_file(), name
 
 
-def test_no_settings_error_mentions_xray_setup(tmp_path):
+def test_write_without_settings_or_credentials_points_at_credentials_setup(tmp_path):
     from conftest import make_context
-    from xray_cloud.context import require_project
+    from xray_cloud.context import NO_CREDENTIALS_MESSAGE, require_project
     from xray_cloud.errors import ToolError
-    with pytest.raises(ToolError, match="xray-setup skill"):
+    with pytest.raises(ToolError) as ei:
         require_project(make_context(tmp_path=tmp_path), "P", write=True)
+    assert ei.value.message == NO_CREDENTIALS_MESSAGE
 
 
 def test_xray_setup_yaml_skeleton_loads(tmp_path):

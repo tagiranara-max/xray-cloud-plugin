@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 
 from .config import (PROJECT_KEY_RE, Credentials, JiraCredentials, ProjectSettings,
-                     SettingsStore, settings_search_paths)
+                     SettingsStore)
 from .errors import ToolError
 from .http import Transport, urllib_transport
 from .jira_client import JiraClient
@@ -44,6 +44,9 @@ class ServerContext:
         self._xray = xray
         # ClientChannel for server-to-client requests (elicitation); serve() attaches it.
         self.channel: Optional[Any] = None
+        # Arguments of the tool call being handled that handlers do not see (allowProject);
+        # set by Registry.call.
+        self.call_args: Dict[str, Any] = {}
 
     @property
     def site(self) -> str:
@@ -172,15 +175,19 @@ def require_write(ctx: ServerContext) -> None:
 
 
 def require_project(ctx: ServerContext, project_key: str, *, write: bool) -> ProjectSettings:
+    """Settings of a project. Writes go through approval (approval.ensure_write_allowed, with
+    the call's allowProject from ctx.call_args); a project the settings file does not list
+    gets empty settings. Reads need no settings file, but with one the project must be
+    listed."""
     # Format first: on the no-settings-file read path the key goes raw into JQL.
     if not isinstance(project_key, str) or not PROJECT_KEY_RE.fullmatch(project_key):
         raise ToolError("Invalid project key", projectKey=project_key)
     settings = ctx.settings_store.get()
+    if write:
+        from .approval import ensure_write_allowed
+        ensure_write_allowed(ctx, project_key, getattr(ctx, "call_args", None) or {})
+        return settings.projects.get(project_key) or ProjectSettings(project_key, fields={})
     if settings.path is None:
-        if write:
-            raise ToolError(
-                "No settings file found. Create .xray/settings.yml (see README.md#settings) or run the xray-setup skill",
-                searched=[str(p) for p in settings_search_paths(ctx.env)])
         return ProjectSettings(project_key, fields={})
     project = settings.projects.get(project_key)
     if project is None:

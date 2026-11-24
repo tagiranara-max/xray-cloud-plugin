@@ -5,8 +5,9 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Set
 
+from .approval import ALLOW_PROJECT_PARAM
 from .context import is_permission_error, permission_denied, require_write
-from .errors import ToolError
+from .errors import NeedsAnswer, ToolError
 
 
 @dataclass
@@ -114,6 +115,10 @@ class Registry:
         self.allowed: Optional[Set[str]] = None  # None = every tool (XRAY_TOOLS unset)
 
     def tool(self, name: str, description: str, params: dict, write: bool = False):
+        if write:  # every write tool takes the user's answer to the project approval question
+            params = dict(params, properties=dict(params.get("properties") or {},
+                                                  allowProject=ALLOW_PROJECT_PARAM))
+
         def decorator(fn):
             self._tools[name] = Tool(name, description, params, fn, write)
             return fn
@@ -140,6 +145,9 @@ class Registry:
             clean = coerce(args or {}, tool.params)
             if tool.write:
                 require_write(ctx)
+            # allowProject is read by require_project (via ctx.call_args), not by handlers.
+            if tool.write:
+                ctx.call_args = {"allowProject": clean.pop("allowProject", None)}
             try:
                 result = tool.handler(ctx, clean)
             except ToolError as e:
@@ -147,7 +155,13 @@ class Registry:
                     raise permission_denied(e, action="run %s" % name,
                                             project_key=clean.get("projectKey")) from None
                 raise
+            finally:
+                if tool.write:
+                    ctx.call_args = {}
             return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]}
+        except NeedsAnswer as e:  # a question, not an error: nothing was written
+            return {"content": [{"type": "text",
+                                 "text": json.dumps(e.to_dict(), ensure_ascii=False)}]}
         except ToolError as e:
             return _error_result(e.to_dict())
         except Exception as e:  # never leak a traceback to stdout
