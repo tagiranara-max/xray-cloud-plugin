@@ -175,7 +175,7 @@ When a result matches several tests (`ambiguous`) or none (`missing`), nothing i
 
 Existing tests are never changed without asking. Xray would change them in these cases (verified live), so the tool prevents it:
 
-- A Robot result renames the test it maps to (by key tag or by definition) to the Robot test's name, and adds its plain tags as labels. The tool lists the tests that would be renamed in `renames` (key, current summary, new name) and asks; pass `allowRenameTests: true` to go ahead. Plain tags are removed from Robot tests matched to existing tests (key-shaped tags stay).
+- A Robot result renames the test it maps to (by key tag or by definition) to the Robot test's name, and adds its plain tags as labels. For each Robot test matched to an existing test, the uploaded copy (never your file) carries that test's key tag and its current summary as the name, and drops plain tags (key-shaped tags stay), so the test stays as it is.
 - `testInfo` overwrites a test's summary and definition, even next to a `testKey`. Entries whose test is known are sent with `testKey` only.
 - JUnit `test_summary` and `tags` properties overwrite the summary and labels of a test matched by key or definition. The tool removes them (and `test_description`; for TestNG and NUnit the similar names, as a precaution) from matched cases and says so in `warnings`. Cases for new tests keep them.
 

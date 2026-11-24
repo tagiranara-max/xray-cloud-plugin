@@ -752,41 +752,40 @@ ROBOT = ('<robot><suite name="S"><test name="Login"><tags><tag>PROJ-5</tag>'
          '<tag>PROJ-77</tag><tag>smoke</tag></tags></test></suite></robot>')
 
 
-def test_robot_key_tag_that_renames_a_test_needs_an_answer(tmp_path):
+def robot_tests(ctx):
+    """(name, tags) of each test in the uploaded Robot copy."""
+    import xml.etree.ElementTree as ET
+    return [(t.get("name"), [g.text for g in t.iter("tag")])
+            for t in ET.fromstring(ctx.xray.rest_calls[0][2]["data"]).iter("test")]
+
+
+def test_robot_key_tag_match_uploads_the_test_summary_as_name(tmp_path):
+    """Xray renames a matched test to the Robot test's name; the uploaded copy carries the
+    test's current summary instead, so nothing changes (verified live)."""
     ctx = match_ctx(tmp_path)  # PROJ-77 is a requirement (not a test)
     ctx.xray.responses[KEYS] = rows_by([("PROJ-5", "Old name", None)])
     out, err = call(ctx, format="robot", content=ROBOT)
-    assert out["status"] == "needs_answer" and ctx.xray.rest_calls == [], out
-    assert out["renames"] == [{"key": "PROJ-5", "summary": "Old name", "newName": "Login"}]
-    assert [q["id"] for q in out["questions"]] == ["allowRenameTests"]
-    out, err = call(ctx, format="robot", content=ROBOT, allowRenameTests=True)
     assert not err and "status" not in out, out
-    import xml.etree.ElementTree as ET
-    tags = [t.text for t in ET.fromstring(ctx.xray.rest_calls[0][2]["data"]).iter("tag")]
-    assert tags == ["PROJ-5", "PROJ-77"]  # smoke would become a label: removed
+    assert robot_tests(ctx) == [("Old name", ["PROJ-5", "PROJ-77"])]
+    assert "allowRenameTests" not in json.dumps(out)
 
 
-def test_robot_same_name_needs_no_rename_answer(tmp_path):
+def test_robot_same_name_and_key_tag_only_sent_unchanged(tmp_path):
     ctx = match_ctx(tmp_path)
     ctx.xray.responses[KEYS] = rows_by([("PROJ-5", "Login", None)])
-    out, err = call(ctx, format="robot", content=ROBOT)
-    assert not err and "status" not in out, out
+    xml = '<robot><suite name="S"><test name="Login"><tags><tag>PROJ-5</tag></tags></test></suite></robot>'
+    out, err = call(ctx, format="robot", content=xml)
+    assert not err and ctx.xray.rest_calls[0][2]["data"] == xml.encode(), out
 
 
-def test_robot_test_keys_rename_check_and_only_test_tags_replaced(tmp_path):
-    import xml.etree.ElementTree as ET
+def test_robot_test_keys_injects_key_tag_and_summary_name(tmp_path):
     ctx = match_ctx(tmp_path)
     ctx.xray.responses[KEYS] = lambda v: rows_by(
         [r for r in [("PROJ-5", "Login", None), ("PROJ-6", "Other", None)]
          if r[0] in v["jql"]])
     out, err = call(ctx, format="robot", content=ROBOT, testKeys={"S.Login": "PROJ-6"})
-    assert out["status"] == "needs_answer" and out["renames"] == [
-        {"key": "PROJ-6", "summary": "Other", "newName": "Login"}], out
-    out, err = call(ctx, format="robot", content=ROBOT, testKeys={"S.Login": "PROJ-6"},
-                    allowRenameTests=True)
-    assert not err, out
-    tags = [t.text for t in ET.fromstring(ctx.xray.rest_calls[0][2]["data"]).iter("tag")]
-    assert tags == ["PROJ-77", "PROJ-6"]
+    assert not err and "status" not in out, out
+    assert robot_tests(ctx) == [("Other", ["PROJ-77", "PROJ-6"])]
 
 
 def test_matched_junit_case_loses_properties_that_would_update_the_test(tmp_path):
@@ -882,20 +881,14 @@ ROBOT_DEF = ('<robot><suite name="S"><test name="Login"><tags><tag>smoke</tag></
              '<test name="New"><tags><tag>smoke</tag></tags></test></suite></robot>')
 
 
-def test_robot_definition_match_that_renames_needs_an_answer(tmp_path):
-    """Xray renames a test matched by definition too, and turns plain tags into labels on it
-    (verified live); a test it creates may keep them."""
-    import xml.etree.ElementTree as ET
+def test_robot_definition_match_gets_key_tag_and_summary_name(tmp_path):
+    """A definition match is pinned with the test's key tag, so renaming the copy keeps the
+    match; plain tags are dropped from matched tests (they would become labels)."""
     ctx = match_ctx(tmp_path, definitions=[("PROJ-5", "Old name", "S.Login")])
     ctx.xray.responses[KEYS] = rows_by([("PROJ-5", "Old name", None)])
     out, err = call(ctx, format="robot", content=ROBOT_DEF, allowCreateTests=True)
-    assert out["status"] == "needs_answer" and out["renames"] == [
-        {"key": "PROJ-5", "summary": "Old name", "newName": "Login"}], out
-    out, err = call(ctx, format="robot", content=ROBOT_DEF, allowCreateTests=True,
-                    allowRenameTests=True)
-    assert not err, out
-    tests = ET.fromstring(ctx.xray.rest_calls[0][2]["data"]).iter("test")
-    assert [[t.text for t in x.iter("tag")] for x in tests] == [[], ["smoke"]]
+    assert not err and "status" not in out, out
+    assert robot_tests(ctx) == [("Old name", ["PROJ-5"]), ("New", ["smoke"])]
     assert any("label" in w for w in out["warnings"]), out
 
 

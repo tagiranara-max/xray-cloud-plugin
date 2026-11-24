@@ -130,12 +130,16 @@ Second probe, 2026-11-24 (does an import change the existing test?):
 | GraphQL `getTests(jql: "issue in (...)")` with a key that does not exist (`ISO-8601`, an unused number) | no error: the key is just not in the results |
 | Robot test matched by Generic definition only (no key tag), with tags `smoke`, `rtagdef` and a `<doc>` | the test was **renamed** to the Robot test's name and the **tags were added as labels**; the description was kept |
 | Robot test matched by a key tag (Manual test), with tags `smoke`, `rtagkey` and a `<doc>` | **renamed**, **tags added as labels**; description kept |
+| Robot test named exactly like the Generic test's summary, only its key tag, definition `Suite.<name>` equal to the test's | **nothing changed** (summary, definition, labels, type) |
+| Same, but the test's definition differs from the Robot `Suite.Test` path | **nothing changed**: the key tag wins and the definition is not overwritten |
 
 So the tool sends known tests by `testKey` only (no `testInfo`); removes JUnit `test_summary` /
 `test_description` / `tags` (and the similar TestNG/NUnit names, unverified, as a precaution)
-and Robot plain (not key-shaped) tags from cases matched to existing tests; asks
-(`allowRenameTests`) before any Robot result, matched by key tag, `testKeys` or definition,
-renames a test; and refuses `testKeys` values that are not existing Tests of the project.
+and Robot plain (not key-shaped) tags from cases matched to existing tests; and refuses
+`testKeys` values that are not existing Tests of the project. For every Robot result matched
+to an existing test (by key tag, `testKeys` or definition), the uploaded copy gets the test's
+key tag and the test's current summary as the Robot test name, so Xray renames nothing. The
+user's file is never modified.
 
 So, in the tool: Cucumber/Behave scenarios are matched by tag, the project's `testKeyTag`, or
 exact summary (the plugin's own rule; trimmed, case-sensitive), and the resolved key is sent as
