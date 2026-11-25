@@ -28,7 +28,7 @@ Then type `/plugins` in Codex (or open Plugins in the ChatGPT desktop app), pick
 export XRAY_CLIENT_ID="<client id>" XRAY_CLIENT_SECRET="<client secret>"
 ```
 
-That reaches Codex started from a terminal. The ChatGPT desktop app does not read your shell profile: on macOS run `launchctl setenv XRAY_CLIENT_ID "<client id>"` and the same for `XRAY_CLIENT_SECRET`, then restart the app (this lasts until you log out). Give the agent absolute file paths in Codex; see [docs/configuration.md](docs/configuration.md#codex-and-cursor-plugin-notes).
+That reaches Codex started from a terminal. The ChatGPT desktop app does not read your shell profile. On macOS only, and not yet verified, you can run `launchctl setenv XRAY_CLIENT_ID "<client id>"` and the same for `XRAY_CLIENT_SECRET`, then restart the app (this lasts until you log out). Give the agent absolute file paths in Codex; see [docs/configuration.md](docs/configuration.md#codex-and-cursor-plugin-notes).
 
 ### Cursor
 
@@ -62,7 +62,7 @@ There is nothing else to set up. Ask the agent to find or create tests in a proj
 - **Required Jira fields:** when a create needs fields your Jira requires, you are asked for them once and the answers are remembered.
 - Clients that support MCP elicitation show a form; otherwise the agent relays the question. It never answers for you.
 
-Teams can pin projects, field IDs and import choices in an optional `.xray/settings.yml`; see [docs/configuration.md](docs/configuration.md#settings).
+Optionally, `~/.config/xray-cloud/settings.yml`, or any file named in `XRAY_SETTINGS_FILE` (a team can commit one in its repository), pins projects, field IDs and import choices; see [docs/configuration.md](docs/configuration.md#settings).
 
 ## What it can do
 

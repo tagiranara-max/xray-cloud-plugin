@@ -41,10 +41,10 @@ args = ["/path/to/xray-cloud-plugin/plugin/server/main.py"]
 env_vars = ["XRAY_CLIENT_ID", "XRAY_CLIENT_SECRET", "XRAY_REGION", "JIRA_SITE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"]
 
 [mcp_servers.xray.env]
-XRAY_SETTINGS_FILE = "/path/to/your-project/.xray/settings.yml"
+XRAY_SETTINGS_FILE = "/path/to/xray-settings.yml"
 ```
 
-Codex may not start the server in your project directory, so set `cwd = "/path/to/your-project"` in the server table or `XRAY_PROJECT_DIR` in `[mcp_servers.xray.env]`; that is where `.xray/settings.yml` is looked up.
+Codex may not start the server in your project directory, so relative file paths may not resolve: give the agent absolute paths, or set `cwd = "/path/to/your-project"` in the server table (or `XRAY_PROJECT_DIR` in `[mcp_servers.xray.env]`).
 
 ### Cursor (manual)
 
@@ -123,7 +123,7 @@ Run `python3 /path/to/xray-cloud-plugin/plugin/server/main.py` with these enviro
 | `XRAY_REGION` | `global` (default), `eu` or `au`. | Xray region |
 | `XRAY_SETTINGS_FILE` | Explicit path to the settings file. | Settings file |
 | `XRAY_READ_ONLY` | `true` makes every write tool refuse. | Read-only mode |
-| `XRAY_PROJECT_DIR` | Project directory for `.xray/settings.yml` and relative paths. Falls back to `CLAUDE_PROJECT_DIR`, then the current directory. | none (Claude Code sets `CLAUDE_PROJECT_DIR`) |
+| `XRAY_PROJECT_DIR` | Project directory that relative file paths resolve against. Falls back to `CLAUDE_PROJECT_DIR`, then the current directory. | none (Claude Code sets `CLAUDE_PROJECT_DIR`) |
 | `XRAY_DATA_DIR` | Where remembered preferences live. Falls back to `CLAUDE_PLUGIN_DATA`, then `~/.config/xray-cloud`. | none (Claude Code sets `CLAUDE_PLUGIN_DATA`) |
 | `XRAY_TOOLS` | Comma-separated tool groups to expose; empty or unset means all. | none |
 | `JIRA_SITE_URL` | Jira site URL, enables Jira tools. | Jira site URL |
@@ -138,7 +138,7 @@ Run `python3 /path/to/xray-cloud-plugin/plugin/server/main.py` with these enviro
 
 ## Codex and Cursor plugin notes
 
-- **Codex** starts the server with the plugin folder as its working directory and passes on only the variables the plugin lists (`env_vars` in `plugin/codex-mcp.json`: the variables in the table above). Export the credentials in your shell profile (for example `~/.zshrc`); the ChatGPT desktop app needs them too (see the README). Because the working directory is the plugin folder, the server does not know your project: it refuses relative file paths and reads no project `.xray/settings.yml`, and `get_status` reports `projectDir.known: false`. Give the agent absolute paths, or set the project per launch, not in your profile: `XRAY_PROJECT_DIR="$PWD" codex` (or point `XRAY_SETTINGS_FILE` at a settings file).
+- **Codex** starts the server with the plugin folder as its working directory and passes on only the variables the plugin lists (`env_vars` in `plugin/codex-mcp.json`: the variables in the table above). Export the credentials in your shell profile (for example `~/.zshrc`); the ChatGPT desktop app needs them too (see the README). Because the working directory is the plugin folder, the server does not know your project: it refuses relative file paths, and `get_status` reports `projectDir.known: false`. Give the agent absolute paths, or set the project per launch, not in your profile: `XRAY_PROJECT_DIR="$PWD" codex`.
 - **Cursor** substitutes the plugin's variables (`${XRAY_CLIENT_ID}` and the others in `plugin/mcp.json`) with the values set under Plugins, Configure. An optional variable left empty is ignored by the server. The plugin sets `XRAY_PROJECT_DIR` to `${workspaceFolder}`; if Cursor leaves that unexpanded, the server ignores it.
 
 ## Settings
@@ -170,9 +170,10 @@ Approvals and remembered field values live in `preferences.json` inside `XRAY_DA
 
 The settings file lists projects and their custom fields. It is YAML (JSON is also accepted). Projects are optional: projects listed here write without asking, and a file with no projects behaves like no file. The first file found wins; files are not merged:
 
-1. the file chosen in the plugin's "Settings file" prompt (`XRAY_SETTINGS_FILE`); if that file does not exist, tools fail with an error instead of falling back to the other locations;
-2. `.xray/settings.yml`, `.xray/settings.yaml` or `.xray/settings.json` in Claude Code's project directory, or the current directory when that is not set (per repository, so different repositories can target different projects);
-3. `settings.yml`, `settings.yaml` or `settings.json` in `~/.config/xray-cloud/`.
+1. the file chosen in the plugin's "Settings file" prompt (`XRAY_SETTINGS_FILE`); if that file does not exist, tools fail with an error instead of falling back to the other location;
+2. `settings.yml`, `settings.yaml` or `settings.json` in `~/.config/xray-cloud/`.
+
+The project folder is not searched, so the settings do not depend on where your client starts the server. **Teams:** commit the file in your repository (for example `xray-settings.yml`) and have everyone point `XRAY_SETTINGS_FILE` at it (Claude Code's "Settings file" prompt, Cursor's Configure, Gemini's extension setting, or the environment variable).
 
 Without a settings file the server works: reads are open, and writes ask as described above. The settings are re-read whenever the file changes. A complete example is in [`.xray/settings.example.yml`](../.xray/settings.example.yml):
 
@@ -228,7 +229,7 @@ Tools act with the permissions of the user behind the Xray API key (and, for Jir
 ## Changing your setup
 
 - **Plugin prompts:** in Claude Code `/plugin`, then configure the plugin (region, credentials, Jira, read-only mode and the settings file path); in Cursor, Plugins, Configure; in Codex, change the environment variables and restart Codex.
-- **Settings file:** your own file, found in this order: the path from the plugin prompt; `.xray/settings.yml` in the project Claude Code is working in; `~/.config/xray-cloud/settings.yml`. The plugin ships no settings. A settings file committed in your team's project makes the choices team-wide.
+- **Settings file:** your own file, found in this order: `XRAY_SETTINGS_FILE` (the plugin prompt); `~/.config/xray-cloud/settings.yml`. The plugin ships no settings. To share choices team-wide, commit a file in the team's repository and point `XRAY_SETTINGS_FILE` at it.
 - **Import choices and tag rules:** ask Claude to "change my import preferences" (`set_preferences`), or edit the settings file. A settings-file value always wins over a remembered one.
 - **`get_status`:** shows the plugin's state without secrets: region, whether credentials are configured, the settings file in use and the locations searched, projects, Jira, and each project's effective choices with where each came from (call, settings, remembered, default or unanswered).
 - **Guided setup:** the `xray-setup` skill walks through all of this: it checks credentials, explains the first-use questions, and optionally builds a team settings file: discovers field IDs (Jira token, Atlassian MCP, or manual steps), offers import choices, the AI-created label and tag rules, shows the diff, asks before saving and ends with `get_status`.

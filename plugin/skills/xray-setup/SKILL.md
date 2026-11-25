@@ -1,6 +1,6 @@
 ---
 name: xray-setup
-description: Check the Xray plugin setup and, if the user wants, create or update the optional team settings file (.xray/settings.yml). Use when the user asks to set up or configure the Xray plugin, check credentials, see what the plugin remembers, add field IDs or default field values, set feature-import choices, the AI-created label or Gherkin tag rules, or share project choices with a team.
+description: Check the Xray plugin setup and, if the user wants, create or update the optional settings file (~/.config/xray-cloud/settings.yml, or the file XRAY_SETTINGS_FILE names). Use when the user asks to set up or configure the Xray plugin, check credentials, see what the plugin remembers, add field IDs or default field values, set feature-import choices, the AI-created label or Gherkin tag rules, or share project choices with a team.
 ---
 
 # Xray setup
@@ -25,10 +25,9 @@ Then offer the settings file, and stop if the user declines it.
 `get_status` shows the settings file in use and the locations searched. The settings file is the user's own file, found in this order:
 
 1. the path from the plugin prompt in Claude Code, or the `XRAY_SETTINGS_FILE` environment variable in any other client;
-2. `.xray/settings.yml` in the project folder, when the server knows it (`get_status` shows `projectDir`; Codex starts the server in its plugin folder, so there set `XRAY_PROJECT_DIR` or `XRAY_SETTINGS_FILE`);
-3. `~/.config/xray-cloud/settings.yml`.
+2. `~/.config/xray-cloud/settings.yml`.
 
-The plugin ships no settings. A file committed in the team's own project makes the choices team-wide. If none exists, propose `.xray/settings.yml` in the current project (team-wide) or the home-folder path (personal). Never put credentials in it. A minimal skeleton to start from:
+The project folder is never searched. The plugin ships no settings. If none exists, propose `~/.config/xray-cloud/settings.yml` (personal, found with no further step), or, for a team, a file committed in the team's repository whose path every user then sets in `XRAY_SETTINGS_FILE` (Claude Code's "Settings file" prompt, Cursor's Configure, Gemini's extension setting, or the environment variable). Say that this extra step is needed; the server does not find a repository file on its own. Never put credentials in it. A minimal skeleton to start from:
 
 ```yaml
 projects:                          # optional: projects here write without asking

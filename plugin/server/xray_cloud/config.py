@@ -155,15 +155,14 @@ def project_dir(env: Mapping[str, str]) -> Optional[str]:
 
 
 def settings_search_paths(env: Mapping[str, str]) -> List[Path]:
-    """Every location a settings file is looked for, in priority order."""
+    """Every location a settings file is looked for, in priority order: XRAY_SETTINGS_FILE,
+    then ~/.config/xray-cloud/settings.{yml,yaml,json}. The project folder is never searched,
+    so settings do not depend on where the client starts the server; a team that commits a
+    file in its repository points XRAY_SETTINGS_FILE at it."""
     candidates: List[Path] = []
     explicit = _get(env, "XRAY_SETTINGS_FILE")
     if explicit:
         candidates.append(Path(os.path.expanduser(explicit)))
-    root = project_dir(env)
-    if root is not None:  # unknown project folder: no per-project settings lookup
-        for ext in ("yml", "yaml", "json"):
-            candidates.append(Path(root) / ".xray" / ("settings." + ext))
     home = Path(os.path.expanduser("~")) / ".config" / "xray-cloud"
     for ext in ("yml", "yaml", "json"):
         candidates.append(home / ("settings." + ext))
