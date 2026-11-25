@@ -111,6 +111,11 @@ def add_tag_rules(ctx: ServerContext, project_key: str, rules: list) -> None:
                            {"tagRules": list(current) + list(rules)}, ctx.site)
 
 
+def set_tag_rules(ctx: ServerContext, project_key: str, rules: list) -> None:
+    """Replace the project's remembered tagRules (raw rules)."""
+    ctx.preferences.update(region_of(ctx), project_key, {"tagRules": list(rules)}, ctx.site)
+
+
 def _remembered_problem(name: str, value: Any) -> Optional[str]:
     """The settings-file checks, applied to a (possibly hand-edited) remembered value. The
     aiLabel follows the call parameter's rule: "" (don't mark) or a label without whitespace.

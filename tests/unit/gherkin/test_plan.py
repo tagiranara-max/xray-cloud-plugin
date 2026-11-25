@@ -171,7 +171,7 @@ def test_key_tags_are_looked_up_in_xray_and_never_refuse_the_file():
     assert by["Explicit elsewhere"].kind == "skip_test"
     assert "Q-6 is a test of project Q" in by["Explicit elsewhere"].reason
     assert by["Explicit missing"].kind == "skip_test"
-    assert "Xray knows no test P-404" in by["Explicit missing"].reason
+    assert "Xray doesn't know P-404 as a test" in by["Explicit missing"].reason
     # @REQ_ of a key Xray cannot place: linked as the tag asks, but unverified
     assert by["Missing requirement"].requirement_keys == ["R-1", "R-404"]
     assert by["Missing requirement"].unverified_links == ["R-404"]

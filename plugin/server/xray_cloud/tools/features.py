@@ -1,28 +1,30 @@
 """create_tests_from_feature: import a .feature file with Xray-native semantics (spec 6.4a)."""
 from __future__ import annotations
 
+import copy
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .. import choices, existingtests, keytags, tagquestions
+from .. import choices, existingtests, keytags, tagquestions, tagvalues
 from ..config import ProjectSettings, project_dir
 from ..context import (ServerContext, dedupe, is_permission_error, partial_failure,
                        permission_denied, require_project, require_write)
 from ..errors import NeedsAnswer, ToolError
 from .. import requiredfields
 from ..gherkin.parse import ParsedFeature, parse_feature
-from ..gherkin.tagrules import FIELD_ID, TagRule, kv_key, parse_rules
+from ..gherkin.tagrules import TagRule, is_field_id, kv_key, parse_rules
 from ..jira_client import LINK_TYPE
 from ..notdone import not_done
 from ..localfiles import PATH_NOTE, read_local_file
 from ..gherkin.plan import (CUCUMBER, UNNAMED_PREFIX, ImportAction, ImportOptions, TagAnalysis,
-                            analyze_tags, existing_set_names, existing_test_changes,
-                            feature_set_name, lookup_key_tags, plan_import)
+                            analyze_tags, as_new_test, existing_set_names,
+                            existing_test_changes, feature_set_name, lookup_key_tags,
+                            plan_import, scenario_summaries)
 from ..gherkin.tagsummary import summarize_tags, tag_values
 from ..registry import REGISTRY
 from .containers import _CREATE, _add
 from .test_sets import SET
-from .tests import _CREATE_TEST, _OBJ, _UPDATE_GHERKIN, _schema, check_ai_label
+from .tests import _CREATE_TEST, _OBJ, _UPDATE_GHERKIN, _schema, check_ai_label, same_summary_key
 
 _CREATE_PRECONDITION = """
 mutation CreatePrecondition($jira: JSON!, $preconditionType: UpdatePreconditionTypeInput,
@@ -342,24 +344,43 @@ class _Run:
         return self.result
 
 
-def _skipped(plan: List[ImportAction], create_dups: List[int]) -> List[dict]:
+def _skipped(plan: List[ImportAction], create_dups: set) -> List[dict]:
     return [{"index": a.index, "summary": a.summary, "line": a.source_line,
              "candidates": a.duplicates}
             for a in plan if a.kind == "create_test" and a.duplicates
             and a.index not in create_dups]
 
 
+def _alias_create_duplicates(changes: List[dict], answers: Dict[str, Any],
+                             create_dups: List[int]) -> None:
+    """createDuplicates indexes answer "create" for tests matched by name."""
+    for c in changes:
+        if existingtests.by_name(c) and c["scenarioIndex"] in create_dups:
+            answers["keys"].setdefault(c["key"], "create")
+
+
 def _apply_existing_answers(plan: List[ImportAction], changes: List[dict],
-                            answers: Dict[str, Any]) -> None:
+                            answers: Dict[str, Any], create_dups: List[int]) -> set:
     """Existing tests: one with nothing to change is only mapped (keep_test); otherwise the
-    answer decides: update (as planned), keep (mapped, nothing written to it) or skip (the
-    scenario is left out). Unanswered (preview): left as planned."""
+    answer decides: update (as planned), keep (mapped, nothing written to it), create (a
+    test matched by name: a new test after all) or skip (the scenario is left out).
+    createDuplicates indexes answer "create" for tests matched by name. Unanswered
+    (preview): left as planned. -> indexes created anew."""
     changed = {c["key"] for c in changes}
+    created = set()
     for a in plan:
         if a.kind != "update_test":
             continue
-        ans = existingtests.answer_for(answers, a.key) if a.key in changed else "unchanged"
-        if ans in ("keep", "unchanged"):
+        if a.matched_by_name and a.index in create_dups:
+            ans = "create"
+        elif a.key in changed:
+            ans = existingtests.answer_for(answers, a.key, a.matched_by_name)
+        else:
+            ans = "unchanged"
+        if ans == "create" and a.matched_by_name:
+            as_new_test(a)
+            created.add(a.index)
+        elif ans in ("keep", "unchanged"):
             a.kind = "keep_test"
             if ans == "keep":
                 a.not_done = []
@@ -367,25 +388,29 @@ def _apply_existing_answers(plan: List[ImportAction], changes: List[dict],
             a.kind, a.not_done = "skip_test", []
             a.reason = "existing test %s left as it is and the scenario left out " \
                        "(existingTests: skip)" % a.key
+    return created
 
 
 QUESTION_IDS = ("createTestSet", "backgrounds", "tagsAsLabels", "aiLabel", "aiLabelScope")
 _BOOL = {"type": "boolean"}
 
 
-def _rules(ctx: ServerContext, pk: str, project: ProjectSettings) -> Tuple[List[TagRule], Any]:
+def _rules(ctx: ServerContext, pk: str, project: ProjectSettings
+           ) -> Tuple[List[TagRule], Any, List[dict], int]:
     """Resolved tag rules for the project: settings rules (parsed already) first, then the
     remembered ones (raw JSON, parsed here; answers to the import's tag questions land there).
     A settings rule naming a field this project lacks is refused (top-level rules are checked
-    against the union of all projects at load)."""
+    against the union of all projects at load). -> (rules, source, remembered raw rules,
+    number of settings rules before them)."""
     value, source = choices.resolve(ctx, pk, "tagRules", None)
     names = set((project.fields.get("test") or {}))
     if value is None:
-        return [], None
+        return [], None, [], 0
     if source != "settings":
-        return parse_rules(value, names, "remembered tagRules of %s" % pk), source
+        return (parse_rules(value, names, "remembered tagRules of %s" % pk), source,
+                list(value), 0)
     for i, r in enumerate(value):
-        unknown = sorted(n for n in r.fields if n not in names and not FIELD_ID.fullmatch(n))
+        unknown = sorted(n for n in r.fields if n not in names and not is_field_id(n))
         if unknown:
             raise ToolError("featureImport.tagRules[%d] sets field(s) %s, which project %s "
                             "does not define in fields.test; nothing was imported"
@@ -395,7 +420,77 @@ def _rules(ctx: ServerContext, pk: str, project: ProjectSettings) -> Tuple[List[
     if remembered:
         rules += parse_rules(remembered, names, "remembered tagRules of %s" % pk)
         source = "settings+remembered"
-    return rules, source
+    return rules, source, list(remembered or []), len(value)
+
+
+def _call_overrides(ctx: ServerContext, project: ProjectSettings,
+                    args: dict) -> Callable[[str], bool]:
+    """Whether the call's fields / rawFields set a rule's field (by name or Jira id): the
+    call's value then wins over the tag rule's."""
+    specs = project.fields.get("test") or {}
+    keys = set(args.get("fields") or {}) | set(args.get("rawFields") or {})
+    ids = set(keys)
+    meta = requiredfields._meta(ctx, project.key, "test") if keys else None
+    for k in keys:
+        if k in specs and specs[k].id:
+            ids.add(specs[k].id)
+        f = requiredfields._lookup(meta, k)
+        if f is not None:
+            ids.add(f["id"])
+
+    def overridden(name: str) -> bool:
+        return name in ids or (name in specs and specs[name].id in ids)
+    return overridden
+
+
+MAX_SUMMARY = 255
+
+
+def _parse_summaries(raw: Any, feature: ParsedFeature) -> Dict[int, str]:
+    """The summaries parameter -> {scenario index: summary}. Keys are scenario indexes or
+    names (a name or the summary the import gives it; refused when several scenarios have
+    it); values non-empty single-line text up to 255 characters, distinct from the other
+    tests of the file."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ToolError("summaries must be an object {scenario index or name: new summary}")
+    names = scenario_summaries(feature)
+    out: Dict[int, str] = {}
+    for k, v in raw.items():
+        key = str(k).strip()
+        where = "summaries[%r]" % k
+        if key.isdigit():
+            idx = int(key)
+            if idx >= len(feature.scenarios):
+                raise ToolError("%s: index out of range (the feature has %d scenarios)"
+                                % (where, len(feature.scenarios)))
+        else:
+            hits = [i for i, s in enumerate(feature.scenarios)
+                    if same_summary_key(s.name) == same_summary_key(key)
+                    or same_summary_key(names[i]) == same_summary_key(key)]
+            if not hits:
+                raise ToolError("%s: no scenario has this name; use a scenario index or name"
+                                % where, scenarios=names)
+            if len(hits) > 1:
+                raise ToolError("%s: %d scenarios have this name (indexes %s); use the index"
+                                % (where, len(hits), ", ".join(map(str, hits))))
+            idx = hits[0]
+        if not isinstance(v, str) or not v.strip() or "\n" in v or "\r" in v:
+            raise ToolError("%s must be a non-empty single-line summary" % where)
+        if len(v.strip()) > MAX_SUMMARY:
+            raise ToolError("%s is longer than %d characters" % (where, MAX_SUMMARY))
+        if idx in out:
+            raise ToolError("%s: scenario %d is renamed twice" % (where, idx))
+        out[idx] = v.strip()
+    final = [out.get(i, n) for i, n in enumerate(names)]
+    for i in out:
+        clash = [j for j, n in enumerate(final)
+                 if j != i and same_summary_key(n) == same_summary_key(final[i])]
+        if clash:
+            raise ToolError("summaries: %r is also the summary of scenario %d in this file"
+                            % (final[i], clash[0]))
+    return out
 
 
 def _applicable(feature: ParsedFeature, analysis: TagAnalysis, values: Dict[str, Any]) -> Dict[str, bool]:
@@ -466,11 +561,14 @@ def _preview_sets(plan: List[ImportAction]) -> Dict[str, List[dict]]:
     return out
 
 
-def _per_test(plan: List[ImportAction]) -> List[dict]:
+def _per_test(plan: List[ImportAction], feature: ParsedFeature) -> List[dict]:
     out = []
     for a in plan:
         if a.kind in ("create_test", "update_test", "keep_test"):
             row = {"scenarioIndex": a.index, "scenario": a.summary}
+            name = feature.scenarios[a.index].name.strip()
+            if name and name != a.summary:
+                row["scenarioName"] = name  # renamed (summaries, or a name repeated in the file)
             if a.key:
                 row["key"] = a.key
             row.update(labels=list(a.labels), testSets=list(a.test_sets), fields=dict(a.fields))
@@ -485,33 +583,28 @@ def _own_description(items) -> List[str]:
         else []
 
 
-def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: TagAnalysis,
-                 args: dict) -> Dict[int, dict]:
-    """Jira fields per new test: the call's fields plus the rule fields of that test. A rule
-    value that differs from the call's value for the same field refuses the file. Missing
-    required fields are collected only for scenarios that create a test, with their rule
-    fields."""
+def _test_extras(c: requiredfields.Collector, ctx: ServerContext, project: ProjectSettings,
+                 feature: ParsedFeature, analysis: TagAnalysis, args: dict,
+                 overridden: Callable[[str], bool]) -> Dict[int, dict]:
+    """Jira fields per new test: the call's fields plus the rule fields of that test. The
+    call's value for a field wins over a rule's. Missing required fields are collected only
+    for scenarios that create a test, with their rule fields."""
     call_fields = dict(args.get("fields") or {})
-    base_users = [i for i, st in enumerate(analysis.scenarios)
-                  if st.test_key is None and not st.blocked and not st.outcome.fields]
+    rule_by: Dict[int, dict] = {}
+    for i, st in enumerate(analysis.scenarios):
+        if st.test_key is None and not st.blocked:
+            fields, _ = tagvalues.rule_fields(ctx, project, st.outcome)
+            rule_by[i] = {n: v for n, v in fields.items() if not overridden(n)}
+    base_users = [i for i, f in rule_by.items() if not f]
     # description is not asked for tests whose scenario has its own
     base = c("test", call_fields, args.get("rawFields"), required=bool(base_users),
              provided=_own_description(feature.scenarios[i] for i in base_users))
     out: Dict[int, dict] = {}
-    for i, st in enumerate(analysis.scenarios):
-        rule_fields = st.outcome.fields
-        if st.test_key is not None or st.blocked or not rule_fields:
+    for i in range(len(analysis.scenarios)):
+        rule_fields = rule_by.get(i)
+        if not rule_fields:
             out[i] = base
             continue
-        clash = {n: v for n, v in rule_fields.items() if n in call_fields and call_fields[n] != v}
-        if clash:
-            name = next(iter(clash))
-            raise ToolError("Field %s is %r in the call's fields but %r from %s on scenario %r "
-                            "(line %d); nothing was imported"
-                            % (name, call_fields[name], clash[name],
-                               st.outcome.sources.get(name, "a tag rule"),
-                               feature.scenarios[i].name, feature.scenarios[i].line),
-                            field=name)
         out[i] = c("test", dict(call_fields, **rule_fields), args.get("rawFields"),
                    record=False,  # a rule value is never remembered
                    provided=_own_description([feature.scenarios[i]]))
@@ -522,16 +615,17 @@ def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: 
     "create_tests_from_feature",
     "Import a .feature file: Scenario -> Cucumber test, Background -> Pre-Condition (or "
     "inline), Feature -> Test Set. Tags go through the project's tag rules into labels, Test "
-    "Sets and fields. Issue-key tags are looked up in Xray: @<KEY> of a test in this project "
-    "maps the scenario to it, of a requirement links it, others are asked (keyTag.<KEY>); "
-    "@REQ_<KEY> links. Unanswered choices (createTestSet, backgrounds, tagsAsLabels, aiLabel, "
-    "aiLabelScope, tagRule.<key> in tagRuleAnswers, keyTag.<KEY> in keyTagAnswers, "
-    "existingTests for tests it would change) are in a non-empty `questions`: ask the user "
-    "once, call again with the answers. apply=false (default) previews; apply=true executes, "
-    "skipping scenarios whose summary an existing test has unless indexed in "
-    "createDuplicates (`similar` ones are only listed). Anything not doable is in notDone "
-    "{item, what, reason, fix}: if Jira access is missing and Atlassian MCP tools are "
-    "available, offer to complete them with those. fields/rawFields apply to created tests.",
+    "Sets and fields. @<KEY> of a test in this project (or the same summary as one "
+    "existing test) maps the scenario to it; of a requirement links it; @REQ_<KEY> links. "
+    "Open questions (createTestSet, "
+    "backgrounds, tagsAsLabels, aiLabel, aiLabelScope, tagRule.<key> in tagRuleAnswers, "
+    "keyTag.<KEY> in keyTagAnswers, tagValue.<field>.<value> in tagValueAnswers, "
+    "existingTests) are in a non-empty `questions`: relay them to the user once, never "
+    "answer them yourself, call again with the answers. apply=false (default) previews; "
+    "apply=true executes. Names repeated in the file become \"<Rule>: <Scenario>\". "
+    "Not doable: notDone {item, what, reason, fix}; if "
+    "Jira access is missing and Atlassian MCP tools are available, offer to complete them "
+    "with those. fields/rawFields apply to created tests and beat tag-rule values.",
     _schema({"featureFilePath": {"type": "string", "description":
                                  "Local .feature file. " + PATH_NOTE},
              "apply": {"type": "boolean"},
@@ -547,9 +641,17 @@ def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: 
                           "remembered yet. Default false: a differing answer applies to this "
                           "call only; true makes it replace the remembered one."},
              "tagRuleAnswers": tagquestions.PARAM_SCHEMA,
+             tagvalues.PARAM: tagvalues.PARAM_SCHEMA,
              **existingtests.PARAM_SCHEMAS,
              keytags.PARAM: keytags.PARAM_SCHEMA,
-             "createDuplicates": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+             "createDuplicates": {"type": "array", "items": {"type": "integer", "minimum": 0},
+                                  "description": "Scenario indexes to create as new tests "
+                                  "although an existing test has their summary (= existingTests "
+                                  "create for those)."},
+             "summaries": {"type": "object", "additionalProperties": {"type": "string"},
+                           "description": "Only when the user asks: {scenario index or name: "
+                           "summary} for tests the import creates; ignored (with a warning) "
+                           "for scenarios that map to existing tests."},
              "fields": _OBJ, "rawFields": _OBJ,
              "preconditionFields": {"type": "object", "description":
                                     "Field values applied to created Pre-Conditions."},
@@ -569,12 +671,18 @@ def create_tests_from_feature(ctx, args):
     feature = parse_feature(text, rel)
     if not feature.scenarios:
         raise ToolError("No scenarios found in %s" % rel, path=rel)
+    summaries = _parse_summaries(args.get("summaries"), feature)
+    create_dups = list(args.get("createDuplicates") or [])
+    bad = [i for i in create_dups if i >= len(feature.scenarios)]
+    if bad:
+        raise ToolError("createDuplicates index out of range: %s (the feature has %d scenarios)"
+                        % (bad, len(feature.scenarios)))
 
     # -- choices: call -> settings -> remembered -> unanswered (no calls so far)
     resolved = {n: choices.resolve(ctx, pk, n, args.get(n)) for n in QUESTION_IDS}
     resolved["unmatchedTags"] = choices.resolve(ctx, pk, "unmatchedTags", None)
     values = {n: v for n, (v, _) in resolved.items()}
-    rules, rules_source = _rules(ctx, pk, project)
+    rules, rules_source, remembered_raw, offset = _rules(ctx, pk, project)
     opts = ImportOptions(
         # spec 8: never a Feature Test Set without a Feature name (whatever settings or
         # remembered answers say); unanswered with a name: preview as "yes"
@@ -583,17 +691,25 @@ def create_tests_from_feature(ctx, args):
         tags_as_labels=values["tagsAsLabels"] is not False,
         unmatched_tags=values["unmatchedTags"] or "keep",
         rules=rules, ai_label=values["aiLabel"] or "",
-        ai_scope=values["aiLabelScope"] or "tests", project=project)
+        ai_scope=values["aiLabelScope"] or "tests", project=project, summaries=summaries)
     # key:value tags no rule covers: answered rules are added (remembered on apply)
     tag_answers = tagquestions.parse_answers(args.get(tagquestions.PARAM))
     exist_answers = existingtests.parse(args)
     opts.key_answers = keytags.parse(args.get(keytags.PARAM))
+    opts.value_answers = tagvalues.parse(args.get(tagvalues.PARAM))
     names = set(project.fields.get("test") or {})
+    has_jira = ctx.jira is not None
+    overridden = _call_overrides(ctx, project, args)
     new_rules: List[dict] = []
 
     def analyze():
         opts.rules = rules + parse_rules(new_rules, names, tagquestions.PARAM)
         return analyze_tags(feature, pk, opts)
+
+    def open_values():
+        return tagvalues.unanswered(tagvalues.collect(ctx, project, feature, analysis,
+                                                      has_jira, overridden),
+                                    opts.value_answers)
 
     # what issue-key tags name: read before anything else is decided (nothing is written)
     opts.key_info = lookup_key_tags(ctx, feature)
@@ -603,18 +719,25 @@ def create_tests_from_feature(ctx, args):
         analysis = analyze()
     applicable = _applicable(feature, analysis, values)
     unanswered = [n for n in QUESTION_IDS if applicable[n] and values[n] is None]
-    def make_plan():
-        """(plan, changes to existing tests). Planned this early (it only reads) only when a
-        scenario maps to an existing test, so that question joins the tag ones; otherwise
-        after the field checks, which refuse before any call."""
-        if not any(st.test_key for st in analysis.scenarios):
+    value_qs = open_values()
+
+    def make_plan(read: bool):
+        """(plan, changes to existing tests). Planned before the questions are asked (it only
+        reads), so the existing-tests question (key tags and name matches) joins the others;
+        while choices are open on apply only when a key tag names a test (that refusal makes
+        no Xray call otherwise)."""
+        if not read:
             return None, []
         if not applicable["aiLabel"]:
             opts.ai_label = ""
         p = plan_import(ctx, pk, feature, rel, opts, analysis)
-        return p, existing_test_changes(p, analysis, ctx.jira is not None)
+        c = existing_test_changes(p, analysis, has_jira)
+        existingtests.check_overrides(c, exist_answers)
+        _alias_create_duplicates(c, exist_answers, create_dups)
+        return p, c
 
-    plan, changes = make_plan()
+    plan, changes = make_plan(not (apply and unanswered)
+                              or any(st.test_key for st in analysis.scenarios))
     ask_changes = existingtests.unanswered(changes, exist_answers)
     if apply and unanswered:  # every open question in one round; nothing was written
         contexts = _contexts(feature, analysis, rel, None, set())
@@ -622,36 +745,43 @@ def create_tests_from_feature(ctx, args):
                         "answers; nothing was written)"
                         % ", ".join(unanswered + ["tagRule.%s" % k for k in analysis.uncovered]
                                     + ["keyTag.%s" % k for k in analysis.key_questions]
+                                    + [tagvalues.qid(*k) for k in value_qs]
                                     + ([existingtests.QUESTION_ID] if ask_changes else [])),
                         questions=[choices.question(n, contexts[n]) for n in unanswered]
                         + tagquestions.questions(analysis.uncovered, project)
                         + keytags.questions(analysis.key_questions)
+                        + tagvalues.questions(value_qs)
                         + ([existingtests.question(ask_changes)] if ask_changes else []))
-    if apply and (analysis.uncovered or analysis.key_questions or ask_changes):
-        # one elicitation form, else needs_answer
-        asked, ex, key_ans = tagquestions.ask(ctx, analysis.uncovered, project, ask_changes,
-                                              analysis.key_questions)
+    # apply: one elicitation form (else needs_answer) for every open question; answers may
+    # open new ones (a tag key answered "field" whose values need converting): asked next,
+    # still before anything is written
+    rounds = 0
+    while apply and (analysis.uncovered or analysis.key_questions or ask_changes or value_qs):
+        rounds += 1
+        if rounds > 3:
+            raise ToolError("Questions are still open after the answers; nothing was written")
+        asked, ex, key_ans, val_ans = tagquestions.ask(ctx, analysis.uncovered, project,
+                                                       ask_changes, analysis.key_questions,
+                                                       value_qs)
         if ex is not None:
             exist_answers = {"all": exist_answers["all"] or ex["all"],
                              "keys": dict(ex["keys"], **exist_answers["keys"])}
-        if analysis.uncovered or key_ans:
+        for n, vals in val_ans.items():
+            opts.value_answers[n] = dict(opts.value_answers.get(n) or {}, **vals)
+        if analysis.uncovered or key_ans or val_ans:
             new_rules = new_rules + tagquestions.pending(asked, analysis.uncovered, project)
             opts.key_answers = dict(opts.key_answers, **key_ans)
             analysis = analyze()
             applicable = _applicable(feature, analysis, values)
-            plan, changes = make_plan()
-        left = existingtests.unanswered(changes, exist_answers)
-        if left:
-            raise NeedsAnswer("Ask the user whether to update, keep or skip these existing "
-                              "tests, then call again with existingTests; never answer it "
-                              "yourself. Nothing was written.",
-                              [existingtests.question(left)], projectKey=pk)
+            plan, changes = make_plan(True)
+        value_qs = open_values()
+        ask_changes = existingtests.unanswered(changes, exist_answers)
     if not applicable["aiLabel"]:
         opts.ai_label = ""
 
     # -- fields for every item type that may be created: refuse the whole file first
     def build(c):
-        tests = _test_extras(c, feature, analysis, args)
+        tests = _test_extras(c, ctx, project, feature, analysis, args, overridden)
         pre = (c("precondition", args.get("preconditionFields"), None, "preconditionFields",
                  provided=_own_description(feature.backgrounds))
                if feature.backgrounds and not opts.inline else {})
@@ -671,18 +801,14 @@ def create_tests_from_feature(ctx, args):
         collector = requiredfields.Collector(ctx, project)
         test_extras, pre_extra, set_extra = build(collector)
         field_questions = collector.questions()
-    create_dups = list(args.get("createDuplicates") or [])
-    bad = [i for i in create_dups if i >= len(feature.scenarios)]
-    if bad:
-        raise ToolError("createDuplicates index out of range: %s (the feature has %d scenarios)"
-                        % (bad, len(feature.scenarios)))
     if plan is None:
-        plan = plan_import(ctx, pk, feature, rel, opts, analysis)
-    _apply_existing_answers(plan, changes, exist_answers)
-    skipped = _skipped(plan, create_dups)
+        plan, changes = make_plan(True)
+    created_anew = _apply_existing_answers(plan, changes, exist_answers, create_dups)
+    skipped = _skipped(plan, set(create_dups) | created_anew)
     skip = {s["index"] for s in skipped}
     not_done = list(analysis.notes) + [nd for a in plan if a.index not in skip
                                        for nd in a.not_done]
+    warnings = list(analysis.warnings) + _ignored_summaries(plan, summaries)
     if not apply:
         contexts = _contexts(feature, analysis, rel, plan, skip)
         shown = {n: {"value": v, "source": src} for n, (v, src) in resolved.items()}
@@ -695,28 +821,31 @@ def create_tests_from_feature(ctx, args):
                                              for n in unanswered]
                                + tagquestions.questions(analysis.uncovered, project)
                                + keytags.questions(analysis.key_questions)
+                               + tagvalues.questions(value_qs)
                                + ([existingtests.question(ask_changes)] if ask_changes else [])
                                + field_questions,
                                "choices": shown,
                                "actions": [a.to_dict() for a in plan],
-                               "perTest": _per_test(plan), "testSets": _preview_sets(plan),
+                               "perTest": _per_test(plan, feature), "testSets": _preview_sets(plan),
                                "tagSummary": summarize_tags(
                                    [feature], opts.rules,
                                    existing_set_names(ctx, pk, tag_values([feature])),
                                    analysis.key_tags),
                                "notDone": not_done}
-        if analysis.warnings:
-            out["warnings"] = list(analysis.warnings)
+        if warnings:
+            out["warnings"] = warnings
         if changes:
             out["existingTests"] = changes
-        if unanswered or analysis.uncovered or analysis.key_questions or ask_changes:
-            out["hint"] = ("answer the questions (ask the user once), then call again with the "
-                           "answers (tagRule.<key> ones in tagRuleAnswers, keyTag.<KEY> ones "
-                           "in keyTagAnswers, existingTests in existingTests / "
-                           "existingTestOverrides); until then the "
+        if unanswered or analysis.uncovered or analysis.key_questions or ask_changes \
+                or value_qs:
+            out["hint"] = ("relay the questions to the user once (never answer them yourself), "
+                           "then call again with the answers (tagRule.<key> ones in "
+                           "tagRuleAnswers, keyTag.<KEY> ones in keyTagAnswers, "
+                           "tagValue.<field>.<value> ones in tagValueAnswers, existingTests in "
+                           "existingTests / existingTestOverrides); until then the "
                            "actions assume createTestSet=true, backgrounds=preconditions, "
                            "tagsAsLabels=true, no AI label and nothing from unanswered "
-                           "key:value or issue-key tags")
+                           "key:value or issue-key tags or values")
         elif field_questions:
             out["hint"] = ("required fields have no value: ask the user, then call again with "
                            "each answer in the question's `param` ({field id: value})")
@@ -731,7 +860,8 @@ def create_tests_from_feature(ctx, args):
     # All validation passed: remember the call's answers, then write (ruling R5).
     choices.remember(ctx, pk, {n: args.get(n) for n in QUESTION_IDS},
                      bool(args.get("remember", False)))
-    choices.add_tag_rules(ctx, pk, new_rules)
+    warnings += _remember_rules(ctx, pk, remembered_raw, offset, new_rules, analysis,
+                                opts.value_answers)
     run = _Run(ctx, pk, plan, skip, test_extras, pre_extra, set_extra)
     result = run.run()
     kept = {a.index: a.key for a in plan if a.kind == "keep_test"}
@@ -751,7 +881,38 @@ def create_tests_from_feature(ctx, args):
     if skipped:
         out["skippedDuplicates"] = skipped
         out["hint"] = "pass the skipped indexes in createDuplicates to create them anyway"
-    warnings = list(analysis.warnings) + run.warnings
+    warnings += run.warnings
     if warnings:
         out["warnings"] = warnings
     return out
+
+
+def _ignored_summaries(plan: List[ImportAction], summaries: Dict[int, str]) -> List[str]:
+    """Warnings for summaries entries of scenarios that do not create a test."""
+    out = []
+    for a in plan:
+        if a.index in summaries and a.kind in ("update_test", "keep_test") \
+                and a.summary != summaries[a.index]:
+            out.append("summaries[%d] (%r) ignored: the scenario maps to existing test %s, "
+                       "whose summary is never changed" % (a.index, summaries[a.index], a.key))
+        elif a.index in summaries and a.kind == "skip_test":
+            out.append("summaries[%d] (%r) ignored: the scenario is not imported"
+                       % (a.index, summaries[a.index]))
+    return out
+
+
+def _remember_rules(ctx: ServerContext, pk: str, remembered_raw: List[dict], offset: int,
+                    new_rules: List[dict], analysis: TagAnalysis,
+                    value_answers: Dict[str, Dict[str, Any]]) -> List[str]:
+    """Remember the tag rules answered in this call and the tag values answered (in the
+    value map of the rule they belong to). -> warnings for values of settings rules, which
+    the plugin never edits."""
+    rules_raw = copy.deepcopy(list(remembered_raw)) + copy.deepcopy(list(new_rules))
+    changed, not_stored = tagvalues.remember(rules_raw, offset, analysis, value_answers)
+    if changed:
+        choices.set_tag_rules(ctx, pk, rules_raw)
+    else:
+        choices.add_tag_rules(ctx, pk, new_rules)
+    return ["the answer for `%s` (%s) applies to this import only: its tag rule is in the "
+            "settings file; add `values: {%s: <answer>}` to that rule to keep it"
+            % (e["value"], e["field"], e["value"]) for e in not_stored]

@@ -8,6 +8,7 @@ tools/features.py executes the plan."""
 from __future__ import annotations
 
 import dataclasses
+import difflib
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
@@ -20,7 +21,8 @@ from ..notdone import (NEVER_OVERWRITE_FIX, NO_JIRA_FIX, NO_JIRA_REASON,  # noqa
                        UNREADABLE_FIX, UNREADABLE_REASON, jira_reason_fix, not_done)
 from .parse import ParsedBackground, ParsedFeature, ParsedScenario
 from .serialize import background_definition, scenario_definition
-from .tagrules import FIELD_ID, TagOutcome, TagRule, apply_rules, kv_key, merge_outcomes
+from .tagrules import (TagOutcome, TagRule, apply_rules, is_field_id, kv_key, mapped_value,
+                       merge_outcomes)
 
 CUCUMBER = "Cucumber"
 UNNAMED_PREFIX = "Background for: "
@@ -46,6 +48,10 @@ class ImportOptions:
     # answers to keyTag.<KEY> questions (keys Xray knows neither as a test nor as a
     # requirement): KEY -> link | label | ignore; never remembered
     key_answers: Dict[str, str] = field(default_factory=dict)
+    # answers to tagValue.<field>.<value> questions: field -> {tag value: value for Jira}
+    value_answers: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # summaries parameter: scenario index -> summary of the test the import creates
+    summaries: Dict[int, str] = field(default_factory=dict)
 
     @property
     def inline(self) -> bool:
@@ -84,7 +90,13 @@ class ImportAction:
     current_definition: Optional[str] = None
     current_set_ids: Optional[List[str]] = None
     current_pre_ids: Optional[List[str]] = None
+    # existing test matched by its summary (no key tag): what a "create" answer restores
+    matched_by_name: bool = False
+    create_labels: List[str] = field(default_factory=list)
+    create_not_done: List[Dict[str, str]] = field(default_factory=list)
     new_links: List[str] = field(default_factory=list)   # with Jira: links not there yet
+    field_raw: Dict[str, str] = field(default_factory=dict)  # tests: rule field -> tag value
+    mapped_fields: List[str] = field(default_factory=list)  # rule fields with a mapped value
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {"kind": self.kind, "summary": self.summary, "line": self.source_line}
@@ -113,6 +125,8 @@ class ImportAction:
             out["featureTestSet"] = True
         if self.reason:
             out["reason"] = self.reason
+        if self.matched_by_name and self.key:
+            out["matchedBy"] = "name"
         return out
 
 
@@ -156,8 +170,8 @@ def _scenario_item(s: ParsedScenario) -> str:
 
 
 KEY_ANSWERS = ("link", "label", "ignore")
-_UNKNOWN = ("Xray knows no test or requirement %s (it may be another kind of issue, or no "
-            "issue at all)")
+_UNKNOWN = ("Xray doesn't know %s as a test or a requirement (it may be another kind of "
+            "issue, or not an issue key at all)")
 
 
 def _key_meaning(kind: str, key: str, scenario: bool, project_key: str,
@@ -186,7 +200,7 @@ def _key_meaning(kind: str, key: str, scenario: bool, project_key: str,
         elif status == "missing":
             why = "there is no issue %s" % key
         else:
-            why = "Xray knows no test %s" % key
+            why = "Xray doesn't know %s as a test" % key
         return "notImported", why
     # a bare key
     if status == "test" and scenario:
@@ -472,6 +486,31 @@ def _scenario_summary(s: ParsedScenario, feature: ParsedFeature) -> str:
     return "%s (line %d)" % (feature.name.strip() or "Scenario", s.line)
 
 
+def _same_name(summary: str) -> str:
+    return " ".join(str(summary or "").split()).casefold()
+
+
+def scenario_summaries(feature: ParsedFeature) -> List[str]:
+    """The summary of each scenario's test. Only names that collide within the file
+    (case- and whitespace-insensitive) are told apart: "<Rule name>: <Scenario name>", or
+    "<Feature name>: <Scenario name>" outside a Rule; a summary still colliding gets " (2)",
+    " (3)", ... in file order."""
+    base = [_scenario_summary(s, feature) for s in feature.scenarios]
+    counts: Dict[str, int] = {}
+    for b in base:
+        counts[_same_name(b)] = counts.get(_same_name(b), 0) + 1
+    named = []
+    for s, b in zip(feature.scenarios, base):
+        prefix = (s.rule or "").strip() or feature.name.strip()
+        named.append("%s: %s" % (prefix, b) if counts[_same_name(b)] > 1 and prefix else b)
+    seen: Dict[str, int] = {}
+    out = []
+    for b in named:
+        n = seen[_same_name(b)] = seen.get(_same_name(b), 0) + 1
+        out.append(b if n == 1 else "%s (%d)" % (b, n))
+    return out
+
+
 # ---- tag analysis (no calls) ---------------------------------------------------------------
 
 @dataclass
@@ -568,6 +607,12 @@ def analyze_tags(feature: ParsedFeature, project_key: str,
         plain_all.extend(r_plain + plain)
         merged = merge_outcomes(feat_out, _outcome(r_plain, opts, opts.tags_as_labels),
                                 _outcome(plain, opts, opts.tags_as_labels))
+        for name in list(merged.fields):  # answered tagValue questions
+            if name not in merged.mapped:
+                found, ans = mapped_value(opts.value_answers.get(name) or {},
+                                          merged.raw.get(name, str(merged.fields[name])))
+                if found:
+                    merged.fields[name], merged.mapped[name] = ans, "answer"
         # an open keyTag question may still be answered "label"
         any_label = any_label or _keeps_label(merged, opts) or (
             bool(rule.asked or own.asked or feat.asked) and opts.unmatched_tags == "keep")
@@ -719,7 +764,7 @@ def _field_id(opts: ImportOptions, name: str) -> Optional[str]:
     specs = (opts.project.fields.get("test") or {}) if opts.project else {}
     if name in specs:
         return specs[name].id
-    return name if FIELD_ID.fullmatch(name) else None
+    return name if is_field_id(name) else None
 
 
 UNTYPED_REASON = ("its type is unknown: Jira's create metadata for Test does not list it "
@@ -743,11 +788,16 @@ def _existing_test_fields(ctx: ServerContext, a: ImportAction, current: Dict[str
     todo: Dict[str, Any] = {}   # Jira id -> converted value
     names: List[str] = []
     shown: List[str] = []
+    from ..tagvalues import convert
     for name, value in a.fields.items():
         fid = _field_id(opts, name)
         if not fid:
             continue
-        what = "field %s = %s" % (name, value)
+        what = "field %s = %s" % (name, a.field_raw.get(name, value))
+        if has_jira and opts.project and name not in a.mapped_fields:
+            value, why = convert(ctx, opts.project, name, value)
+            if why:  # a tagValue question (asked before anything is written)
+                continue
         if name in specs:
             wanted = build_jira_fields(lenient, "test", {name: value}, None)[fid]
         else:
@@ -775,6 +825,49 @@ def _existing_test_fields(ctx: ServerContext, a: ImportAction, current: Dict[str
     a.field_names = names
 
 
+def _read_existing(ctx: ServerContext, project_key: str, key: str, a: ImportAction,
+                   opts: ImportOptions) -> dict:
+    from ..tools.tests import fetch_test
+    ids = [fid for fid in (_field_id(opts, n) for n in a.fields) if fid]
+    return fetch_test(ctx, project_key, key, detail=True, jira_fields=ids,
+                      xray_extra=_MEMBERSHIP)
+
+
+def _test_type(r: dict) -> Any:
+    tt = r.get("testType")
+    return tt.get("name") if isinstance(tt, dict) else tt
+
+
+def _map_existing(ctx: ServerContext, a: ImportAction, key: str, r: dict,
+                  opts: ImportOptions, has_jira: bool) -> None:
+    """The scenario maps to existing test `key` (update_test, answered by existingTests)."""
+    a.kind, a.key, a.issue_id = "update_test", key, r["issueId"]
+    a.current_definition = r.get("gherkin")
+    a.current_set_ids = _ids(r.get("testSets"))
+    a.current_pre_ids = _ids(r.get("preconditions"))
+    current = r.get("jira") or {}
+    a.current_labels = list(current.get("labels") or [])
+    new_labels = [x for x in a.labels if x not in a.current_labels]
+    if new_labels and not has_jira:
+        a.not_done.append(not_done(a.key, "labels " + ", ".join(new_labels),
+                                   *jira_reason_fix(ctx.env)))
+    _existing_test_fields(ctx, a, current, opts, has_jira)
+    if a.requirement_keys and not has_jira:
+        a.not_done.append(not_done(a.key, "requirement links " + ", ".join(a.requirement_keys),
+                                   *jira_reason_fix(ctx.env)))
+    elif a.requirement_keys:
+        have = set(ctx.jira.linked_keys(a.key))
+        a.new_links = [k for k in a.requirement_keys if k not in have]
+
+
+def as_new_test(a: ImportAction) -> None:
+    """A test matched by name, answered "create": back to the new test it was planned as."""
+    a.kind, a.key, a.issue_id = "create_test", None, None
+    a.labels, a.not_done = list(a.create_labels), list(a.create_not_done)
+    a.current_labels, a.field_updates, a.field_names, a.new_links = [], {}, [], []
+    a.current_definition = a.current_set_ids = a.current_pre_ids = None
+
+
 _MEMBERSHIP = ("testSets(limit: 100) { results { issueId } } "
                "preconditions(limit: 100) { results { issueId } } ")
 
@@ -793,9 +886,28 @@ def _norm_steps(text: Optional[str]) -> str:
     return "\n".join(line.rstrip() for line in lines).strip()
 
 
+MAX_DIFF_LINES = 6
+
+
+def steps_diff(current: Optional[str], new: str) -> Dict[str, Any]:
+    """Short summary of how the definition changes: {added, removed, lines} (lines: the
+    first changed lines, "+ ..." / "- ...")."""
+    old = [x for x in _norm_steps(current).split("\n") if x.strip()]
+    now = [x for x in _norm_steps(new).split("\n") if x.strip()]
+    changed = [d for d in difflib.ndiff([x.strip() for x in old], [x.strip() for x in now])
+               if d[:2] in ("+ ", "- ")]
+    return {"added": sum(1 for d in changed if d.startswith("+")),
+            "removed": sum(1 for d in changed if d.startswith("-")),
+            "lines": changed[:MAX_DIFF_LINES]}
+
+
+_CHANGE_KEYS = ("labelsAdded", "fields", "links", "testSets", "preconditions", "pendingTags")
+
+
 def existing_test_changes(plan: List[ImportAction], analysis: TagAnalysis,
                           has_jira: bool) -> List[Dict[str, Any]]:
-    """What the import would change on each existing test it maps a scenario to: steps,
+    """What the import would change on each existing test it maps a scenario to (by a key
+    tag, or by name: `matchedBy`): steps (with a short `stepsDiff`),
     labels added, fields, requirement links, Test Sets joined, Pre-Conditions linked, and
     key:value tags still awaiting a tag-rule answer. Only tests with some change are listed.
     Labels, fields and links need Jira; without it they are notDone, not changes. A
@@ -808,6 +920,10 @@ def existing_test_changes(plan: List[ImportAction], analysis: TagAnalysis,
         c: Dict[str, Any] = {"key": a.key, "scenarioIndex": a.index, "scenario": a.summary,
                              "stepsChanged": _norm_steps(a.current_definition)
                              != _norm_steps(a.definition)}
+        if a.matched_by_name:
+            c["matchedBy"] = "name"
+        if c["stepsChanged"]:
+            c["stepsDiff"] = steps_diff(a.current_definition, a.definition)
         if has_jira:
             added = [x for x in a.labels if x not in a.current_labels]
             if added:
@@ -833,7 +949,7 @@ def existing_test_changes(plan: List[ImportAction], analysis: TagAnalysis,
         pending += [k for k in st.asked if k in analysis.key_questions]  # keyTag still open
         if pending:
             c["pendingTags"] = pending
-        if c["stepsChanged"] or len(c) > 4:  # more than the four identifying entries
+        if c["stepsChanged"] or any(k in c for k in _CHANGE_KEYS):
             out.append(c)
     return out
 
@@ -846,7 +962,7 @@ def plan_import(ctx: ServerContext, project_key: str, feature: ParsedFeature, fe
     Feature's first, then those from tags). `options` may be a bool (createTestSet, with
     today's defaults otherwise). Validates every tag first (no calls), then reads; never
     writes."""
-    from ..tools.tests import check_duplicates, fetch_test  # tools import gherkin, not vice versa
+    from ..tools.tests import check_duplicates  # tools import gherkin, not vice versa
 
     opts = ImportOptions(create_test_set=options) if isinstance(options, bool) else options
     if not feature.scenarios:
@@ -860,24 +976,24 @@ def plan_import(ctx: ServerContext, project_key: str, feature: ParsedFeature, fe
 
     # -- tests
     tests: List[ImportAction] = []
+    names = scenario_summaries(feature)
+    mapped: Set[str] = {st.test_key for st in analysis.scenarios if st.test_key}
     for i, s in enumerate(feature.scenarios):
         st = analysis.scenarios[i]
-        summary = _scenario_summary(s, feature)
+        summary = names[i] if st.test_key else opts.summaries.get(i, names[i])
         a = ImportAction("create_test", summary, None, list(st.outcome.labels), [], s.line,
                          index=i, definition=test_definition(s, opts.inline),
                          description=s.description, requirement_keys=list(st.requirement_keys),
-                         test_sets=list(st.outcome.test_sets), fields=dict(st.outcome.fields))
+                         test_sets=list(st.outcome.test_sets), fields=dict(st.outcome.fields),
+                         field_raw=dict(st.outcome.raw), mapped_fields=list(st.outcome.mapped))
         a.not_done = list(st.notes)
         a.unverified_links = list(st.unverified)
         if st.blocked:
             a.kind, a.reason = "skip_test", st.blocked
             a.labels, a.test_sets, a.fields, a.requirement_keys = [], [], {}, []
         elif st.test_key:
-            ids = [fid for fid in (_field_id(opts, n) for n in a.fields) if fid]
-            r = fetch_test(ctx, project_key, st.test_key, detail=True, jira_fields=ids,
-                           xray_extra=_MEMBERSHIP)
-            tt = r.get("testType")
-            tt = tt.get("name") if isinstance(tt, dict) else tt
+            r = _read_existing(ctx, project_key, st.test_key, a, opts)
+            tt = _test_type(r)
             if tt != CUCUMBER:
                 why = ("%s is a %s test; only Cucumber tests can take a scenario definition"
                        % (st.test_key, tt))
@@ -888,28 +1004,28 @@ def plan_import(ctx: ServerContext, project_key: str, feature: ParsedFeature, fe
                                            "the tag to create a new test"))
                 tests.append(a)
                 continue
-            a.kind, a.key, a.issue_id = "update_test", st.test_key, r["issueId"]
-            a.current_definition = r.get("gherkin")
-            a.current_set_ids = _ids(r.get("testSets"))
-            a.current_pre_ids = _ids(r.get("preconditions"))
-            current = r.get("jira") or {}
-            a.current_labels = list(current.get("labels") or [])
-            new_labels = [x for x in a.labels if x not in a.current_labels]
-            if new_labels and not has_jira:
-                a.not_done.append(not_done(a.key, "labels " + ", ".join(new_labels),
-                                           *jira_reason_fix(ctx.env)))
-            _existing_test_fields(ctx, a, current, opts, has_jira)
-            if a.requirement_keys and not has_jira:
-                a.not_done.append(not_done(a.key, "requirement links "
-                                           + ", ".join(a.requirement_keys),
-                                           *jira_reason_fix(ctx.env)))
-            elif a.requirement_keys:
-                have = set(ctx.jira.linked_keys(a.key))
-                a.new_links = [k for k in a.requirement_keys if k not in have]
+            _map_existing(ctx, a, st.test_key, r, opts, has_jira)
         else:
-            if opts.ai_label:
-                a.labels = dedupe(a.labels + [opts.ai_label])
             a.duplicates, a.similar = check_duplicates(ctx, project_key, summary)
+            a.create_labels = dedupe(a.labels + [opts.ai_label]) if opts.ai_label \
+                else list(a.labels)
+            a.create_not_done = list(a.not_done)
+            match = a.duplicates[0]["key"] if len(a.duplicates) == 1 else None
+            r = None
+            if match and match not in mapped:
+                try:
+                    r = _read_existing(ctx, project_key, match, a, opts)
+                except ToolError as e:
+                    if e.data.get("testKey") != match:  # gone since the search: a new test
+                        raise
+            if r is not None and _test_type(r) == CUCUMBER:
+                # same summary as one existing Cucumber test: it is that test (asked about
+                # like a key-tagged one; "create" restores the new test)
+                mapped.add(match)
+                a.matched_by_name = True
+                _map_existing(ctx, a, match, r, opts, has_jira)
+            else:  # several, or not Cucumber: a possible duplicate (createDuplicates)
+                a.labels = list(a.create_labels)
         tests.append(a)
 
     # -- Pre-Conditions: key tag -> path label -> same summary -> create
