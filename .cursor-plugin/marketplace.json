@@ -1,0 +1,14 @@
+{
+  "name": "xray-cloud-plugin",
+  "owner": { "name": "Tagira Nara" },
+  "metadata": {
+    "description": "Xray Cloud test management for Cursor."
+  },
+  "plugins": [
+    {
+      "name": "xray-cloud",
+      "source": "plugin",
+      "description": "Manage Xray Cloud tests, test sets, plans, executions and runs."
+    }
+  ]
+}
