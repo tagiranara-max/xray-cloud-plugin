@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -68,9 +69,11 @@ class FakeXrayWorld:
     def responses(self):
         def search(v):
             jql = v["jql"]
-            for key, row in self.existing.items():
-                if jql == "issue = %s" % key:
-                    return {"getTests": {"total": 1, "results": [row]}}
+            m = re.fullmatch(r"issue = (\S+)|issue in \((.*)\)", jql)
+            if m:
+                keys = [m.group(1)] if m.group(1) else m.group(2).split(", ")
+                rows = [self.existing[k] for k in keys if k in self.existing]
+                return {"getTests": {"total": len(rows), "results": rows}}
             hits = [s for s in self.dup_summaries if '"%s"' % s in jql]
             return {"getTests": {"total": len(hits), "results": [
                 {"issueId": "1", "jira": {"key": "P-1", "summary": s}} for s in hits]}}
@@ -421,8 +424,9 @@ def test_reused_unnamed_precondition_keeps_its_summary(project):
 
 
 class RecJira:
-    def __init__(self, linked=()):
+    def __init__(self, linked=(), missing=(), types=None):
         self.edits, self.links, self.linked = [], [], list(linked)
+        self.missing, self.types = set(missing), dict(types or {})
 
     def edit_issue(self, key, fields):
         self.edits.append((key, fields))
@@ -435,6 +439,9 @@ class RecJira:
 
     def create_meta(self, pk, issue_type):
         return []
+
+    def issue_type(self, key):
+        return None if key in self.missing else self.types.get(key, "Story")
 
 
 def test_similar_summaries_are_listed_but_never_skipped(tmp_path):
@@ -959,7 +966,7 @@ def test_existing_test_read_requests_rule_field_id(tmp_path):
                                   "    Given x\n")
     preview(ctx, path, **ans(createTestSet=False))
     reads = [q for q, v in queries if v.get("jql") == "issue = P-5"]
-    assert reads and all('"customfield_9"' in q for q in reads)
+    assert reads and '"customfield_9"' in reads[-1]  # the first read is the key lookup
 
 
 def _fuzzy_sets(start, n=100):
@@ -1423,3 +1430,79 @@ def test_answer_keys_colliding_case_insensitively_are_refused(tmp_path):
     res, err = _apply(ctx, feature_file(tmp_path, KV),
                       tagRuleAnswers={"suite": {"action": "skip"}, "Suite": {"action": "skip"}})
     assert err and "answered twice" in res["error"] and writes(ctx) == []
+
+
+# -- issue-key tags are looked up; the edge-case file previews without refusal ---------------
+
+def test_key_shaped_tag_of_no_issue_is_a_plain_tag_in_preview_and_apply(tmp_path):
+    path = feature_file(tmp_path, "Feature: F\n  @ISO-8601 @smoke\n  Scenario: A\n    Given a\n")
+    ctx = ctx_for(tmp_path)
+    ctx.jira = RecJira(missing=["ISO-8601"])
+    res = preview(ctx, path, **ans(createTestSet=False))
+    assert res["tagSummary"]["keyTags"] == [
+        {"tag": "ISO-8601", "meaning": "plain",
+         "note": "not an issue (Jira has no ISO-8601): an ordinary tag"}]
+    assert "ISO-8601" in res["tagSummary"]["plain"] and res["tagSummary"]["issueKeys"] == []
+    assert res["perTest"][0]["labels"] == ["ISO-8601", "smoke"]
+    res, err = _apply(ctx, path)
+    assert not err, res
+    jira = ctx.xray.calls_of("CreateTest")[0]["jira"]
+    assert jira["fields"]["labels"] == ["ISO-8601", "smoke"] and "update" not in jira
+
+
+def test_tag_naming_a_test_of_another_project_creates_a_new_test_with_a_note(tmp_path):
+    path = feature_file(tmp_path, "Feature: F\n  @Q-5\n  Scenario: A\n    Given a\n"
+                                  "  @TEST_Q-5\n  Scenario: B\n    Given b\n")
+    q5 = {"issueId": "5", "testType": {"name": "Cucumber"},
+          "jira": {"key": "Q-5", "summary": "A", "labels": []}}
+    ctx = ctx_for(tmp_path, FakeXrayWorld(existing={"Q-5": q5}))
+    res = preview(ctx, path, **ans(createTestSet=False))
+    assert [a["kind"] for a in res["actions"]] == ["create_test", "skip_test"]
+    assert "labels" not in res["actions"][0]
+    assert [n["item"] for n in res["notDone"]] == ["scenario 'A' (line 3)",
+                                                   "scenario 'B' (line 6)"]
+    assert res["notDone"][1]["what"] == "scenario not imported (tag @TEST_Q-5)"
+    res, err = _apply(ctx, path)
+    assert not err, res
+    assert writes(ctx) == ["CreateTest"] and len(res["notDone"]) == 2
+
+
+def test_requirement_tag_of_an_existing_issue_links_new_tests(tmp_path):
+    path = feature_file(tmp_path, "@R-1\nFeature: F\n  @REQ_R-404\n  Scenario: A\n    Given a\n")
+    ctx = ctx_for(tmp_path)
+    ctx.jira = RecJira(missing=["R-404"])
+    res, err = _apply(ctx, path)
+    assert not err, res
+    assert ctx.xray.calls_of("CreateTest")[0]["jira"]["update"] == {"issuelinks": [
+        {"add": {"type": {"name": "Test"}, "outwardIssue": {"key": "R-1"}}}]}
+    assert res["notDone"][0]["what"] == "requirement link R-404"
+
+
+def test_edge_case_file_previews_without_refusal(tmp_path):
+    shutil.copy(FIXTURES / "edge_cases.feature", tmp_path / "edge.feature")
+    world = FakeXrayWorld()
+    base = world.responses()
+    plain_search = base["SearchTests"]
+
+    def search(v):  # ISO-8601 names no project: Jira refuses a JQL with it
+        if "ISO-8601" in v["jql"]:
+            raise ToolError("Xray GraphQL error: The value 'ISO-8601' does not exist for the "
+                            "field 'issue'")
+        return plain_search(v)
+    base["SearchTests"] = search
+    ctx = make_context(YAML, responses=base)
+    ctx.env["CLAUDE_PROJECT_DIR"] = str(tmp_path)
+    res = preview(ctx, "edge.feature")
+    assert qids(res) == ["createTestSet", "backgrounds", "tagsAsLabels", "aiLabel",
+                         "aiLabelScope", "tagRule.suite", "tagRule.team", "tagRule.priority",
+                         "tagRule.area"]
+    assert res["tagSummary"]["keyTags"][0]["tag"] == "ISO-8601"
+    assert res["tagSummary"]["keyTags"][0]["meaning"] == "plain"
+    assert "ISO-8601" in res["tagSummary"]["plain"]
+    tests = [a for a in res["actions"] if a["kind"] == "create_test"]
+    assert [a["summary"] for a in tests].count("Sign in") == 2
+    assert len(tests) == 8 and res["notDone"] == []
+    assert "possibleDuplicates" not in res
+    iso = next(a for a in tests if a["summary"].startswith("Code expiry"))
+    assert "ISO-8601" in iso["labels"]
+    assert writes(ctx) == []

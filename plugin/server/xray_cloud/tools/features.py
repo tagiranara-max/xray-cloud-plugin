@@ -15,7 +15,8 @@ from ..gherkin.tagrules import FIELD_ID, TagRule, kv_key, parse_rules
 from ..jira_client import LINK_TYPE
 from ..localfiles import PATH_NOTE, read_local_file
 from ..gherkin.plan import (CUCUMBER, UNNAMED_PREFIX, ImportAction, ImportOptions, TagAnalysis,
-                            analyze_tags, existing_set_names, feature_set_name, plan_import)
+                            analyze_tags, existing_set_names, feature_set_name,
+                            lookup_key_tags, plan_import)
 from ..gherkin.tagsummary import summarize_tags, tag_values
 from ..registry import REGISTRY
 from .containers import _CREATE, _add
@@ -332,7 +333,7 @@ def _applicable(feature: ParsedFeature, analysis: TagAnalysis, values: Dict[str,
     creation is counted as possible when it may happen (duplicates and reuse are not known)."""
     named = bool(feature.name.strip())
     cts = values["createTestSet"]
-    new_tests = any(st.test_key is None for st in analysis.scenarios)
+    new_tests = any(st.test_key is None and not st.blocked for st in analysis.scenarios)
     new_pre = bool(feature.backgrounds) and values["backgrounds"] != "inline"
     new_sets = (named and cts is not False) or bool(analysis.tag_sets)
     ai = new_tests or new_pre or new_sets
@@ -378,7 +379,8 @@ def _would_create(plan: List[ImportAction], skip: set) -> Dict[str, int]:
 
 
 def _members(plan: List[ImportAction], indexes: List[int]) -> List[str]:
-    by_index = {a.index: a for a in plan if a.kind in ("create_test", "update_test")}
+    by_index = {a.index: a for a in plan
+                if a.kind in ("create_test", "update_test", "skip_test")}
     return [by_index[i].key or by_index[i].summary for i in indexes]
 
 
@@ -420,14 +422,14 @@ def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: 
     fields."""
     call_fields = dict(args.get("fields") or {})
     base_users = [i for i, st in enumerate(analysis.scenarios)
-                  if st.test_key is None and not st.outcome.fields]
+                  if st.test_key is None and not st.blocked and not st.outcome.fields]
     # description is not asked for tests whose scenario has its own
     base = c("test", call_fields, args.get("rawFields"), required=bool(base_users),
              provided=_own_description(feature.scenarios[i] for i in base_users))
     out: Dict[int, dict] = {}
     for i, st in enumerate(analysis.scenarios):
         rule_fields = st.outcome.fields
-        if st.test_key is not None or not rule_fields:
+        if st.test_key is not None or st.blocked or not rule_fields:
             out[i] = base
             continue
         clash = {n: v for n, v in rule_fields.items() if n in call_fields and call_fields[n] != v}
@@ -447,19 +449,17 @@ def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: 
 
 @REGISTRY.tool(
     "create_tests_from_feature",
-    "Import a .feature file the Xray way: each Scenario/Outline becomes a Cucumber test. "
-    "Backgrounds become Pre-Conditions (or inline steps); the Feature can become a Test Set. "
-    "Tags go through the project's tag rules (settings or remembered)"
-    " into labels, Test Sets and fields; @TEST_<KEY> or @<KEY> updates that test, @REQ_<KEY> "
-    "links a requirement. A key:value tag no rule covers is asked about per key (tagRule.<key>"
-    ", answered in tagRuleAnswers, remembered as a rule). Choices (createTestSet, backgrounds,"
-    " tagsAsLabels, aiLabel, aiLabelScope) come from the call, settings or remembered answers."
-    " If the preview has non-empty `questions`, ask the user once and call again with the "
-    "answers. apply=false (default) previews; apply=true executes, skipping possible "
-    "duplicates unless indexed in createDuplicates. Anything not doable is in notDone {item, "
-    "what, reason, fix}: if the reason says Jira access is missing and Atlassian MCP tools "
-    "are available, offer to complete them with those. fields/rawFields "
-    "apply to created tests.",
+    "Import a .feature file: Scenario -> Cucumber test, Background -> Pre-Condition (or "
+    "inline), Feature -> Test Set. Tags go through the project's tag rules into labels, Test "
+    "Sets and fields. Issue-key tags are looked up: @<KEY> of a test in this project maps the "
+    "scenario to it, of another issue links it, of no issue is a plain tag (tagSummary."
+    "keyTags); @REQ_<KEY> links. Unanswered choices (createTestSet, backgrounds, tagsAsLabels, "
+    "aiLabel, aiLabelScope, tagRule.<key> in tagRuleAnswers) are in a non-empty `questions`: ask the user "
+    "once, call again with the answers. apply=false (default) previews; apply=true executes, "
+    "skipping scenarios whose summary an existing test has unless indexed in "
+    "createDuplicates (`similar` ones are only listed). Anything not doable is in notDone "
+    "{item, what, reason, fix}: if Jira access is missing and Atlassian MCP tools are "
+    "available, offer to complete them with those. fields/rawFields apply to created tests.",
     _schema({"featureFilePath": {"type": "string", "description":
                                  "Local .feature file. " + PATH_NOTE},
              "apply": {"type": "boolean"},
@@ -519,6 +519,8 @@ def create_tests_from_feature(ctx, args):
         opts.rules = rules + parse_rules(new_rules, names, tagquestions.PARAM)
         return analyze_tags(feature, pk, opts)
 
+    # what issue-key tags name: read before anything else is decided (nothing is written)
+    opts.key_info = lookup_key_tags(ctx, feature)
     analysis = analyze_tags(feature, pk, opts)
     new_rules = tagquestions.pending(tag_answers, analysis.uncovered, project)
     if new_rules:
@@ -570,7 +572,8 @@ def create_tests_from_feature(ctx, args):
     plan = plan_import(ctx, pk, feature, rel, opts, analysis)
     skipped = _skipped(plan, create_dups)
     skip = {s["index"] for s in skipped}
-    not_done = [nd for a in plan if a.index not in skip for nd in a.not_done]
+    not_done = list(analysis.notes) + [nd for a in plan if a.index not in skip
+                                       for nd in a.not_done]
     if not apply:
         contexts = _contexts(feature, analysis, rel, plan, skip)
         shown = {n: {"value": v, "source": src} for n, (v, src) in resolved.items()}
@@ -588,7 +591,8 @@ def create_tests_from_feature(ctx, args):
                                "perTest": _per_test(plan), "testSets": _preview_sets(plan),
                                "tagSummary": summarize_tags(
                                    [feature], opts.rules,
-                                   existing_set_names(ctx, pk, tag_values([feature]))),
+                                   existing_set_names(ctx, pk, tag_values([feature])),
+                                   analysis.key_tags),
                                "notDone": not_done}
         if analysis.warnings:
             out["warnings"] = list(analysis.warnings)

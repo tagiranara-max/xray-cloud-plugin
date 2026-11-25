@@ -2,7 +2,7 @@
 Pure: no calls. Issue-key tags are listed apart and never subject to rules (spec 6.4)."""
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from ..errors import ToolError
 from .parse import ParsedFeature
@@ -16,7 +16,11 @@ def _bare(tag: str) -> str:
     return tag[1:] if tag.startswith("@") else tag
 
 
-def _is_issue_key(tag: str) -> bool:
+def _is_issue_key(tag: str, plain_keys: Set[str] = frozenset()) -> bool:
+    """plain_keys: key-shaped tags the import looked up and found to be no issue (ordinary
+    tags)."""
+    if tag in plain_keys:
+        return False
     try:
         return classify_tag(tag)[0] != "label"
     except ToolError:
@@ -67,7 +71,11 @@ def _where() -> Dict[str, int]:
 
 
 def summarize_tags(features: List[ParsedFeature], rules: List[TagRule],
-                   existing_set_names: Set[str]) -> Dict[str, Any]:
+                   existing_set_names: Set[str],
+                   key_tags: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+    """key_tags: the import's issue-key tag classifications ({tag, meaning, note?}); tags
+    whose meaning is `plain` are then counted as plain tags, and keyTags lists them all."""
+    plain_keys = {k["tag"] for k in key_tags or [] if k["meaning"] == "plain"}
     key_value: Dict[str, Dict[str, Any]] = {}
     plain: Dict[str, Dict[str, Any]] = {}
     issue_keys: List[str] = []
@@ -76,7 +84,7 @@ def summarize_tags(features: List[ParsedFeature], rules: List[TagRule],
     for f in features:
         scen_keys: List[Set[str]] = [set() for _ in f.scenarios]
         for tag, level, _ in _occurrences(f):
-            if _is_issue_key(tag):
+            if _is_issue_key(tag, plain_keys):
                 if tag not in issue_keys:
                     issue_keys.append(tag)
                 continue
@@ -101,7 +109,7 @@ def summarize_tags(features: List[ParsedFeature], rules: List[TagRule],
             e["where"][level] += 1
         for i in range(len(f.scenarios)):
             for tag in _effective(f, i):
-                m = None if _is_issue_key(tag) else _SEPARATED.fullmatch(tag)
+                m = None if _is_issue_key(tag, plain_keys) else _SEPARATED.fullmatch(tag)
                 if m:
                     scen_keys[i].add(m.group(1).strip().lower())
         for keys in scen_keys:
@@ -115,6 +123,9 @@ def summarize_tags(features: List[ParsedFeature], rules: List[TagRule],
         hits = [v for v in e["values"] if v in existing_set_names]
         if hits:
             matching[k] = hits
-    return {"keyValue": key_value, "plain": plain, "issueKeys": issue_keys,
-            "handledByRules": list(outcome.consumed), "unmatched": list(outcome.unmatched),
-            "valuesMatchingTestSets": matching}
+    out = {"keyValue": key_value, "plain": plain, "issueKeys": issue_keys,
+           "handledByRules": list(outcome.consumed), "unmatched": list(outcome.unmatched),
+           "valuesMatchingTestSets": matching}
+    if key_tags is not None:
+        out["keyTags"] = [dict(k) for k in key_tags]
+    return out

@@ -40,6 +40,9 @@ class ImportOptions:
     ai_label: str = ""                   # "" = don't mark
     ai_scope: str = "tests"              # tests | all
     project: Optional[ProjectSettings] = None  # field specs for rule `field` actions
+    # what each issue-key tag names (lookup_key_tags); None = not looked up: every key is
+    # treated as unknown (bare keys are plain tags, @TEST_ keys are not imported)
+    key_info: Optional[Dict[str, "KeyInfo"]] = None
 
     @property
     def inline(self) -> bool:
@@ -72,6 +75,7 @@ class ImportAction:
     not_done: List[Dict[str, str]] = field(default_factory=list)  # predicted skipped items
     feature_set: bool = False            # the Feature's Test Set (vs. one from tags)
     similar: List[dict] = field(default_factory=list)  # new tests: similar, not duplicates
+    reason: str = ""                     # skip_test: why the scenario is not imported
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {"kind": self.kind, "summary": self.summary, "line": self.source_line}
@@ -98,6 +102,8 @@ class ImportAction:
             out["updateDefinition"] = True
         if self.feature_set:
             out["featureTestSet"] = True
+        if self.reason:
+            out["reason"] = self.reason
         return out
 
 
@@ -121,48 +127,186 @@ def classify_tag(tag: str) -> Tuple[str, str]:
     return "label", name
 
 
-def _container_tags(tags: List[str], where: str) -> Tuple[List[str], List[str]]:
-    """Feature/Rule tags -> (plain tags without "@", requirement keys). @REQ_<KEY> and plain
-    keys link."""
-    plain, reqs = [], []
+@dataclass
+class KeyInfo:
+    """What an issue-key tag names: test (an Xray test; `project` is its project), issue
+    (an existing non-test issue, Jira), missing (Jira has no such issue) or unknown (not an
+    Xray test, and no Jira access to tell more)."""
+    status: str
+    issue_type: str = ""
+
+
+def _project_of(key: str) -> str:
+    return key.rsplit("-", 1)[0]
+
+
+def _scenario_item(s: ParsedScenario) -> str:
+    return "scenario %r (line %d)" % (s.name, s.line)
+
+
+def _key_meaning(kind: str, key: str, scenario: bool, project_key: str,
+                 info: Optional[KeyInfo]) -> Tuple[str, str]:
+    """(meaning, why) of an issue-key tag: test (names the scenario's test), otherTest (a
+    test of another project), requirement (link), plain (an ordinary tag), notImported
+    (@TEST_ that is no test of the project) or missingRequirement (@REQ_ of no issue)."""
+    status = info.status if info else "unknown"
+    if kind == "requirement":
+        if status == "missing":
+            return "missingRequirement", "Jira has no issue %s (or the token cannot see it)" % key
+        return "requirement", ""
+    if kind == "test":
+        if status == "test" and _project_of(key) == project_key:
+            return "test", ""
+        if status == "test":
+            why = "%s is a test of project %s; tests can only be updated in the import's " \
+                  "project %s" % (key, _project_of(key), project_key)
+        elif status == "issue":
+            why = "%s is a %s, not a test" % (key, info.issue_type or "issue")
+        elif status == "missing":
+            why = "Jira has no issue %s (or the token cannot see it)" % key
+        else:
+            why = "no test %s was found in Xray" % key
+        return "notImported", why
+    # a bare key
+    if status == "test" and scenario:
+        if _project_of(key) == project_key:
+            return "test", ""
+        return "otherTest", ("%s is a test of project %s; it cannot be updated from an import "
+                             "into %s, so the scenario becomes a new test"
+                             % (key, _project_of(key), project_key))
+    if status in ("test", "issue"):
+        return "requirement", ""
+    if status == "missing":
+        return "plain", "not an issue (Jira has no %s): an ordinary tag" % key
+    return "plain", ("not an issue (no Xray test %s; without Jira access it cannot be checked "
+                     "further): an ordinary tag" % key)
+
+
+@dataclass
+class _Tags:
+    plain: List[str] = field(default_factory=list)
+    reqs: List[str] = field(default_factory=list)
+    test_keys: List[str] = field(default_factory=list)
+    notes: List[Dict[str, str]] = field(default_factory=list)   # notDone entries
+    blocked: List[str] = field(default_factory=list)            # why not imported
+    keys: List[Dict[str, str]] = field(default_factory=list)    # tag classifications
+
+
+def _classify_keys(tags: List[str], project_key: str, info: Dict[str, KeyInfo],
+                   s: Optional[ParsedScenario], where: str) -> _Tags:
+    """Feature/Rule (s is None) or scenario tags -> plain tags (without "@"), requirement keys,
+    the test key and per-tag notes. Issue keys mean what the lookup found; a key-shaped tag
+    never refuses the file. Other prefixed keys are refused where they do not belong."""
+    out = _Tags()
     for t in tags:
         kind, value = classify_tag(t)
         if kind == "label":
-            plain.append(value)
-        elif kind in ("requirement", "key"):
-            reqs.append(value)
-        else:
-            raise ToolError("Tag %s is not allowed on a %s (use @TEST_ on scenarios and "
-                            "#@PRECOND_ comments in Backgrounds)" % (t, where), tag=t)
-    return plain, reqs
-
-
-def _scenario_tags(s: ParsedScenario, project_key: str) -> Tuple[List[str], List[str], Optional[str]]:
-    """-> (plain tags without "@", requirement keys, test key)."""
-    plain, reqs, test_keys = [], [], []
-    for t in s.tags:
-        kind, value = classify_tag(t)
-        if kind == "label":
-            plain.append(value)
-        elif kind == "requirement":
-            reqs.append(value)
-        elif kind in ("test", "key"):
-            if value.rsplit("-", 1)[0] != project_key:
-                raise ToolError(
-                    "Tag %s on scenario %r (line %d) names a test outside project %s; tests can "
-                    "only be updated in the import's project (use @REQ_%s to link a requirement)"
-                    % (t, s.name, s.line, project_key, value),
-                    tag=t, line=s.line, projectKey=project_key)
-            test_keys.append(value)
-        else:
+            out.plain.append(value)
+            continue
+        if kind == "precondition" or (kind == "test" and s is None):
+            if s is None:
+                raise ToolError("Tag %s is not allowed on a %s (use @TEST_ on scenarios and "
+                                "#@PRECOND_ comments in Backgrounds)" % (t, where), tag=t)
             raise ToolError("Tag %s on scenario %r (line %d): Pre-Condition keys belong in the "
                             "Background as a comment (#@PRECOND_<KEY>)" % (t, s.name, s.line),
                             tag=t, line=s.line)
-    test_keys = dedupe(test_keys)
+        meaning, why = _key_meaning(kind, value, s is not None, project_key, info.get(value))
+        entry = {"tag": t[1:] if t.startswith("@") else t, "meaning": meaning}
+        if why:
+            entry["note"] = why
+        out.keys.append(entry)
+        item = _scenario_item(s) if s is not None else "%s tag %s" % (where, t)
+        if meaning == "test":
+            out.test_keys.append(value)
+        elif meaning == "requirement":
+            out.reqs.append(value)
+        elif meaning == "plain":
+            out.plain.append(value)
+        elif meaning == "otherTest":
+            out.notes.append(not_done(item, "tag %s" % t, why,
+                                      "the scenario is created as a new test in %s; to link it "
+                                      "to %s use @REQ_%s" % (project_key, value, value)))
+        elif meaning == "notImported":
+            out.blocked.append("tag %s: %s" % (t, why))
+            out.notes.append(not_done(item, "scenario not imported (tag %s)" % t, why,
+                                      "correct the key, or remove the tag to create a new test"))
+        else:  # missingRequirement
+            out.notes.append(not_done(item, "requirement link %s" % value, why,
+                                      "correct the key, or link the requirement later"))
+    return out
+
+
+def _scenario_tags(s: ParsedScenario, project_key: str,
+                   info: Dict[str, KeyInfo]) -> Tuple[_Tags, Optional[str]]:
+    """-> (classified tags, test key)."""
+    out = _classify_keys(s.tags, project_key, info, s, "scenario")
+    test_keys = dedupe(out.test_keys)
     if len(test_keys) > 1:
         raise ToolError("Scenario %r (line %d) has more than one test key tag: %s"
                         % (s.name, s.line, ", ".join(test_keys)), line=s.line)
-    return plain, reqs, (test_keys[0] if test_keys else None)
+    return out, (test_keys[0] if test_keys and not out.blocked else None)
+
+
+def key_tags_to_look_up(feature: ParsedFeature) -> Tuple[List[str], List[str]]:
+    """(bare and @TEST_ keys: Xray then Jira, @REQ_ keys: Jira only), distinct. Malformed
+    prefixed keys are refused here (classify_tag)."""
+    xray, jira = [], []
+    tags = list(feature.tags)
+    for s in feature.scenarios:
+        tags += s.rule_tags + s.tags
+    for t in tags:
+        kind, value = classify_tag(t)
+        if kind in ("key", "test") and value not in xray:
+            xray.append(value)
+        elif kind == "requirement" and value not in jira:
+            jira.append(value)
+    return xray, [k for k in jira if k not in xray]
+
+
+_KEY_CHUNK = 50
+
+
+def lookup_key_tags(ctx: ServerContext, feature: ParsedFeature) -> Dict[str, KeyInfo]:
+    """What each issue-key tag names, read before anything is written: Xray tests first (one
+    `issue in (...)` read per 50 keys; when Jira refuses the batch, e.g. for a key of no
+    project, key by key), then Jira for the rest when it is configured. Without Jira a key
+    that is no Xray test is `unknown`."""
+    from ..context import is_permission_error
+    from ..tools.tests import _search
+    xray_keys, jira_only = key_tags_to_look_up(feature)
+    info: Dict[str, KeyInfo] = {}
+
+    def read(keys: List[str]) -> List[dict]:
+        jql = ("issue = %s" % keys[0]) if len(keys) == 1 else \
+            "issue in (%s)" % ", ".join(keys)
+        return _search(ctx, jql, len(keys), False)
+
+    for i in range(0, len(xray_keys), _KEY_CHUNK):
+        chunk = xray_keys[i:i + _KEY_CHUNK]
+        try:
+            rows = read(chunk)
+        except ToolError as e:
+            if is_permission_error(e):
+                raise
+            rows = []
+            for k in (chunk if len(chunk) > 1 else []):
+                try:
+                    rows += read([k])
+                except ToolError as e2:  # e.g. a key of no project: not a test
+                    if is_permission_error(e2):
+                        raise
+        for r in rows:
+            k = (r.get("jira") or {}).get("key")
+            if k in chunk:
+                info[k] = KeyInfo("test")
+    jira = ctx.jira
+    for k in [k for k in xray_keys if k not in info] + jira_only:
+        if jira is None:
+            info[k] = KeyInfo("unknown")
+            continue
+        itype = jira.issue_type(k)
+        info[k] = KeyInfo("missing") if itype is None else KeyInfo("issue", itype)
+    return info
 
 
 def _precond_key(bg: ParsedBackground, project_key: str) -> Optional[str]:
@@ -233,6 +377,8 @@ class ScenarioTags:
     outcome: TagOutcome        # feature + rule + scenario tags through the rules, merged
     requirement_keys: List[str]
     test_key: Optional[str]
+    notes: List[Dict[str, str]] = field(default_factory=list)  # notDone from its key tags
+    blocked: str = ""          # why the scenario is not imported (an unusable @TEST_ key)
 
 
 @dataclass
@@ -246,6 +392,9 @@ class TagAnalysis:
     # key:value tags no rule covers: lower-cased key -> distinct tags (without "@"), in
     # first-seen order; the import asks what each key means (empty with unmatchedTags=skip)
     uncovered: Dict[str, List[str]] = field(default_factory=dict)
+    # issue-key tags: {tag, meaning, note?} per distinct (tag, meaning), first-seen order
+    key_tags: List[Dict[str, str]] = field(default_factory=list)
+    notes: List[Dict[str, str]] = field(default_factory=list)  # notDone from Feature/Rule tags
 
     @property
     def tag_sets(self) -> List[str]:
@@ -262,7 +411,17 @@ def analyze_tags(feature: ParsedFeature, project_key: str,
     tags are not used). Makes no call. Invalid rule results (labels, field conflicts) refuse
     the whole file, naming tag, rule and result."""
     opts = opts or ImportOptions()
-    feat_plain, feat_reqs = _container_tags(feature.tags, "Feature")
+    info = opts.key_info or {}
+    feat = _classify_keys(feature.tags, project_key, info, None, "Feature")
+    feat_plain, feat_reqs = feat.plain, feat.reqs
+    key_tags: List[Dict[str, str]] = []
+    notes: List[Dict[str, str]] = list(feat.notes)
+
+    def add_keys(entries):
+        for e in entries:
+            if not any(k["tag"] == e["tag"] and k["meaning"] == e["meaning"] for k in key_tags):
+                key_tags.append(e)
+    add_keys(feat.keys)
     feat_out = _outcome(feat_plain, opts, opts.tags_as_labels)
     plain_all: List[str] = list(feat_plain)
     any_label = _keeps_label(feat_out, opts)
@@ -271,8 +430,12 @@ def analyze_tags(feature: ParsedFeature, project_key: str,
     problems: List[str] = []
     for i, s in enumerate(feature.scenarios):
         # Per scenario, not cached by rule name: Rules may share a name or be unnamed.
-        r_plain, r_reqs = _container_tags(s.rule_tags, "Rule")
-        plain, reqs, test_key = _scenario_tags(s, project_key)
+        rule = _classify_keys(s.rule_tags, project_key, info, None, "Rule")
+        r_plain, r_reqs = rule.plain, rule.reqs
+        notes.extend(n for n in rule.notes if n not in notes)
+        own, test_key = _scenario_tags(s, project_key, info)
+        plain, reqs = own.plain, own.reqs
+        add_keys(rule.keys + own.keys)
         if test_key and test_key in seen_keys:
             raise ToolError("Test key %s is tagged on more than one scenario (lines %d and %d)"
                             % (test_key, feature.scenarios[seen_keys[test_key]].line, s.line))
@@ -284,7 +447,8 @@ def analyze_tags(feature: ParsedFeature, project_key: str,
         any_label = any_label or _keeps_label(merged, opts)
         problems.extend("scenario %r (line %d): %s" % (s.name, s.line, p)
                         for p in merged.problems if p not in feat_out.problems)
-        scenarios.append(ScenarioTags(merged, dedupe(feat_reqs + r_reqs + reqs), test_key))
+        scenarios.append(ScenarioTags(merged, dedupe(feat_reqs + r_reqs + reqs), test_key,
+                                      own.notes, "; ".join(own.blocked)))
     problems = feat_out.problems + problems
     if problems:
         raise ToolError("Tag rules give invalid results; nothing was imported: "
@@ -311,7 +475,7 @@ def analyze_tags(feature: ParsedFeature, project_key: str,
             if key is not None and tag in _outcome([tag], opts, False).unmatched:
                 uncovered.setdefault(key, []).append(tag)
     return TagAnalysis(feat_out, scenarios, bg_keys, dedupe(plain_all), any_label, warnings,
-                       uncovered)
+                       uncovered, key_tags, notes)
 
 
 def _keeps_label(outcome: TagOutcome, opts: ImportOptions) -> bool:
@@ -491,6 +655,8 @@ def plan_import(ctx: ServerContext, project_key: str, feature: ParsedFeature, fe
         raise ToolError("No scenarios found in %s" % feature_path, path=feature_path)
     label = path_label(feature_path)
     if analysis is None:
+        if opts.key_info is None:
+            opts = dataclasses.replace(opts, key_info=lookup_key_tags(ctx, feature))
         analysis = analyze_tags(feature, project_key, opts)
     has_jira = ctx.jira is not None
 
@@ -503,7 +669,11 @@ def plan_import(ctx: ServerContext, project_key: str, feature: ParsedFeature, fe
                          index=i, definition=test_definition(s, opts.inline),
                          description=s.description, requirement_keys=list(st.requirement_keys),
                          test_sets=list(st.outcome.test_sets), fields=dict(st.outcome.fields))
-        if st.test_key:
+        a.not_done = list(st.notes)
+        if st.blocked:
+            a.kind, a.reason = "skip_test", st.blocked
+            a.labels, a.test_sets, a.fields, a.requirement_keys = [], [], {}, []
+        elif st.test_key:
             ids = [fid for fid in (_field_id(opts, n) for n in a.fields) if fid]
             r = fetch_test(ctx, project_key, st.test_key, jira_fields=ids)
             tt = r.get("testType")

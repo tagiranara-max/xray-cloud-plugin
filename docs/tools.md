@@ -122,11 +122,13 @@ Read-only tools for questions about test history and impact:
 | Scenario / Example | Cucumber test (Scenario) whose definition is its steps |
 | Scenario Outline / Template | Cucumber test (Scenario Outline) with its steps and all Examples blocks |
 | Plain tags | Labels |
-| `@TEST_<KEY>` or `@<KEY>` on a scenario | Updates that existing test |
-| `@REQ_<KEY>` (or a plain key on the Feature/Rule) | Links new tests to that requirement |
+| `@<KEY>` on a scenario | Looked up first (read-only). A test of the import's project: the scenario maps to that test. A test of another project: the scenario becomes a new test, with a `notDone` note. Another existing issue: a requirement link. No issue (for example `@ISO-8601`), or no Jira access to tell: an ordinary tag |
+| `@<KEY>` on the Feature/Rule | Looked up the same way: an existing issue is a requirement link for every test below it; no issue is an ordinary tag |
+| `@TEST_<KEY>` on a scenario | Maps the scenario to that test when it is a test of the import's project; otherwise the scenario is left out, with the reason in `notDone` |
+| `@REQ_<KEY>` | Links new tests to that requirement; with Jira access, a key of no issue is left out with a `notDone` entry |
 | DocStrings and DataTables | Preserved exactly, with correct escaping |
 
-By default (`apply=false`) the tool only previews what would be created, updated and linked, with possible duplicates flagged. A possible duplicate is an existing test in the project with the same summary (compared trimmed, with whitespace runs collapsed, ignoring case); tests whose summaries are only similar are listed as `similar` and never cause a skip. Call it again with `apply=true` to execute; scenarios with possible duplicates are skipped unless their index is listed in `createDuplicates`. A file that fails to parse creates nothing and reports the line and column.
+By default (`apply=false`) the tool only previews what would be created, updated and linked, with possible duplicates flagged. A possible duplicate is an existing test in the project with the same summary (compared trimmed, with whitespace runs collapsed, ignoring case); tests whose summaries are only similar are listed as `similar` and never cause a skip. Call it again with `apply=true` to execute; scenarios with possible duplicates are skipped unless their index is listed in `createDuplicates`. A file that fails to parse creates nothing and reports the line and column. A key-shaped tag never refuses the file: `tagSummary.keyTags` in the preview shows what each issue-key tag turned out to be (`test`, `otherTest`, `requirement`, `plain`, `notImported`, `missingRequirement`), with a note.
 
 ### Choices and preferences
 

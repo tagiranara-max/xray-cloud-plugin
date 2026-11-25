@@ -211,6 +211,19 @@ class JiraClient:
         entry = ((data or {}).get("permissions") or {}).get(permission) or {}
         return entry.get("havePermission") is True
 
+    def issue_type(self, key: str) -> Optional[str]:
+        """The issue type name of `key`, or None when Jira has no such issue (HTTP 404: not
+        found, or not visible to the token's user). Other errors are raised."""
+        try:
+            data = self._request("GET", "/rest/api/3/issue/%s" % quote(key, safe=""),
+                                 "issue %s" % key, params={"fields": "issuetype"})
+        except ToolError as e:
+            if e.data.get("status") == 404:
+                return None
+            raise
+        itype = ((data or {}).get("fields") or {}).get("issuetype")
+        return str(itype.get("name") or "") if isinstance(itype, dict) else ""
+
     def linked_keys(self, key: str) -> List[str]:
         """Keys of issues already linked to `key` with the Test link type."""
         data = self._request("GET", "/rest/api/3/issue/%s" % quote(key, safe=""), "issue %s" % key,
