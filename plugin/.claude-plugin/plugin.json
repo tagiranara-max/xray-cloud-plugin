@@ -23,7 +23,6 @@
       "type": "string",
       "title": "Xray region",
       "description": "Xray Cloud region: global, eu or au. Leave empty to use the XRAY_REGION environment variable (default global).",
-      "options": ["global", "eu", "au"],
       "required": false
     },
     "settings_file": {
