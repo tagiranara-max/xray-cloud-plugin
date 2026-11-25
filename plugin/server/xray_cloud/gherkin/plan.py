@@ -170,6 +170,8 @@ def _key_meaning(kind: str, key: str, scenario: bool, project_key: str,
     if kind == "requirement":
         if status == "missing":
             return "missingRequirement", "there is no issue %s" % key
+        if status == "test":
+            return "notRequirement", "%s is a test, not a requirement" % key
         if status == "unknown":  # explicit: linked; a refused link ends up in notDone
             return "link", (_UNKNOWN % key) + "; linked as the tag asks"
         return "requirement", ""
@@ -198,9 +200,7 @@ def _key_meaning(kind: str, key: str, scenario: bool, project_key: str,
                          "tag" % key)
     if status == "issue":
         return "requirement", ""
-    if status == "missing":
-        return "plain", "not an issue (there is no %s): an ordinary tag" % key
-    why = _UNKNOWN % key
+    why = _UNKNOWN % key  # also "missing": asked like no rows, never a silent label
     if answer == "link":
         return "link", why + "; linked as answered"
     if answer == "label":
@@ -278,7 +278,7 @@ def _classify_keys(tags: List[str], project_key: str, info: Dict[str, KeyInfo],
             out.blocked.append("tag %s: %s" % (t, why))
             out.notes.append(not_done(item, "scenario not imported (tag %s)" % t, why,
                                       "correct the key, or remove the tag to create a new test"))
-        else:  # missingRequirement
+        else:  # missingRequirement, notRequirement
             out.notes.append(not_done(item, "requirement link %s" % value, why,
                                       "correct the key, or link the requirement later"))
     return out
@@ -298,14 +298,15 @@ def _scenario_tags(s: ParsedScenario, project_key: str, info: Dict[str, KeyInfo]
 
 
 def key_tags_to_look_up(feature: ParsedFeature) -> Tuple[List[str], List[str]]:
-    """(bare and @TEST_ keys: Xray tests first, @REQ_ keys), distinct."""
+    """(bare, @TEST_ and @REQ_ keys: all are checked for tests first, so a @REQ_ naming a
+    test is never linked; keys of nothing else), distinct."""
     xray, reqs = [], []
     tags = list(feature.tags)
     for s in feature.scenarios:
         tags += s.rule_tags + s.tags
     for t in tags:
         kind, value = classify_tag(t)
-        if kind in ("key", "test") and value not in xray:
+        if kind in ("key", "test", "requirement") and value not in xray:
             xray.append(value)
         elif kind == "requirement" and value not in reqs:
             reqs.append(value)
@@ -481,6 +482,7 @@ class ScenarioTags:
     notes: List[Dict[str, str]] = field(default_factory=list)  # notDone from its key tags
     blocked: str = ""          # why the scenario is not imported (an unusable @TEST_ key)
     unverified: List[str] = field(default_factory=list)  # requirement keys Xray can't confirm
+    asked: List[str] = field(default_factory=list)  # its keys with an open keyTag question
 
 
 @dataclass
@@ -574,7 +576,8 @@ def analyze_tags(feature: ParsedFeature, project_key: str,
         reqs_all = dedupe(feat_reqs + r_reqs + reqs)
         scenarios.append(ScenarioTags(merged, reqs_all, test_key, own.notes,
                                       "; ".join(own.blocked),
-                                      [k for k in reqs_all if k in unverified]))
+                                      [k for k in reqs_all if k in unverified],
+                                      dedupe(feat.asked + rule.asked + own.asked)))
     problems = feat_out.problems + problems
     if problems:
         raise ToolError("Tag rules give invalid results; nothing was imported: "
@@ -827,6 +830,7 @@ def existing_test_changes(plan: List[ImportAction], analysis: TagAnalysis,
         if pres:
             c["preconditions"] = pres
         pending = [t for t in st.outcome.unmatched if kv_key(t) in analysis.uncovered]
+        pending += [k for k in st.asked if k in analysis.key_questions]  # keyTag still open
         if pending:
             c["pendingTags"] = pending
         if c["stepsChanged"] or len(c) > 4:  # more than the four identifying entries

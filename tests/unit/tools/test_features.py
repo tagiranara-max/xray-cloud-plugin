@@ -1725,3 +1725,47 @@ def test_refused_unverified_link_on_an_existing_test_is_not_done_not_a_failure(t
     assert not err, res
     assert res["updated"] == ["P-5"]
     assert [n["what"] for n in res["notDone"]] == ["requirement link R-404"]
+
+
+def test_open_key_tag_on_an_unchanged_existing_test_asks_existing_tests_in_the_same_round(
+        tmp_path):
+    ctx = ctx_for(tmp_path, _two_world(gherkin_b="Given b"))  # P-6's steps as in the file
+    path = feature_file(tmp_path, "Feature: F\n  @P-6 @ISO-8601\n  Scenario: B\n    Given b\n")
+    res = preview(ctx, path, **ans(createTestSet=False))
+    assert qids(res) == ["keyTag.ISO-8601", "existingTests"]
+    assert res["existingTests"][0]["pendingTags"] == ["ISO-8601"]
+    res, err = _apply(ctx, path)
+    assert not err and res["status"] == "needs_answer"
+    assert [q["id"] for q in res["questions"]] == ["keyTag.ISO-8601", "existingTests"]
+
+
+@pytest.mark.parametrize("error", [
+    ToolError("Xray request failed with HTTP 500", status=500),
+    ToolError("Network error contacting xray.cloud.getxray.app (timeout)")])
+def test_ambiguous_create_failure_with_unconfirmed_links_is_never_retried(tmp_path, error):
+    path = feature_file(tmp_path, "Feature: F\n  @ISO-8601\n  Scenario: A\n    Given a\n")
+    world = FakeXrayWorld()
+    base = world.responses()
+
+    def create_test(v):
+        raise error
+    base["CreateTest"] = create_test
+    ctx = make_context(YAML, responses=base)
+    ctx.env["CLAUDE_PROJECT_DIR"] = str(tmp_path)
+    res, err = _apply(ctx, path, keyTagAnswers={"ISO-8601": "link"})
+    assert err and error.message in res["error"]
+    assert len(ctx.xray.calls_of("CreateTest")) == 1  # no second create: no duplicate
+
+
+def test_transient_link_failure_on_an_existing_test_is_not_taken_as_a_refusal(tmp_path):
+    path = feature_file(tmp_path, "Feature: F\n  @TEST_P-5 @REQ_R-404\n  Scenario: A\n"
+                                  "    Given a\n")
+    ctx = ctx_for(tmp_path, _existing_world())
+
+    class Flaky(RecJira):
+        def link_requirement(self, key, req):
+            raise ToolError("Jira request for link failed with HTTP 503", status=503)
+    ctx.jira = Flaky()
+    res, err = _apply(ctx, path, existingTests="update")
+    assert err and "stopped while updating test P-5" in res["error"]  # partial failure
+    assert res["updated"] == ["P-5"] and "503" in json.dumps(res)

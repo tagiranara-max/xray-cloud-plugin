@@ -161,12 +161,13 @@ def test_key_tags_are_looked_up_in_xray_and_never_refuse_the_file():
     plan = plan_import(ctx, "P", parse_feature(KEYS_TEXT, "f"), "f.feature", False)
     by = {a.summary: a for a in plan if a.index is not None}
     assert by["Mine"].kind == "update_test" and by["Mine"].key == "P-5"
-    assert by["Elsewhere"].kind == "create_test" and by["Elsewhere"].labels == ["ISO-1"]
+    assert by["Elsewhere"].kind == "create_test" and by["Elsewhere"].labels == []
     assert by["Elsewhere"].requirement_keys == ["R-1"]
     assert "Q-5 is a test of project Q" in by["Elsewhere"].not_done[0]["reason"]
     assert by["Story"].requirement_keys == ["R-1", "R-2"]
     assert by["Not an issue"].kind == "create_test"
-    assert by["Not an issue"].labels == ["ISO-1", "ISO-8601"]
+    # "no such issue" answers are asked about like no rows, never a silent label
+    assert by["Not an issue"].labels == []
     assert by["Explicit elsewhere"].kind == "skip_test"
     assert "Q-6 is a test of project Q" in by["Explicit elsewhere"].reason
     assert by["Explicit missing"].kind == "skip_test"
@@ -175,7 +176,7 @@ def test_key_tags_are_looked_up_in_xray_and_never_refuse_the_file():
     assert by["Missing requirement"].requirement_keys == ["R-1", "R-404"]
     assert by["Missing requirement"].unverified_links == ["R-404"]
     jqls = [v["jql"] for op, v in ctx.xray.calls if op == "SearchTests"]
-    assert jqls[0] == "issue in (ISO-1, R-1, P-5, Q-5, R-2, ISO-8601, Q-6, P-404)"
+    assert jqls[0] == "issue in (ISO-1, R-1, P-5, Q-5, R-2, ISO-8601, Q-6, P-404, R-404)"
     assert "issue = ISO-8601" in jqls and "issue = Q-6" in jqls
     assert [v["jql"] for op, v in ctx.xray.calls if op == "FindCoverableIssues"] == [
         "issue in (R-1, R-2, P-404, R-404)"]
@@ -210,11 +211,11 @@ def test_key_tag_analysis_reports_meanings():
             "P-404": KeyInfo("missing"), "R-404": KeyInfo("missing")}
     a = analyze_tags(feat, "P", ImportOptions(key_info=info))
     meanings = {k["tag"]: k["meaning"] for k in a.key_tags}
-    assert meanings == {"ISO-1": "plain", "R-1": "requirement", "P-5": "test",
-                        "Q-5": "otherTest", "R-2": "requirement", "ISO-8601": "plain",
+    assert meanings == {"ISO-1": "asked", "R-1": "requirement", "P-5": "test",
+                        "Q-5": "otherTest", "R-2": "requirement", "ISO-8601": "asked",
                         "TEST_Q-6": "notImported", "TEST_P-404": "notImported",
                         "REQ_R-404": "missingRequirement"}
-    assert "ISO-8601" in a.plain_tags and a.any_label
+    assert list(a.key_questions) == ["ISO-1", "ISO-8601"] and a.any_label
     assert [st.blocked != "" for st in a.scenarios] == [False] * 4 + [True, True, False]
 
 
@@ -257,7 +258,7 @@ def test_no_such_issue_refusal_is_retried_key_by_key_even_for_one_key():
     ctx = make_context(YAML, responses=empty_reads(SearchTests=search))
     feat = parse_feature("Feature: F\n  @ISO-8601\n  Scenario: A\n    Given a\n", "f")
     plan = plan_import(ctx, "P", feat, "f", False)
-    assert plan[0].kind == "create_test" and plan[0].labels == ["ISO-8601"]
+    assert plan[0].kind == "create_test" and plan[0].labels == []  # asked (keyTag)
     assert calls[:2] == ["issue = ISO-8601", "issue = ISO-8601"]
 
 
@@ -268,7 +269,7 @@ def test_requirements_xray_knows_are_linked_without_asking():
     assert plan[0].requirement_keys == ["R-1", "R-2"] and plan[0].labels == []
     assert plan[0].unverified_links == ["R-2"]  # R-3 is asked about (keyTag.R-3)
     assert [v["jql"] for op, v in ctx.xray.calls if op == "FindCoverableIssues"] == [
-        "issue in (R-1, R-3, R-2)"]
+        "issue in (R-1, R-2, R-3)"]
 
 
 def test_unusable_tags_leave_one_scenario_out_never_the_file():
@@ -510,3 +511,12 @@ def test_feature_tag_problem_reported_once():
     with pytest.raises(ToolError) as e:
         analyze_tags(feat, "P", ImportOptions(rules=bad))
     assert len(e.value.data["problems"]) == 1
+
+
+def test_requirement_tag_naming_a_test_is_not_linked():
+    from xray_cloud.gherkin.plan import KeyInfo
+    feat = parse_feature("Feature: F\n  @REQ_P-5\n  Scenario: A\n    Given a\n", "f")
+    a = analyze_tags(feat, "P", ImportOptions(key_info={"P-5": KeyInfo("test")}))
+    st = a.scenarios[0]
+    assert st.requirement_keys == [] and st.notes[0]["what"] == "requirement link P-5"
+    assert st.notes[0]["reason"] == "P-5 is a test, not a requirement"

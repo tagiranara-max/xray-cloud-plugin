@@ -74,6 +74,23 @@ def _link_update(req_keys: List[str]) -> List[dict]:
             for k in req_keys]
 
 
+_NOT_A_REFUSAL = (401, 403, 408, 429)
+
+
+def _link_refused(e: ToolError, keys: List[str]) -> bool:
+    """Whether Jira clearly refused a link (the issue may not exist): a 4xx answer other than
+    auth, permission, timeout or rate limit, or an error without an HTTP status (a GraphQL
+    validation error) that names the issue links or one of the keys. 5xx, timeouts, network
+    errors and anything else are not: the write may or may not have happened."""
+    if is_permission_error(e):
+        return False
+    status = e.data.get("status")
+    if isinstance(status, int):
+        return 400 <= status < 500 and status not in _NOT_A_REFUSAL
+    msg = e.message
+    return "issuelink" in msg.lower() or any(k in msg for k in keys)
+
+
 class _Run:
     """Executes a plan; tracks what was written for partial-failure reports."""
 
@@ -119,7 +136,10 @@ class _Run:
         except ToolError as e:
             # A link Xray could not confirm (keyTag answered "link", or @REQ_) may name no
             # issue, and Jira then refuses the create: create the test without those links.
-            if not a.unverified_links or is_permission_error(e) or requiredfields.is_refusal(e):
+            # Only on a clear refusal of a link: after any other (possibly ambiguous) failure
+            # a retry could create the test twice.
+            if not a.unverified_links or not _link_refused(e, a.unverified_links) \
+                    or requiredfields.is_refusal(e):
                 raise
             keep = [k for k in a.requirement_keys if k not in a.unverified_links]
             if keep:
@@ -172,7 +192,7 @@ class _Run:
                 try:
                     jira.link_requirement(a.key, k)
                 except ToolError as e:
-                    if k not in a.unverified_links or is_permission_error(e):
+                    if k not in a.unverified_links or not _link_refused(e, [k]):
                         raise
                     self.not_done.append(not_done(a.key, "requirement link %s" % k,
                                                   "Jira refused the link (%s may not exist): "
