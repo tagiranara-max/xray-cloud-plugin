@@ -58,8 +58,8 @@ class PreferenceStore:
         try:
             data = json.loads(text)
         except ValueError:
-            raise ToolError("The preferences file %s is not valid JSON; fix or delete it" % self.path,
-                            file=str(self.path))
+            raise ToolError("The preferences file %s is not valid JSON; fix or delete it"
+                            % self.path, file=str(self.path))
         if not isinstance(data, dict) or not all(isinstance(v, dict) for v in data.values()):
             raise ToolError("The preferences file %s has an unexpected structure; fix or delete it"
                             % self.path, file=str(self.path))
@@ -161,7 +161,8 @@ class PreferenceStore:
                 "approvedProjects": sorted(p for p in projects if isinstance(p, str))
                 if isinstance(projects, list) else []}
 
-    def _write_approval(self, region: str, site: str, change: Callable[[Dict[str, Any]], None]) -> None:
+    def _write_approval(self, region: str, site: str,
+                        change: Callable[[Dict[str, Any]], None]) -> None:
         if not site:
             raise ToolError("Cannot store an approval without Xray credentials")
 

@@ -237,6 +237,57 @@ def test_no_token_no_settings_passes_through_unchanged(tmp_path):
     assert ei.value.data["unknownFields"] == ["Nope"]
 
 
+def test_no_token_field_ids_in_fields_pass_through(tmp_path):
+    ctx = make(tmp_path)
+    fields, _ = requiredfields.resolve(
+        ctx, project(ctx), "test",
+        {"customfield_12345": {"value": "Backend"}, "components": ["Backend"],
+         "priority": "High", "reporter": "acc-1"}, None, False)
+    assert fields == {"customfield_12345": {"value": "Backend"},
+                      "components": [{"name": "Backend"}], "priority": {"name": "High"},
+                      "reporter": {"accountId": "acc-1"}}
+    # a name that is not a field id is still refused
+    with pytest.raises(ToolError) as ei:
+        requiredfields.resolve(ctx, project(ctx), "test",
+                               {"customfield_12345": 1, "Team": "x"}, None, False)
+    assert ei.value.data["unknownFields"] == ["Team"]
+    # with create-meta, an id it does not list is still refused
+    (tmp_path / "m").mkdir()
+    ctx = make(tmp_path / "m", meta=SEVERITY_ONLY)
+    with pytest.raises(ToolError) as ei:
+        requiredfields.resolve(ctx, project(ctx), "test", {"Severity": "Low",
+                                                           "customfield_12345": 1}, None, False)
+    assert ei.value.data["unknownFields"] == ["customfield_12345"]
+
+
+def test_explicit_reporter_passes_through_never_remembered(tmp_path):
+    ctx = make(tmp_path, meta=SEVERITY_ONLY, responses=created())
+    res, err = call(ctx, "create_test", projectKey="PROJ", summary="S", aiLabel="",
+                    allowDuplicates=True, fields={"Severity": "Low"},
+                    rawFields={"reporter": {"accountId": "acc-1"}})
+    assert not err and res["created"] is True, res
+    sent = ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]
+    assert sent["reporter"] == {"accountId": "acc-1"}
+    assert "reporter" not in remembered(ctx)
+    ctx.preferences.remember_fields("global", ctx.site, "PROJ", "test",
+                                    {"reporter": {"accountId": "old"}})
+    fields, applied = requiredfields.resolve(ctx, project(ctx), "test", {"Severity": "Low"},
+                                             None, False)
+    assert "reporter" not in fields and "reporter" not in applied
+
+
+@pytest.mark.parametrize("kw", [{"rawFields": {"summary": "RAW"}},
+                                {"fields": {"project": {"key": "OTHER"}}},
+                                {"fields": {"Summary": "x"}},
+                                {"rawFields": {"issuetype": {"name": "Bug"}}}])
+def test_tool_owned_fields_from_the_caller_are_refused(tmp_path, kw):
+    ctx = make(tmp_path, meta=SEVERITY_ONLY, responses=created())
+    res, err = call(ctx, "create_test", projectKey="PROJ", summary="Mine", aiLabel="",
+                    allowDuplicates=True, **kw)
+    assert err and "the tool sets" in res["error"], res
+    assert res["ownedFields"] and creates(ctx) == []
+
+
 def test_createmeta_failure_falls_back_to_pass_through(tmp_path):
     ctx = make(tmp_path, meta=SEVERITY_ONLY)
 
@@ -424,7 +475,7 @@ def test_system_fields_never_come_from_remembered_or_get_remembered(tmp_path):
     ctx.preferences.remember_fields("global", ctx.site, "PROJ", "test",
                                     {"summary": "BAD", "customfield_3": {"value": "High"}})
     res, err = call(ctx, "create_test", projectKey="PROJ", summary="Mine", aiLabel="",
-                    allowDuplicates=True, rawFields={"summary": "RAW"})
+                    allowDuplicates=True)
     assert not err and res["appliedDefaults"] == {"test": {"customfield_3": {"value": "High"}}}
     assert ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]["summary"] == "Mine"
     requiredfields._add_pending(ctx, "PROJ", "test", {"summary": "X"}, True, asked=True)
@@ -589,6 +640,29 @@ def test_no_token_container_create_failure_asks_for_its_item_type(tmp_path):
     assert not err and res["key"] == "PROJ-9", res
     assert remembered(ctx, "testSet") == {"components": [{"name": "Backend"}]}
     assert remembered(ctx, "test") == {}
+
+
+def test_no_token_create_refused_follow_up_with_field_id_succeeds(tmp_path):
+    error = "Create issue failed! - customfield_12345: Field value is invalid."
+    ctx = make(tmp_path, responses=rejecting(["customfield_12345"], error=error))
+    res, err = call(ctx, "create_test", projectKey="PROJ", summary="S", aiLabel="",
+                    allowDuplicates=True)
+    assert not err and res["status"] == "needs_answer" and res["jiraError"] == error, res
+    res, err = call(ctx, "create_test", projectKey="PROJ", summary="S", aiLabel="",
+                    allowDuplicates=True, fields={"customfield_12345": {"value": "Backend"}})
+    assert not err and res["created"] is True, res
+    assert creates(ctx)[-1]["jira"]["fields"]["customfield_12345"] == {"value": "Backend"}
+
+
+def test_no_token_container_test_fields_take_a_field_id(tmp_path):
+    world = _set_world(1)
+    world["CreateTest"] = rejecting(["customfield_12345"], key="PROJ-2")["CreateTest"]
+    ctx = make(tmp_path, responses=world)
+    res, err = call(ctx, "create_test_set", projectKey="PROJ", summary="S", aiLabel="",
+                    newTests=[{"summary": "A"}], createDuplicates=[0],
+                    testFields={"customfield_12345": {"value": "Backend"}})
+    assert not err and res["key"] == "PROJ-10" and res["createdTests"] == ["PROJ-2"], res
+    assert creates(ctx)[0]["jira"]["fields"]["customfield_12345"] == {"value": "Backend"}
 
 
 def test_error_naming_only_system_fields_passes_through(tmp_path):

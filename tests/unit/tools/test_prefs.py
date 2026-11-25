@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from conftest import FakeTransport, json_response, make_context
 from xray_cloud.http import Response
 from xray_cloud.preferences import PreferenceStore
@@ -278,16 +280,16 @@ def test_set_preferences_revoke_and_clear(tmp_path):
     ctx.preferences.approve("global", site, "P", True)
     ctx.preferences.approve("global", site, "Q", False)
     ctx.preferences.remember_fields("global", site, "P", "test", {"customfield_12345": "Backend"})
-    ctx.preferences.remember_fields("global", site, "P", "plan", {"customfield_2": "x"})
+    ctx.preferences.remember_fields("global", site, "P", "testPlan", {"customfield_2": "x"})
     res, err = run(ctx, "set_preferences", projectKey="P", revokeProject="Q", approveAll=False,
                    clearFieldValues={"itemType": "test"})
     assert not err
     assert ctx.preferences.approval("global", site) == {"approveAll": False,
                                                         "approvedProjects": ["P"]}
     assert ctx.preferences.field_values("global", site, "P", "test") == {}
-    assert ctx.preferences.field_values("global", site, "P", "plan") == {"customfield_2": "x"}
+    assert ctx.preferences.field_values("global", site, "P", "testPlan") == {"customfield_2": "x"}
     res, err = run(ctx, "set_preferences", projectKey="P", clearFieldValues={})
-    assert not err and ctx.preferences.field_values("global", site, "P", "plan") == {}
+    assert not err and ctx.preferences.field_values("global", site, "P", "testPlan") == {}
     res, err = run(ctx, "set_preferences", projectKey="P", approveAll=True)
     assert err and "false" in res["error"]
 
@@ -324,3 +326,11 @@ def test_clear_field_values_rejects_empty_item_type(tmp_path):
     res, err = run(make(tmp_path), "set_preferences", projectKey="P",
                    clearFieldValues={"itemType": ""})
     assert err
+
+
+@pytest.mark.parametrize("args", [{"clearFieldValues": {"itemType": "plan"}},
+                                  {"revokeProject": "not a key"}, {"revokeProject": "proj"}])
+def test_set_preferences_rejects_unknown_item_type_and_bad_project_key(tmp_path, args):
+    res, err = run(make(tmp_path), "set_preferences", projectKey="P", **args)
+    assert err and ("itemType must be one of" in res["error"]
+                    or "revokeProject must be a project key" in res["error"]), res

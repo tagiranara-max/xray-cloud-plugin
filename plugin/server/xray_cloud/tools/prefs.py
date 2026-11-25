@@ -6,13 +6,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .. import choices
-from ..config import (REGIONS, ai_created_problem, feature_import_problem,
+from ..config import (PROJECT_KEY_RE, REGIONS, ai_created_problem, feature_import_problem,
                       find_settings_file, settings_search_paths)
 from ..context import require_project
 from ..errors import ToolError
 from ..gherkin.tagrules import parse_rules
 from ..jira_client import normalize_site_url
 from ..protocol import SERVER_INFO
+from ..requiredfields import ITEM_TYPE_NAMES
 from ..registry import REGISTRY
 from ..toolgroups import GROUPS, active_groups
 from .tests import _schema, check_ai_label
@@ -72,7 +73,9 @@ def _validate(project, args: Dict[str, Any]) -> Dict[str, Any]:
 @REGISTRY.tool(
     "set_preferences",
     "Change the remembered import choices of a project (createTestSet, backgrounds, "
-    "tagsAsLabels, unmatchedTags, aiLabel, aiLabelScope, tagRules) or remove some with `clear`. "
+    "tagsAsLabels, unmatchedTags, aiLabel, aiLabelScope, tagRules) or remove some with `clear`; "
+    "also revoke write approvals (revokeProject: one project; approveAll: false: the "
+    "all-projects approval) and forget remembered required-field values (clearFieldValues). "
     "An explicit change: it overwrites the remembered values (validated like the settings "
     "file). Writes only the plugin's own preferences file, never Xray, so read-only mode does "
     "not block it. Returns every choice's effective value and source (call, settings, "
@@ -93,8 +96,10 @@ def set_preferences(ctx, args):
     if both:
         raise ToolError("Cannot set and clear the same choice: %s" % ", ".join(both))
     revoke = args.get("revokeProject")
-    if revoke is not None and (not isinstance(revoke, str) or not revoke):
-        raise ToolError("revokeProject must be a project key")
+    if revoke is not None and (not isinstance(revoke, str)
+                               or not PROJECT_KEY_RE.fullmatch(revoke)):
+        raise ToolError("revokeProject must be a project key (for example PROJ)",
+                        revokeProject=revoke)
     if args.get("approveAll") not in (None, False):
         raise ToolError("approveAll only accepts false (to revoke); approval happens when a "
                         "write is first asked for")
@@ -106,6 +111,10 @@ def set_preferences(ctx, args):
                 isinstance(it, str) and it):
             raise ToolError("clearFieldValues must be an object with an optional non-empty "
                             "itemType string")
+        if "itemType" in clear_fv and it not in ITEM_TYPE_NAMES:
+            raise ToolError("clearFieldValues.itemType must be one of %s"
+                            % ", ".join(ITEM_TYPE_NAMES), itemType=it,
+                            known=list(ITEM_TYPE_NAMES))
     if not values and not clear and revoke is None and not revoke_all and clear_fv is None:
         raise ToolError("Nothing to do: give at least one value to set or names to clear")
     region = choices.region_of(ctx)
@@ -187,8 +196,9 @@ def _project_status(ctx, pk: str) -> Dict[str, Any]:
     "error), projects, read-only mode, Jira (configured, site; with check=true also "
     "reachable and user, using one Jira /myself call), the preferences file, and per project "
     "the effective import choices with their source (call, settings, remembered, default or "
-    "unanswered; `unanswered` lists the ones still to ask) and the result-import testKeyTag "
-    "setting. To change a choice, call "
+    "unanswered; `unanswered` lists the ones still to ask), the result-import testKeyTag "
+    "setting and the remembered required-field values (fieldValues), and the write approvals "
+    "(approvals: approveAll, approvedProjects). To change a choice or revoke an approval, call "
     "set_preferences or edit the user's settings file (a settings-file value always wins). "
     "Needs no projectKey. Contains no secrets.",
     {"type": "object", "properties": {"check": {"type": "boolean", "description":

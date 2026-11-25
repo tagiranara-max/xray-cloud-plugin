@@ -54,7 +54,8 @@ class ClientChannel:
 
     def _drop_queued(self, request_id: Any) -> None:
         self._pending = deque(m for m in self._pending
-                              if not (isinstance(m, dict) and "method" in m and m.get("id") == request_id))
+                              if not (isinstance(m, dict) and "method" in m
+                                      and m.get("id") == request_id))
 
     def _read(self) -> Any:
         """Next parsed message from stdin, PARSE_ERROR, or EOF. Skips blank lines."""
@@ -102,7 +103,8 @@ class ClientChannel:
                 if msg.get("id") != id_:
                     continue  # stray or late response: nothing waits for it
                 result = msg.get("result")
-                if "error" in msg or not isinstance(result, dict) or result.get("action") != "accept":
+                if "error" in msg or not isinstance(result, dict) \
+                        or result.get("action") != "accept":
                     return None
                 content = result.get("content")
                 return content if isinstance(content, dict) else None

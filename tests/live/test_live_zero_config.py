@@ -52,8 +52,13 @@ class StdioServer:
     def _pump(self) -> None:
         for line in self.proc.stdout:
             self.stdout_lines.append(line)
-            if line.strip():
-                self.out.put(json.loads(line))
+            if not line.strip():
+                continue
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue  # not a protocol message (stray output): kept in stdout_lines only
+            self.out.put(msg)
         self.out.put(None)
 
     def send(self, msg: dict) -> None:
@@ -116,11 +121,6 @@ class StdioServer:
 
 
 @pytest.fixture
-def zlive(wlive):
-    return wlive
-
-
-@pytest.fixture
 def server_factory(tmp_path):
     servers: List[StdioServer] = []
 
@@ -168,94 +168,94 @@ def _answer(value: Optional[str], action: str = "accept"):
     return handler
 
 
-def test_needs_answer_then_allow_project(zlive, server_factory):
+def test_needs_answer_then_allow_project(wlive, server_factory):
     srv = server_factory(elicitation=False)
-    first = _create(srv, zlive, "zero-config needs_answer")
+    first = _create(srv, wlive, "zero-config needs_answer")
     assert first.get("status") == "needs_answer", first
     assert [q["id"] for q in first["questions"]] == ["allowProject"]
     assert not first.get("key")
     assert "approvedProjects" not in srv.preferences()  # nothing remembered yet
-    created = _create(srv, zlive, "zero-config needs_answer", allowProject="project")
+    created = _create(srv, wlive, "zero-config needs_answer", allowProject="project")
     assert created.get("created") is True and created.get("key"), created
     # existence check accepted the existing project; only this project is remembered
     ap = _approvals(srv)
-    assert ap == {"approveAll": False, "approvedProjects": [zlive.project]}, ap
-    _delete(srv, zlive, created["key"])  # approved: no question this time
+    assert ap == {"approveAll": False, "approvedProjects": [wlive.project]}, ap
+    _delete(srv, wlive, created["key"])  # approved: no question this time
     assert srv.elicitations == []
 
 
-def test_elicit_approve_all_then_no_question(zlive, server_factory):
+def test_elicit_approve_all_then_no_question(wlive, server_factory):
     srv = server_factory(elicitation=True)
     # the agent's allowProject never bypasses the user's answer when the client can elicit
-    first = _create(srv, zlive, "zero-config elicit 1", on_elicit=_answer("all"),
+    first = _create(srv, wlive, "zero-config elicit 1", on_elicit=_answer("all"),
                     allowProject="project")
     assert first.get("created") is True and first.get("key"), first
     assert len(srv.elicitations) == 1
     assert srv.elicitations[0]["id"].startswith("xc-")
     assert _approvals(srv)["approveAll"] is True
-    second = _create(srv, zlive, "zero-config elicit 2")  # on_elicit=None: asking would fail
+    second = _create(srv, wlive, "zero-config elicit 2")  # on_elicit=None: asking would fail
     assert second.get("created") is True and second.get("key"), second
     assert len(srv.elicitations) == 1
-    _delete(srv, zlive, first["key"])
-    _delete(srv, zlive, second["key"])
-    revoke = srv.tool("set_preferences", {"projectKey": zlive.project, "approveAll": False})
+    _delete(srv, wlive, first["key"])
+    _delete(srv, wlive, second["key"])
+    revoke = srv.tool("set_preferences", {"projectKey": wlive.project, "approveAll": False})
     assert not revoke["_isError"], revoke
     assert _approvals(srv) == {"approveAll": False, "approvedProjects": []}
 
 
 @pytest.mark.parametrize("answer", [("no", "accept"), (None, "decline"), (None, "cancel")])
-def test_elicit_decline_writes_nothing(zlive, server_factory, answer):
+def test_elicit_decline_writes_nothing(wlive, server_factory, answer):
     srv = server_factory(elicitation=True)
-    res = _create(srv, zlive, "zero-config declined", on_elicit=_answer(*answer))
+    res = _create(srv, wlive, "zero-config declined", on_elicit=_answer(*answer))
     assert res["_isError"] and "not approved" in res.get("error", json.dumps(res)), res
     assert not res.get("key")
     assert len(srv.elicitations) == 1
     assert _approvals(srv) == {"approveAll": False, "approvedProjects": []}
-    assert zlive.project not in srv.preferences()  # nothing remembered
-    found = srv.tool("search_tests", {"projectKey": zlive.project,
+    assert wlive.project not in srv.preferences()  # nothing remembered
+    found = srv.tool("search_tests", {"projectKey": wlive.project,
                                       "jql": 'project = %s AND summary ~ "%s"'
-                                             % (zlive.project, zlive.run_id + " zero-config declined")})
+                                             % (wlive.project, wlive.run_id + " zero-config declined")})
     assert not found["_isError"], found
     hits = [t for t in found.get("tests") or found.get("results") or []
             if "declined" in (t.get("summary") or "")]
     assert hits == [], hits
 
 
-def test_revoke_project_asks_again(zlive, server_factory):
+def test_revoke_project_asks_again(wlive, server_factory):
     srv = server_factory(elicitation=True)
-    first = _create(srv, zlive, "zero-config revoke 1", on_elicit=_answer("project"))
+    first = _create(srv, wlive, "zero-config revoke 1", on_elicit=_answer("project"))
     assert first.get("created") is True, first
-    assert _approvals(srv) == {"approveAll": False, "approvedProjects": [zlive.project]}
-    revoke = srv.tool("set_preferences", {"projectKey": zlive.project,
-                                          "revokeProject": zlive.project})
+    assert _approvals(srv) == {"approveAll": False, "approvedProjects": [wlive.project]}
+    revoke = srv.tool("set_preferences", {"projectKey": wlive.project,
+                                          "revokeProject": wlive.project})
     assert not revoke["_isError"], revoke
     assert _approvals(srv) == {"approveAll": False, "approvedProjects": []}
     # the next write (the delete) asks again; decline it, then approve it
-    refused = srv.tool("delete_test", {"projectKey": zlive.project, "testKey": first["key"],
+    refused = srv.tool("delete_test", {"projectKey": wlive.project, "testKey": first["key"],
                                        "confirm": True}, _answer("no"))
     assert refused["_isError"], refused
     assert len(srv.elicitations) == 2
-    _delete(srv, zlive, first["key"], _answer("project"))
+    _delete(srv, wlive, first["key"], _answer("project"))
     assert len(srv.elicitations) == 3
 
 
-def test_revoke_project_needs_answer_again(zlive, server_factory):
+def test_revoke_project_needs_answer_again(wlive, server_factory):
     srv = server_factory(elicitation=False)
-    first = _create(srv, zlive, "zero-config revoke na", allowProject="project")
+    first = _create(srv, wlive, "zero-config revoke na", allowProject="project")
     assert first.get("created") is True, first
-    revoke = srv.tool("set_preferences", {"projectKey": zlive.project,
-                                          "revokeProject": zlive.project})
+    revoke = srv.tool("set_preferences", {"projectKey": wlive.project,
+                                          "revokeProject": wlive.project})
     assert not revoke["_isError"], revoke
-    again = srv.tool("delete_test", {"projectKey": zlive.project, "testKey": first["key"],
+    again = srv.tool("delete_test", {"projectKey": wlive.project, "testKey": first["key"],
                                      "confirm": True})
     assert again.get("status") == "needs_answer", again
-    _delete(srv, zlive, first["key"], allowProject="project")
+    _delete(srv, wlive, first["key"], allowProject="project")
 
 
-def test_unknown_project_is_not_remembered(zlive, server_factory):
+def test_unknown_project_is_not_remembered(wlive, server_factory):
     srv = server_factory(elicitation=False)
     pk = "ZZXQNOPE"
-    res = srv.tool("create_test", {"projectKey": pk, "summary": zlive.summary("zero-config nope"),
+    res = srv.tool("create_test", {"projectKey": pk, "summary": wlive.summary("zero-config nope"),
                                    "testType": "Manual", "aiLabel": "",
                                    "allowProject": "project"})
     assert res["_isError"] and "not found" in res.get("error", ""), res

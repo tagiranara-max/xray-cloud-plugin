@@ -21,7 +21,11 @@ from .fields import convert_value
 
 ITEM_TYPE_NAMES = {"test": "Test", "testExecution": "Test Execution", "testPlan": "Test Plan",
                    "testSet": "Test Set", "precondition": "Precondition"}
+# never asked, never remembered; the tool sets TOOL_OWNED itself (a caller value is refused),
+# a reporter the caller passes explicitly is sent as given
 SYSTEM_FIELDS = frozenset({"summary", "project", "issuetype", "reporter"})
+TOOL_OWNED = frozenset({"summary", "project", "issuetype"})
+_CUSTOM_FIELD_ID = re.compile(r"customfield_\d+$")
 MAX_CHOICES = 50
 XRAY_CUSTOM_PREFIX = "com.xpandit.plugins.xray"
 # create-meta schema types a flat elicitation form can hold (one primitive value)
@@ -33,7 +37,8 @@ _FORM_SPEC_TYPES = frozenset({"string", "number", "option", "version"})
 _SYSTEM_SHAPES = {"components": ("array", "component"), "fixVersions": ("array", "version"),
                   "versions": ("array", "version"), "labels": ("array", "string"),
                   "priority": ("priority", None), "duedate": ("date", None),
-                  "environment": ("string", None), "assignee": ("user", None)}
+                  "environment": ("string", None), "assignee": ("user", None),
+                  "reporter": ("user", None)}
 _SYSTEM_NAMES = {"components": "components", "component/s": "components",
                  "fix versions": "fixVersions", "fix version/s": "fixVersions",
                  "affects versions": "versions", "affects version/s": "versions",
@@ -166,8 +171,9 @@ def learn(ctx: Any, pk: str, item_type: str, found: List[dict]) -> None:
 @contextmanager
 def creating(ctx: Any, pk: str, item_type: str, param: str = "fields") -> Iterator[None]:
     """Wraps the create mutation of a new item. On success the call's field answers for
-    that item type are remembered (commit). A Jira error naming required fields becomes RequiredFieldsRejected
-    (the fields learned, see learn); one naming only system fields passes unchanged; another
+    that item type are remembered (commit). A Jira error naming required fields becomes
+    RequiredFieldsRejected (the fields learned, see learn); one naming only system fields
+    passes unchanged; another
     "Create issue failed!" error becomes CreateRefused; other errors pass unchanged."""
     try:
         yield
@@ -228,6 +234,18 @@ def _lookup(meta: Optional[List[dict]], name: str) -> Optional[dict]:
             return f
     folded = [f for f in meta if str(f.get("name") or "").casefold() == name.casefold()]
     return folded[0] if len(folded) == 1 else None
+
+
+def _id_entry(name: str) -> Optional[dict]:
+    """Without create-meta: a key that is a Jira field id (customfield_<n>, or a system field
+    whose shape is known) -> a create-meta-like entry, so its value passes through (system
+    fields converted by their shape); None for anything else."""
+    if _CUSTOM_FIELD_ID.match(name):
+        return {"id": name, "name": name}
+    shape = _SYSTEM_SHAPES.get(name)
+    if shape is None:
+        return None
+    return {"id": name, "name": name, "schemaType": shape[0], "schemaItems": shape[1]}
 
 
 def _as_list(value: Any) -> list:
@@ -344,11 +362,22 @@ def compute(ctx: Any, project: ProjectSettings, item_type: str,
         if spec is not None:
             call[spec.id] = convert_value(spec, value)
             continue
+        if name in TOOL_OWNED:
+            call[name] = value
+            continue
         f = _lookup(meta, name)
+        if f is None and create_meta is None:
+            f = _id_entry(name)  # no create-meta to check against: field ids pass through
         if f is None:
             unknown.append(name)
         else:
             call[f["id"]] = _convert_meta(f, value)
+    owned = sorted(k for k in set(call) | set(raw_fields or {}) if k in TOOL_OWNED)
+    if owned:
+        raise ToolError("%s cannot be set through fields or rawFields: the tool sets %s itself "
+                        "(use its own parameters, e.g. summary and projectKey)"
+                        % (", ".join(owned), "it" if len(owned) == 1 else "them"),
+                        ownedFields=owned)
     if unknown:
         known = list(specs) + [f.get("name") or f["id"] for f in meta or []
                                if f["id"] not in SYSTEM_FIELDS and f["id"] not in by_id]
@@ -367,8 +396,9 @@ def compute(ctx: Any, project: ProjectSettings, item_type: str,
     out.update(defaults)
     out.update(answers)
     out.update(call)
-    # the tool's own values (e.g. description; summary, project, ...) always win
-    own = set(provided) | SYSTEM_FIELDS
+    # the tool's own values (e.g. description; summary, project, issuetype) always win; a
+    # reporter is only ever the call's own explicit value (never remembered or asked)
+    own = set(provided) | TOOL_OWNED
     out = {k: v for k, v in out.items() if k not in own}
     applied = {k: v for k, v in remembered.items()
                if k not in defaults and k not in answers and k not in call and k not in own}

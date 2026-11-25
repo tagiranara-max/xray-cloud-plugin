@@ -27,7 +27,7 @@ Ask which one:
 
 - an existing test execution: pass `testExecKey`. Cucumber and Behave results for an existing execution are sent as Xray JSON, one status per test (step details are not kept; failures become the run comment), because Xray's Cucumber and Behave imports always create a new execution. An Xray JSON report's own `testExecutionKey` also targets that execution; every key in an Xray JSON report must belong to the project, or the import is refused;
 - a test plan: pass `testPlanKey` (any format);
-- a new test execution: omit `testExecKey`, and ask for a `summary`. The project's `testExecution` fields from the settings file apply. Call `get_create_fields` with issue type `Test Execution` to see which are required. A required field with no default must be given in `fields` (friendly names from the settings file) or `rawFields`; the import is refused before any upload if one is missing.
+- a new test execution: omit `testExecKey`, and ask for a `summary`. The project's `testExecution` fields from the settings file and the user's remembered values apply. With the Jira token, the required fields are discovered and the user is asked for any without a value before the upload. Without the token they are not known up front: if Jira refuses the new execution, its error is passed through as is; then ask the user for the values and call again with `fields` set to {field id: value} (or `rawFields`).
 
 ## 3. Environments
 
