@@ -27,7 +27,7 @@ def load(path):
 
 def claude_env_names():
     """The env names Claude Code's plugin.json passes to the server (from userConfig)."""
-    return set(load(CLAUDE_MANIFEST)["mcpServers"]["xray"]["env"])
+    return {n[:-len("_SETTING")] for n in load(CLAUDE_MANIFEST)["mcpServers"]["xray"]["env"]}
 
 
 def assert_relative(path):
@@ -127,11 +127,14 @@ def test_cursor_env_uses_declared_variables_only():
     # Cursor's built-in ${workspaceFolder}; if a plugin's mcp.json leaves it unexpanded, the
     # server ignores the literal placeholder and the project folder stays unknown.
     assert env.pop("XRAY_PROJECT_DIR") == "${workspaceFolder}"
-    assert claude_env_names() | {"XRAY_TOOLS"} <= set(env)
+    # Every value reaches the server under NAME_SETTING, never the bare NAME, so a variable
+    # Cursor expands to empty cannot hide the same variable in the shell environment.
+    assert all(n.endswith("_SETTING") for n in env), env
+    assert claude_env_names() | {"XRAY_TOOLS"} <= {n[:-len("_SETTING")] for n in env}
     for name, value in env.items():
         assert PLACEHOLDER.fullmatch(value), (name, value)
-        assert PLACEHOLDER.fullmatch(value).group(1) == name
-    assert set(env) == declared
+        assert PLACEHOLDER.fullmatch(value).group(1) == name[:-len("_SETTING")]
+    assert {n[:-len("_SETTING")] for n in env} == declared
     assert {"XRAY_CLIENT_ID", "XRAY_CLIENT_SECRET"} <= set(variables.get("required", []))
 
 
@@ -164,3 +167,41 @@ def test_native_manifests_share_identity():
         assert data["name"] == claude["name"], path
         assert data["description"] == claude["description"].replace("from Claude Code ", ""), path
         assert data["license"] == claude["license"], path
+
+
+# --- user-facing values never use the bare environment name ---------------------------
+
+@pytest.mark.parametrize("env", [load(CLAUDE_MANIFEST)["mcpServers"]["xray"]["env"],
+                                 load(CURSOR_MCP)["mcpServers"]["xray"]["env"]],
+                         ids=["claude", "cursor"])
+def test_manifests_never_map_a_user_value_onto_the_bare_env_name(env):
+    for name, value in env.items():
+        if name == "XRAY_PROJECT_DIR":
+            continue
+        assert name.endswith("_SETTING"), (name, value)
+
+
+SERVER_READS = {"XRAY_CLIENT_ID", "XRAY_CLIENT_SECRET", "XRAY_REGION", "XRAY_SETTINGS_FILE",
+                "XRAY_READ_ONLY", "XRAY_TOOLS", "JIRA_SITE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"}
+
+
+@pytest.mark.parametrize("env", [load(CLAUDE_MANIFEST)["mcpServers"]["xray"]["env"],
+                                 load(CURSOR_MCP)["mcpServers"]["xray"]["env"]],
+                         ids=["claude", "cursor"])
+def test_every_setting_name_is_one_the_server_reads(env):
+    for name in env:
+        if name != "XRAY_PROJECT_DIR":
+            assert name[:-len("_SETTING")] in SERVER_READS, name
+
+
+def test_mapped_user_config_prompts_have_no_default():
+    """A default would arrive non-empty and override the environment variable."""
+    manifest = load(CLAUDE_MANIFEST)
+    for ref in manifest["mcpServers"]["xray"]["env"].values():
+        key = ref[len("${user_config."):-1]
+        assert "default" not in manifest["userConfig"][key], key
+
+
+def test_cursor_variables_mapped_to_settings_have_no_default_or_enum():
+    for name, schema in load(CURSOR_MANIFEST)["variables"]["properties"].items():
+        assert "default" not in schema and "enum" not in schema, name

@@ -49,5 +49,6 @@ def test_gemini_settings_match_plugin_json_user_config():
     gemini = {s["envVar"]: bool(s.get("sensitive")) for s in load()["settings"]}
     for env, ref in plugin["mcpServers"]["xray"]["env"].items():
         key = ref[len("${user_config."):-1]
+        env = env[:-len("_SETTING")]
         assert env in gemini, env
         assert gemini[env] == bool(plugin["userConfig"][key].get("sensitive")), env

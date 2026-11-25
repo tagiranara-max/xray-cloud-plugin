@@ -421,3 +421,46 @@ def test_project_dir_unknown_inside_plugin_folder(tmp_path, monkeypatch):
 def test_plugin_dir_is_the_plugin_folder():
     from xray_cloud import config
     assert (config.PLUGIN_DIR / ".claude-plugin" / "plugin.json").is_file()
+
+
+# ---- plugin prompts (*_SETTING) versus environment variables ------------------------
+
+REAL = {"XRAY_CLIENT_ID": "real-id", "XRAY_CLIENT_SECRET": "real-secret"}
+
+
+@pytest.mark.parametrize("empty", ["", "  ", "${user_config.xray_client_id}"])
+def test_empty_plugin_prompt_falls_back_to_environment(empty):
+    env = dict(REAL, XRAY_CLIENT_ID_SETTING=empty, XRAY_CLIENT_SECRET_SETTING=empty)
+    c = load_credentials(env)
+    assert (c.client_id, c.client_secret) == ("real-id", "real-secret")
+
+
+def test_plugin_prompt_wins_over_environment():
+    env = dict(REAL, XRAY_CLIENT_ID_SETTING="plugin-id", XRAY_CLIENT_SECRET_SETTING="plugin-secret",
+               XRAY_REGION="eu", XRAY_REGION_SETTING="au")
+    c = load_credentials(env)
+    assert (c.client_id, c.client_secret, c.region) == ("plugin-id", "plugin-secret", "au")
+
+
+def test_region_falls_back_to_environment_when_prompt_empty():
+    assert load_credentials(dict(REAL, XRAY_REGION="eu", XRAY_REGION_SETTING="")).region == "eu"
+
+
+def test_jira_prompt_wins_and_empty_prompt_falls_back():
+    shell = {"JIRA_SITE_URL": "https://a.atlassian.net", "JIRA_EMAIL": "a@x.io", "JIRA_API_TOKEN": "t1"}
+    empty = dict(shell, JIRA_SITE_URL_SETTING="", JIRA_EMAIL_SETTING="", JIRA_API_TOKEN_SETTING="")
+    j = load_jira_credentials(empty)
+    assert (j.site_url, j.email, j.token) == ("https://a.atlassian.net", "a@x.io", "t1")
+    won = dict(shell, JIRA_EMAIL_SETTING="b@x.io", JIRA_API_TOKEN_SETTING="t2")
+    j = load_jira_credentials(won)
+    assert (j.site_url, j.email, j.token) == ("https://a.atlassian.net", "b@x.io", "t2")
+
+
+def test_read_only_and_settings_file_prompts():
+    assert load_read_only({"XRAY_READ_ONLY": "true", "XRAY_READ_ONLY_SETTING": ""}) is True
+    assert load_read_only({"XRAY_READ_ONLY": "true", "XRAY_READ_ONLY_SETTING": "false"}) is False
+    shell_path = "/nonexistent/shell.yml"
+    assert str(settings_search_paths({"XRAY_SETTINGS_FILE": shell_path,
+                                      "XRAY_SETTINGS_FILE_SETTING": ""})[0]) == shell_path
+    assert str(settings_search_paths({"XRAY_SETTINGS_FILE": shell_path,
+                                      "XRAY_SETTINGS_FILE_SETTING": "/p/x.yml"})[0]) == "/p/x.yml"

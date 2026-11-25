@@ -22,9 +22,7 @@
     "xray_region": {
       "type": "string",
       "title": "Xray region",
-      "description": "Xray Cloud region: global, eu or au.",
-      "options": ["global", "eu", "au"],
-      "default": "global",
+      "description": "Xray Cloud region: global, eu or au. Leave empty to use the XRAY_REGION environment variable (default global).",
       "required": false
     },
     "settings_file": {
@@ -55,8 +53,7 @@
     "read_only": {
       "type": "boolean",
       "title": "Read-only mode",
-      "description": "When true, every write tool refuses to run.",
-      "default": false,
+      "description": "When true, every write tool refuses to run. Leave empty to use the XRAY_READ_ONLY environment variable (default false).",
       "required": false
     }
   },
@@ -65,14 +62,14 @@
       "command": "python3",
       "args": ["${CLAUDE_PLUGIN_ROOT}/server/main.py"],
       "env": {
-        "XRAY_CLIENT_ID": "${user_config.xray_client_id}",
-        "XRAY_CLIENT_SECRET": "${user_config.xray_client_secret}",
-        "XRAY_REGION": "${user_config.xray_region}",
-        "XRAY_SETTINGS_FILE": "${user_config.settings_file}",
-        "JIRA_SITE_URL": "${user_config.jira_site_url}",
-        "JIRA_EMAIL": "${user_config.jira_email}",
-        "JIRA_API_TOKEN": "${user_config.jira_api_token}",
-        "XRAY_READ_ONLY": "${user_config.read_only}"
+        "XRAY_CLIENT_ID_SETTING": "${user_config.xray_client_id}",
+        "XRAY_CLIENT_SECRET_SETTING": "${user_config.xray_client_secret}",
+        "XRAY_REGION_SETTING": "${user_config.xray_region}",
+        "XRAY_SETTINGS_FILE_SETTING": "${user_config.settings_file}",
+        "JIRA_SITE_URL_SETTING": "${user_config.jira_site_url}",
+        "JIRA_EMAIL_SETTING": "${user_config.jira_email}",
+        "JIRA_API_TOKEN_SETTING": "${user_config.jira_api_token}",
+        "XRAY_READ_ONLY_SETTING": "${user_config.read_only}"
       }
     }
   }

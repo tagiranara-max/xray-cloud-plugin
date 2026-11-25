@@ -48,6 +48,13 @@ def _get(env: Mapping[str, str], key: str) -> Optional[str]:
     return value
 
 
+def _setting(env: Mapping[str, str], name: str) -> Optional[str]:
+    """A user setting: the plugin prompt (NAME_SETTING) when non-empty, else the environment
+    variable NAME. Plugin manifests map prompts onto the *_SETTING names so an empty prompt
+    cannot hide a variable inherited from the shell."""
+    return _get(env, name + "_SETTING") or _get(env, name)
+
+
 @dataclass
 class Credentials:
     client_id: str
@@ -57,12 +64,12 @@ class Credentials:
 
 
 def load_credentials(env: Mapping[str, str]) -> Optional[Credentials]:
-    region = (_get(env, "XRAY_REGION") or "global").lower()
+    region = (_setting(env, "XRAY_REGION") or "global").lower()
     if region not in REGIONS:
         raise SettingsError("Unknown XRAY_REGION %r; expected one of: %s"
                             % (region, ", ".join(REGIONS)))
-    client_id = _get(env, "XRAY_CLIENT_ID")
-    client_secret = _get(env, "XRAY_CLIENT_SECRET")
+    client_id = _setting(env, "XRAY_CLIENT_ID")
+    client_secret = _setting(env, "XRAY_CLIENT_SECRET")
     if not client_id or not client_secret:
         return None
     return Credentials(client_id, client_secret, region, REGIONS[region])
@@ -76,14 +83,14 @@ class JiraCredentials:
 
 
 def load_jira_credentials(env: Mapping[str, str]) -> Optional[JiraCredentials]:
-    site, email, token = (_get(env, k) for k in ("JIRA_SITE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"))
+    site, email, token = (_setting(env, k) for k in ("JIRA_SITE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"))
     if not (site and email and token):
         return None
     return JiraCredentials(site, email, token)
 
 
 def load_read_only(env: Mapping[str, str]) -> bool:
-    value = _get(env, "XRAY_READ_ONLY")
+    value = _setting(env, "XRAY_READ_ONLY")
     if value is None:
         return False
     v = value.lower()
@@ -160,7 +167,7 @@ def settings_search_paths(env: Mapping[str, str]) -> List[Path]:
     so settings do not depend on where the client starts the server; a team that commits a
     file in its repository points XRAY_SETTINGS_FILE at it."""
     candidates: List[Path] = []
-    explicit = _get(env, "XRAY_SETTINGS_FILE")
+    explicit = _setting(env, "XRAY_SETTINGS_FILE")
     if explicit:
         candidates.append(Path(os.path.expanduser(explicit)))
     home = Path(os.path.expanduser("~")) / ".config" / "xray-cloud"
@@ -172,7 +179,7 @@ def settings_search_paths(env: Mapping[str, str]) -> List[Path]:
 def find_settings_file(env: Mapping[str, str]) -> Optional[Path]:
     """The first existing settings file. An explicit XRAY_SETTINGS_FILE must exist: a wrong
     path is an error rather than a silent fall-through to another file."""
-    explicit = _get(env, "XRAY_SETTINGS_FILE")
+    explicit = _setting(env, "XRAY_SETTINGS_FILE")
     if explicit:
         path = Path(os.path.expanduser(explicit))
         if not path.is_file():

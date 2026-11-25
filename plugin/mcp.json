@@ -4,15 +4,15 @@
       "command": "python3",
       "args": ["${CURSOR_PLUGIN_ROOT}/server/main.py"],
       "env": {
-        "XRAY_CLIENT_ID": "${XRAY_CLIENT_ID}",
-        "XRAY_CLIENT_SECRET": "${XRAY_CLIENT_SECRET}",
-        "XRAY_REGION": "${XRAY_REGION}",
-        "XRAY_SETTINGS_FILE": "${XRAY_SETTINGS_FILE}",
-        "XRAY_READ_ONLY": "${XRAY_READ_ONLY}",
-        "XRAY_TOOLS": "${XRAY_TOOLS}",
-        "JIRA_SITE_URL": "${JIRA_SITE_URL}",
-        "JIRA_EMAIL": "${JIRA_EMAIL}",
-        "JIRA_API_TOKEN": "${JIRA_API_TOKEN}",
+        "XRAY_CLIENT_ID_SETTING": "${XRAY_CLIENT_ID}",
+        "XRAY_CLIENT_SECRET_SETTING": "${XRAY_CLIENT_SECRET}",
+        "XRAY_REGION_SETTING": "${XRAY_REGION}",
+        "XRAY_SETTINGS_FILE_SETTING": "${XRAY_SETTINGS_FILE}",
+        "XRAY_READ_ONLY_SETTING": "${XRAY_READ_ONLY}",
+        "XRAY_TOOLS_SETTING": "${XRAY_TOOLS}",
+        "JIRA_SITE_URL_SETTING": "${JIRA_SITE_URL}",
+        "JIRA_EMAIL_SETTING": "${JIRA_EMAIL}",
+        "JIRA_API_TOKEN_SETTING": "${JIRA_API_TOKEN}",
         "XRAY_PROJECT_DIR": "${workspaceFolder}"
       }
     }
