@@ -214,4 +214,5 @@ def test_jira_prompts_say_all_three_are_needed():
              claude["jira_api_token"]["description"], cursor["JIRA_SITE_URL"]["description"],
              cursor["JIRA_EMAIL"]["description"], cursor["JIRA_API_TOKEN"]["description"]]
     for t in texts:
-        assert "email" in t.lower() and ("site URL" in t or "site url" in t.lower()), t
+        low = t.lower()
+        assert "email" in low and "site url" in low and "token" in low, t

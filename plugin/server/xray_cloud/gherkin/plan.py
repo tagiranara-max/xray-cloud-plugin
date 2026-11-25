@@ -423,7 +423,7 @@ def _existing_test_fields(ctx: ServerContext, a: ImportAction, current: Dict[str
         return
     if not has_jira:
         a.not_done.append(not_done(a.key, "fields " + ", ".join(
-            "%s = %s" % (n, v) for n, v in todo.items())))
+            "%s = %s" % (n, v) for n, v in todo.items()), *jira_reason_fix(ctx.env)))
         return
     a.field_updates = build_jira_fields(lenient, "test", todo, None)
     a.field_names = list(todo)

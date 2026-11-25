@@ -451,8 +451,8 @@ def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: 
     "apply=true with unanswered questions is refused. apply=false (default) previews the "
     "plan; apply=true executes it, skipping possible duplicates unless indexed in "
     "createDuplicates. Anything not doable is in notDone {item, what, reason, fix}: if the "
-    "reason is \"no Jira token or Atlassian MCP\" and Atlassian MCP tools are available, offer "
-    "to complete them with those. fields/rawFields apply to created tests.",
+    "reason says Jira access is missing or not configured and Atlassian MCP tools are available, "
+    "offer to complete them with those. fields/rawFields apply to created tests.",
     _schema({"featureFilePath": {"type": "string", "description":
                                  "Local .feature file. " + PATH_NOTE},
              "apply": {"type": "boolean"},

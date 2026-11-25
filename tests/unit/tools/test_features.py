@@ -1128,3 +1128,16 @@ def test_scenario_description_wins_and_is_only_asked_for_scenarios_without(tmp_p
     sent = {v["jira"]["fields"]["summary"]: v["jira"]["fields"].get("description")
             for v in ctx.xray.calls_of("CreateTest")}
     assert sent == {"A": "Own text", "B": "ASKED"} and len(ctx.channel.asked) == 1
+
+
+def test_partial_jira_config_names_missing_parts_in_not_done(tmp_path):
+    ctx = ctx_for(tmp_path, FakeXrayWorld(existing=_existing(labels=["old"])), yaml=RULES_YAML)
+    ctx.env["JIRA_API_TOKEN"] = "tok"
+    path = feature_file(tmp_path, "Feature: F\n  @TEST_P-5 @new @REQ_R-1 @comp=backend\n"
+                                  "  Scenario: A\n    Given x\n")
+    res = preview(ctx, path, **ans(createTestSet=False))
+    assert [nd["what"] for nd in res["notDone"]] == [
+        "labels new", "fields Component = backend", "requirement links R-1"]
+    for nd in res["notDone"]:
+        assert nd["reason"] == "Jira access not configured: site URL, email missing", nd
+        assert "the email of the account the token belongs to" in nd["fix"]

@@ -13,9 +13,9 @@
       "XRAY_SETTINGS_FILE": {"type": "string", "title": "Settings file", "description": "Optional explicit path to the Xray settings file (YAML or JSON) listing projects and fields."},
       "XRAY_READ_ONLY": {"type": "string", "title": "Read-only mode", "description": "Optional. Set to true to make every write tool refuse to run. Leave empty to use the XRAY_READ_ONLY environment variable (default false)."},
       "XRAY_TOOLS": {"type": "string", "title": "Tool groups", "description": "Optional. Comma-separated tool groups; leave empty for all tools."},
-      "JIRA_SITE_URL": {"type": "string", "title": "Jira site URL", "description": "Optional. Jira works only with the site URL, the email of the account the token belongs to, and the token, all three; leave all empty to use the JIRA_* environment variables. Example: https://yourcompany.atlassian.net"},
-      "JIRA_EMAIL": {"type": "string", "title": "Jira email", "description": "Optional. Email of the Jira account the API token belongs to; needed together with the site URL and token."},
-      "JIRA_API_TOKEN": {"type": "string", "title": "Jira API token", "description": "Optional. Jira API token; works only together with the email of its Jira account and the site URL (all three needed)."}
+      "JIRA_SITE_URL": {"type": "string", "title": "Jira site URL", "description": "Jira site URL, needed together with the Jira email and API token; leave all three empty to use the environment variables. Example: https://yourcompany.atlassian.net"},
+      "JIRA_EMAIL": {"type": "string", "title": "Jira email", "description": "Email of the Jira account the API token belongs to; needed together with the Jira site URL and API token."},
+      "JIRA_API_TOKEN": {"type": "string", "title": "Jira API token", "description": "Jira API token, needed together with the Jira site URL and the email of its account; leave all three empty to use the environment variables."}
     },
     "required": ["XRAY_CLIENT_ID", "XRAY_CLIENT_SECRET"]
   }
