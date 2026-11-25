@@ -9,9 +9,9 @@
     "properties": {
       "XRAY_CLIENT_ID": {"type": "string", "title": "Xray client ID", "description": "Xray Cloud API key client ID (Jira: Apps, Xray, API Keys)."},
       "XRAY_CLIENT_SECRET": {"type": "string", "title": "Xray client secret", "description": "Xray Cloud API key client secret."},
-      "XRAY_REGION": {"type": "string", "title": "Xray region", "description": "Xray Cloud region: global, eu or au.", "enum": ["global", "eu", "au"], "default": "global"},
+      "XRAY_REGION": {"type": "string", "title": "Xray region", "description": "Xray Cloud region: global, eu or au. Leave empty to use the XRAY_REGION environment variable (default global)."},
       "XRAY_SETTINGS_FILE": {"type": "string", "title": "Settings file", "description": "Optional explicit path to the Xray settings file (YAML or JSON) listing projects and fields."},
-      "XRAY_READ_ONLY": {"type": "string", "title": "Read-only mode", "description": "Optional. Set to true to make every write tool refuse to run.", "enum": ["true", "false"], "default": "false"},
+      "XRAY_READ_ONLY": {"type": "string", "title": "Read-only mode", "description": "Optional. Set to true to make every write tool refuse to run. Leave empty to use the XRAY_READ_ONLY environment variable (default false)."},
       "XRAY_TOOLS": {"type": "string", "title": "Tool groups", "description": "Optional. Comma-separated tool groups; leave empty for all tools."},
       "JIRA_SITE_URL": {"type": "string", "title": "Jira site URL", "description": "Optional, enables Jira tools. Example: https://yourcompany.atlassian.net"},
       "JIRA_EMAIL": {"type": "string", "title": "Jira email", "description": "Optional, email of the Jira account used for Jira tools."},

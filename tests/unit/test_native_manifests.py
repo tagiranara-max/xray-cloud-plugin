@@ -200,3 +200,8 @@ def test_mapped_user_config_prompts_have_no_default():
     for ref in manifest["mcpServers"]["xray"]["env"].values():
         key = ref[len("${user_config."):-1]
         assert "default" not in manifest["userConfig"][key], key
+
+
+def test_cursor_variables_mapped_to_settings_have_no_default_or_enum():
+    for name, schema in load(CURSOR_MANIFEST)["variables"]["properties"].items():
+        assert "default" not in schema and "enum" not in schema, name
