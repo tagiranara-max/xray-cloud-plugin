@@ -8,7 +8,7 @@ The tools the server exposes, and how result import, analysis and feature import
 |---|---|
 | `search_tests` | Search tests in a project by summary text or issue key (query) and/or a JQL filter (jql) |
 | `get_test` | Get one test by key |
-| `create_test` | Create a test (Manual, Cucumber or Generic) in a project |
+| `create_test` | Create a test (Manual, Cucumber or Generic) in a project; a test with the same summary (trimmed, whitespace collapsed, any case) blocks it unless `allowDuplicates`, similar summaries are only listed |
 | `update_test_type` | Change a test's type (Manual, Cucumber or Generic) |
 | `edit_test` | Edit a test (Gherkin through Xray; Jira fields need the Jira token) |
 | `delete_test` | Delete a test |
@@ -126,7 +126,7 @@ Read-only tools for questions about test history and impact:
 | `@REQ_<KEY>` (or a plain key on the Feature/Rule) | Links new tests to that requirement |
 | DocStrings and DataTables | Preserved exactly, with correct escaping |
 
-By default (`apply=false`) the tool only previews what would be created, updated and linked, with possible duplicates flagged. Call it again with `apply=true` to execute; scenarios with possible duplicates are skipped unless their index is listed in `createDuplicates`. A file that fails to parse creates nothing and reports the line and column.
+By default (`apply=false`) the tool only previews what would be created, updated and linked, with possible duplicates flagged. A possible duplicate is an existing test in the project with the same summary (compared trimmed, with whitespace runs collapsed, ignoring case); tests whose summaries are only similar are listed as `similar` and never cause a skip. Call it again with `apply=true` to execute; scenarios with possible duplicates are skipped unless their index is listed in `createDuplicates`. A file that fails to parse creates nothing and reports the line and column.
 
 ### Choices and preferences
 

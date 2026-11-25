@@ -86,6 +86,60 @@ def test_create_test_returns_duplicates_without_creating():
     assert ctx.xray.calls_of("CreateTest") == []
 
 
+def test_only_exact_summaries_are_duplicates_similar_ones_are_listed():
+    from xray_cloud.tools.tests import check_duplicates
+    ctx = make_context(YAML_NOREQ, responses={"SearchTests": results(
+        row("P-1", "Devices I signed in from"), row("P-2", " sign  IN "))})
+    dups, similar = check_duplicates(ctx, "P", "Sign in")
+    assert dups == [{"key": "P-2", "summary": " sign  IN "}]
+    assert similar == [{"key": "P-1", "summary": "Devices I signed in from"}]
+    ctx = make_context(YAML_NOREQ, responses={"SearchTests": results(
+        row("P-1", "Devices I signed in from"))})
+    assert check_duplicates(ctx, "P", "Sign in") == (
+        [], [{"key": "P-1", "summary": "Devices I signed in from"}])
+
+
+def test_create_test_with_only_similar_summaries_creates_and_lists_them():
+    ctx = make_context(YAML_NOREQ, responses={
+        "SearchTests": results(row("P-1", "Devices I signed in from")),
+        "CreateTest": create_resp()})
+    res, err = call(ctx, "create_test", projectKey="P", aiLabel="", summary="Sign in")
+    assert not err and res["key"] == "P-9"
+    assert res["similar"] == [{"key": "P-1", "summary": "Devices I signed in from"}]
+
+
+def test_create_test_exact_match_after_normalising_blocks_and_lists_similar():
+    ctx = make_context(YAML_NOREQ, responses={"SearchTests": results(
+        row("P-1", "Devices I signed in from"), row("P-2", "SIGN   in"))})
+    res, _ = call(ctx, "create_test", projectKey="P", aiLabel="", summary=" Sign in ")
+    assert res["status"] == "possible_duplicates"
+    assert res["candidates"] == [{"key": "P-2", "summary": "SIGN   in"}]
+    assert res["similar"] == [{"key": "P-1", "summary": "Devices I signed in from"}]
+    assert ctx.xray.calls_of("CreateTest") == []
+
+
+def test_duplicate_search_pages_until_exact_and_is_bounded():
+    from xray_cloud.errors import ToolError
+    from xray_cloud.tools.tests import MAX_DUP_PAGES, check_duplicates
+
+    def pages(v):
+        start = v.get("start", 0)
+        rows = [row("P-%d" % (start + i + 1), "Sign in to x %d" % (start + i))
+                for i in range(100)]
+        if start == 200:
+            rows[5] = row("P-999", "sign in")
+        return results(*rows)
+    ctx = make_context(YAML_NOREQ, responses={"SearchTests": pages})
+    dups, similar = check_duplicates(ctx, "P", "Sign in")
+    assert dups == [{"key": "P-999", "summary": "sign in"}] and len(similar) == 10
+    assert [c.get("start", 0) for c in ctx.xray.calls_of("SearchTests")] == [0, 100, 200]
+    ctx = make_context(YAML_NOREQ, responses={"SearchTests": lambda v: results(
+        *[row("P-%d" % i, "Sign in to %d" % i) for i in range(100)])})
+    with pytest.raises(ToolError, match="Cannot tell"):
+        check_duplicates(ctx, "P", "Sign in")
+    assert len(ctx.xray.calls_of("SearchTests")) == MAX_DUP_PAGES
+
+
 def test_create_test_duplicate_check_disabled_by_settings():
     ctx = make_context("duplicateCheck: false\nprojects:\n  P: {}\n", responses={
         "CreateTest": {"createTest": {"test": {"issueId": "9", "jira": {"key": "P-9"}}}}})

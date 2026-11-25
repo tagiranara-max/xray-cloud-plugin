@@ -18,7 +18,7 @@ Do not parse Gherkin yourself.
 1. Call `create_tests_from_feature` with `featureFilePath` and the default `apply: false`. This is a preview and writes nothing. It returns the planned actions, `perTest` details, `testSets`, `notDone` and `choices`.
 2. If the preview has non-empty `questions`, ask the user each one (the Test Set, Backgrounds as Pre-Conditions or inline, tags as labels, the AI label, and its scope). Ask once, then call again with the answers (`createTestSet`, `backgrounds`, `tagsAsLabels`, `aiLabel`, `aiLabelScope`). Answers are remembered per project, so later imports do not ask again. `aiLabel: ""` means do not mark. To change a remembered answer for good, pass `remember: true`.
    - A `tagRule.<key>` question asks what a `key:value` / `key=value` tag (for example `@suite:regression`) means when no tag rule covers it. Relay it with its examples and the five choices: label as is (`suite:regression`), label with only the value (`regression`), a Test Set (offer the suggested name, e.g. `Suite {value}`, or the user's own template), a Jira field (the user names it), or ignore. Never pick one yourself and do not suggest a default. Pass the answers as `tagRuleAnswers: {"<key>": {"action": "label_as_is" | "label_value" | "test_set" | "field" | "skip", "testSet": "...", "field": "..."}}`; each becomes a remembered tag rule of the project.
-3. Show the preview: tests to create or update, Test Sets, Pre-Conditions, and possible duplicates. Scenarios with possible duplicates are skipped unless their index is listed in `createDuplicates`; ask the user which, if any, to create anyway.
+3. Show the preview: tests to create or update, Test Sets, Pre-Conditions, and possible duplicates (an existing test with the same summary). `similar` lists tests with similar summaries for information only; they never cause a skip. Scenarios with possible duplicates are skipped unless their index is listed in `createDuplicates`; ask the user which, if any, to create anyway.
 4. After sign-off, call again with `apply: true` and the same answers. `apply: true` is refused while any question is unanswered (for `tagRule.<key>` the client may show a form instead, or the result is `status: needs_answer` with the same questions: relay them the same way).
 5. Report what was created. List every `notDone` item with its reason and fix; do not hide them.
 
@@ -37,7 +37,7 @@ Ask the user to map columns when a CSV or spreadsheet is ambiguous. Do not guess
 
 ### Flag duplicates
 
-For each summary call `search_tests` with `query` set to the summary. Mark a row as a possible duplicate when an existing test has the same or a near-identical summary, and show the existing key. Never invent keys.
+For each summary call `search_tests` with `query` set to the summary. Mark a row as a possible duplicate only when an existing test has the same summary (ignoring case, surrounding spaces and repeated spaces), and show the existing key. Mention tests with merely similar summaries, but do not flag them. `create_test` applies the same rule: only a same-summary test returns `possible_duplicates`; similar ones come back in `similar`. Never invent keys.
 
 Show the table: number, summary, type, steps count, duplicate flag. Ask the user to approve it, and to say which duplicates to create anyway and which to skip.
 

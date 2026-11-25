@@ -71,6 +71,7 @@ class ImportAction:
     field_names: List[str] = field(default_factory=list)  # existing test: names of field_updates
     not_done: List[Dict[str, str]] = field(default_factory=list)  # predicted skipped items
     feature_set: bool = False            # the Feature's Test Set (vs. one from tags)
+    similar: List[dict] = field(default_factory=list)  # new tests: similar, not duplicates
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {"kind": self.kind, "summary": self.summary, "line": self.source_line}
@@ -82,6 +83,8 @@ class ImportAction:
             out["labels"] = list(self.labels)
         if self.duplicates:
             out["duplicates"] = list(self.duplicates)
+        if self.similar:
+            out["similar"] = list(self.similar)
         if self.requirement_keys:
             out["requirementKeys"] = list(self.requirement_keys)
         if self.test_sets:
@@ -481,7 +484,7 @@ def plan_import(ctx: ServerContext, project_key: str, feature: ParsedFeature, fe
     Feature's first, then those from tags). `options` may be a bool (createTestSet, with
     today's defaults otherwise). Validates every tag first (no calls), then reads; never
     writes."""
-    from ..tools.tests import fetch_test, find_duplicates  # tools import gherkin, not vice versa
+    from ..tools.tests import check_duplicates, fetch_test  # tools import gherkin, not vice versa
 
     opts = ImportOptions(create_test_set=options) if isinstance(options, bool) else options
     if not feature.scenarios:
@@ -523,7 +526,7 @@ def plan_import(ctx: ServerContext, project_key: str, feature: ParsedFeature, fe
         else:
             if opts.ai_label:
                 a.labels = dedupe(a.labels + [opts.ai_label])
-            a.duplicates = find_duplicates(ctx, project_key, summary)
+            a.duplicates, a.similar = check_duplicates(ctx, project_key, summary)
         tests.append(a)
 
     # -- Pre-Conditions: key tag -> path label -> same summary -> create

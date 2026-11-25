@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..context import (ISSUE_KEY_RE, ServerContext, check_issue_in_project, compact,
                        delete_preview, jql_text, partial_failure, permission_guard,
@@ -20,8 +20,8 @@ TEST_TYPES = ["Manual", "Cucumber", "Generic"]
 _JIRA_ONLY = ("summary", "description", "labels", "priority", "assignee", "fields", "rawFields")
 
 _GET_TESTS = """
-query SearchTests($jql: String!, $limit: Int!) {
-  getTests(jql: $jql, limit: $limit) {
+query SearchTests($jql: String!, $limit: Int!, $start: Int) {
+  getTests(jql: $jql, limit: $limit, start: $start) {
     total
     results {
       issueId
@@ -124,29 +124,66 @@ def _shape(result: dict) -> dict:
 
 
 def _search(ctx: ServerContext, jql: str, limit: int, detail: bool,
-            jira_fields: List[str] = ()) -> List[dict]:
+            jira_fields: List[str] = (), start: int = 0) -> List[dict]:
     extra = "gherkin steps { action data result } " if detail else ""
     names = list(_DETAIL_JIRA if detail else _BASE_JIRA)
     names += [f for f in jira_fields if f not in names]
-    data = ctx.xray.graphql(_GET_TESTS % (extra, _jira_list(names)),
-                            {"jql": jql, "limit": limit})
+    variables: Dict[str, Any] = {"jql": jql, "limit": limit}
+    if start:
+        variables["start"] = start
+    data = ctx.xray.graphql(_GET_TESTS % (extra, _jira_list(names)), variables)
     return ((data.get("getTests") or {}).get("results")) or []
 
 
-def find_duplicates(ctx: ServerContext, project_key: str, summary: str) -> List[dict]:
-    """Tests in the project whose summary matches `summary` (JQL `~`); [] when
-    settings.duplicate_check is false. Returns [{key, summary}]."""
+def same_summary_key(summary: Any) -> str:
+    """What two summaries are compared by: trimmed, internal whitespace runs collapsed,
+    case-insensitive."""
+    return " ".join(str(summary or "").split()).casefold()
+
+
+_DUP_PAGE = 100       # Xray's page size limit
+MAX_DUP_PAGES = 20    # at most 2000 fuzzy `summary ~` hits are checked for an exact summary
+MAX_SIMILAR = 10      # similar (fuzzy, not exact) summaries listed
+
+
+def check_duplicates(ctx: ServerContext, project_key: str,
+                     summary: str) -> Tuple[List[dict], List[dict]]:
+    """(duplicates, similar) for a new test's summary, each [{key, summary}]. A duplicate is
+    a test in the project with the same summary (same_summary_key); `summary ~` hits that
+    are not exact are `similar` (informational, at most MAX_SIMILAR). The fuzzy hits are
+    paged until a short page or the first exact match; past MAX_DUP_PAGES the call is
+    refused rather than risk a duplicate. ([], []) when settings.duplicate_check is false."""
     if not ctx.settings_store.get().duplicate_check:
-        return []
+        return [], []
     term = jql_text(summary)
     if term is None:
-        return []
+        return [], []
+    want = same_summary_key(summary)
     jql = "project = %s AND summary ~ %s" % (project_key, term)
-    out = []
-    for r in _search(ctx, jql, 20, False):
-        j = r.get("jira") or {}
-        out.append({"key": j.get("key"), "summary": j.get("summary")})
-    return out
+    exact: List[dict] = []
+    similar: List[dict] = []
+    for page in range(MAX_DUP_PAGES):
+        results = _search(ctx, jql, _DUP_PAGE, False, start=page * _DUP_PAGE)
+        for r in results:
+            j = r.get("jira") or {}
+            if not str(j.get("key", "")).startswith(project_key + "-"):
+                continue
+            row = {"key": j.get("key"), "summary": j.get("summary")}
+            if same_summary_key(j.get("summary")) == want:
+                exact.append(row)
+            elif len(similar) < MAX_SIMILAR:
+                similar.append(row)
+        if exact or len(results) < _DUP_PAGE:
+            return exact, similar
+    raise ToolError("Cannot tell whether a test named %r exists: more than %d tests in %s match "
+                    "it in a text search; nothing was created. Use a more distinctive summary, "
+                    "or create it anyway (allowDuplicates / createDuplicates)"
+                    % (summary, MAX_DUP_PAGES * _DUP_PAGE, project_key), summary=summary)
+
+
+def find_duplicates(ctx: ServerContext, project_key: str, summary: str) -> List[dict]:
+    """Tests in the project with exactly this summary (see check_duplicates)."""
+    return check_duplicates(ctx, project_key, summary)[0]
 
 
 def fetch_test(ctx: ServerContext, project_key: str, test_key: str, detail: bool = False,
@@ -292,8 +329,10 @@ def add_label(jira_fields: Dict[str, Any], label: str) -> None:
 
 @REGISTRY.tool(
     "create_test",
-    "Create a test (Manual, Cucumber or Generic) in a project. Checks for duplicate summaries first "
-    "and returns status possible_duplicates without creating unless allowDuplicates is true. "
+    "Create a test (Manual, Cucumber or Generic) in a project. Checks for a test with the same "
+    "summary first (trimmed, whitespace collapsed, case-insensitive) and returns status "
+    "possible_duplicates without creating unless allowDuplicates is true; tests with merely "
+    "similar summaries are listed in `similar` and never block. "
     "Optional steps are created with the test (Manual); gherkin makes it a Cucumber test unless "
     "testType says otherwise (gherkin and steps are mutually exclusive); folderPath files it "
     "into a Test Repository folder. "
@@ -323,11 +362,15 @@ def create_test(ctx, args):
         label, needs_answer = resolve_ai_label(ctx, pk, args, {"summary": summary})
         if needs_answer:
             return needs_answer
+    similar: List[dict] = []
     if not args.get("allowDuplicates", False):
-        dups = find_duplicates(ctx, pk, summary)
+        dups, similar = check_duplicates(ctx, pk, summary)
         if dups:
-            return {"status": "possible_duplicates", "candidates": dups,
-                    "hint": "pass allowDuplicates: true to create anyway"}
+            out = {"status": "possible_duplicates", "candidates": dups,
+                   "hint": "pass allowDuplicates: true to create anyway"}
+            if similar:
+                out["similar"] = similar
+            return out
     # Required fields last, so an answer given by elicitation is not lost to an earlier
     # question of this call.
     extra, applied = requiredfields.resolve(
@@ -356,6 +399,8 @@ def create_test(ctx, args):
     if not key:
         raise ToolError("Xray did not return a key for the created test")
     out = {"key": key, "summary": summary, "testType": test_type, "created": True}
+    if similar:
+        out["similar"] = similar
     requiredfields.add_applied(out, "test", applied)
     warnings = (data.get("createTest") or {}).get("warnings")
     if warnings:

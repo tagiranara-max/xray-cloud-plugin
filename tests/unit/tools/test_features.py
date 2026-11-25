@@ -437,6 +437,37 @@ class RecJira:
         return []
 
 
+def test_similar_summaries_are_listed_but_never_skipped(tmp_path):
+    f = tmp_path / "a.feature"
+    f.write_text("Feature: F\n  Scenario: Sign in\n    Given a\n"
+                 "  Scenario: Sign out\n    Given b\n", encoding="utf-8")
+    world = FakeXrayWorld()
+    base = world.responses()
+
+    def search(v):
+        if "Sign out" in v["jql"]:
+            return {"getTests": {"total": 1, "results": [
+                {"issueId": "2", "jira": {"key": "P-2", "summary": " sign  OUT "}}]}}
+        return {"getTests": {"total": 1, "results": [
+            {"issueId": "1", "jira": {"key": "P-1", "summary": "Devices I signed in from"}}]}}
+    base["SearchTests"] = search
+    ctx = make_context(YAML, responses=base)
+    ctx.env["CLAUDE_PROJECT_DIR"] = str(tmp_path)
+    res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath="a.feature",
+                    **ans(createTestSet=False))
+    assert not err, res
+    a0, a1 = res["actions"][0], res["actions"][1]
+    assert "duplicates" not in a0
+    assert a0["similar"] == [{"key": "P-1", "summary": "Devices I signed in from"}]
+    assert a1["duplicates"] == [{"key": "P-2", "summary": " sign  OUT "}]
+    assert [d["index"] for d in res["possibleDuplicates"]] == [1]
+    res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath="a.feature",
+                    apply=True, **ans(createTestSet=False))
+    assert not err, res
+    assert [c["jira"]["fields"]["summary"] for c in ctx.xray.calls_of("CreateTest")] == ["Sign in"]
+    assert [d["index"] for d in res["skippedDuplicates"]] == [1]
+
+
 def _existing_world():
     return FakeXrayWorld(existing={"P-5": {"issueId": "55", "testType": {"name": "Cucumber"},
                                            "jira": {"key": "P-5", "summary": "A", "labels": ["old"]}}})

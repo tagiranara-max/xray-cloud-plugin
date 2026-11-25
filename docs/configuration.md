@@ -211,7 +211,7 @@ duplicateCheck: true
 - `id` is the Jira field id. Not sure how to find it? See [docs/field-ids.md](field-ids.md).
 - `testRun` fields are Xray test-run custom fields, not Jira fields: give the Xray field `name` (or an `id`).
 - Escape hatch: create tools accept `rawFields` (`{"customfield_12345": <Jira JSON>}`), passed through untouched for fields not in the settings (an explicit `reporter` included). `summary`, `project` and `issuetype` are set by the tool and refused in `fields`/`rawFields`. Without the Jira token, `fields` also takes Jira field ids (`customfield_12345`, `components`, `priority`, ...) for fields not in the settings. `update_test_run` takes `rawFields` keyed by Xray run field name or id.
-- `lifecycleLabels` (default shown above) are the labels `set_lifecycle_label` may apply. `duplicateCheck` turns the pre-create duplicate search on or off.
+- `lifecycleLabels` (default shown above) are the labels `set_lifecycle_label` may apply. `duplicateCheck` turns the pre-create duplicate search on or off. A duplicate is a test in the project with the same summary (trimmed, whitespace runs collapsed, any case); tests with merely similar summaries are listed as `similar` and never block a create.
 - `projects.<KEY>.testKeyTag` (optional): a scenario tag that names the scenario's test in result imports, besides `@TEST_<KEY>`. With `testKeyTag: issue`, `@issue=PROJ-12`, `@issue:PROJ-12` and `@issue_PROJ-12` all mean PROJ-12.
 
 ## Optional Jira token
