@@ -224,7 +224,7 @@ def ask(ctx: Any, uncovered: Dict[str, List[str]], project: ProjectSettings,
                "remembered)." if key_tags else "")
             + (" Choose whether to update those tests, keep them unchanged, create new tests "
                "or skip their scenarios (not remembered)." if changes else "")
-            + (" Give the id or exact value for each tag value (remembered in the tag rule)."
+            + (" Give the id or exact value for each tag value (remembered for this project)."
                if values else ""), schema)
         if not isinstance(content, dict):
             raise ToolError("The %s questions were not answered; nothing was written and "

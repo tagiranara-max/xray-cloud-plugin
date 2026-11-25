@@ -2195,3 +2195,17 @@ def test_call_field_on_a_name_matched_existing_test_is_reported_not_dropped(tmp_
     assert ctx.jira.edits == []
     assert [n["what"] for n in res["notDone"]] == ["field Owner"]
     assert "created tests only" in res["notDone"][0]["reason"]
+
+
+@pytest.mark.parametrize("answer", [None, {}, {"tagValue.customfield_50.checkout": " "}])
+def test_declined_tag_value_form_writes_and_remembers_nothing(tmp_path, answer):
+    ctx = ctx_for(tmp_path)
+    ctx.jira = TeamMetaJira()
+    _team_rules(ctx, {"tag": "team", "field": {"customfield_50": "{value}"}})
+    ctx.channel = FormChannel(answer)
+    path = feature_file(tmp_path, "Feature: F\n  @team=checkout\n  Scenario: A\n    Given a\n")
+    res, err = _apply(ctx, path)
+    assert err and writes(ctx) == [], res
+    prefs = ctx.preferences.get("global", "P")
+    assert "tagValues" not in prefs and prefs["tagRules"] == [
+        {"tag": "team", "field": {"customfield_50": "{value}"}}]
