@@ -134,7 +134,8 @@ A few import choices are yours to make, and the plugin asks about them instead o
 
 - `createTestSet`: turn the Feature into a Test Set?
 - `backgrounds`: Backgrounds as Pre-Conditions (`preconditions`) or copied into each test (`inline`)?
-- `tagsAsLabels`: turn plain tags into labels?
+- `tagsAsLabels`: turn plain tags (such as `@smoke`) into labels?
+- `tagRule.<key>`: what a `key:value` or `key=value` tag means when no tag rule covers its key (see "Tag rules").
 - `aiLabel` and `aiLabelScope`: mark what the AI creates (see "AI label" below).
 
 Each is asked once per project. When a tool answers `status: needs_answer` (or an import preview returns `questions`), Claude asks you and calls again with your answer, and the plugin remembers it for that project. Nothing is written to Xray until every applicable question is answered.
@@ -168,7 +169,7 @@ You can mark what the AI creates with a label of your own choosing. There is no 
 
 ### Tag rules
 
-Tag rules turn Gherkin tags into labels, Test Set membership and field values. **There are no built-in conventions**: with no rules, plain tags simply become labels (`unmatchedTags: keep`, the default) and nothing else happens. Issue-key tags (`@TEST_<KEY>`, `@REQ_<KEY>`, plain keys) are never subject to rules. The rules below are **examples only**, with made-up tag names; write your own, or ask Claude to run `analyze_feature_tags` on your files and propose rules (it explains each one and applies nothing until you agree, then stores them with `set_preferences`).
+Tag rules turn Gherkin tags into labels, Test Set membership and field values. **There are no built-in conventions**: with no rules, plain tags simply become labels (`unmatchedTags: keep`, the default), and a `key:value` or `key=value` tag is never turned into anything silently: `create_tests_from_feature` asks once per key (question `tagRule.<key>`, both separators count as the same key) whether it is a label as written (`suite:regression`), a label with only the value (`regression`), a Test Set (name template, default `Suite {value}`), a Jira field (a `fields.test` name or a `customfield_<n>` id) or ignored. Answer with `tagRuleAnswers: {"suite": {"action": "label_as_is" | "label_value" | "test_set" | "field" | "skip", "testSet": "...", "field": "..."}}`; the answer is remembered as a tag rule of the project, so later values of the key are not asked about. This applies to new and existing tests, and nothing is written until every such question is answered. With `unmatchedTags: skip` uncovered tags are dropped and nothing is asked. Issue-key tags (`@TEST_<KEY>`, `@REQ_<KEY>`, plain keys) are never subject to rules. The rules below are **examples only**, with made-up tag names; write your own, or ask Claude to run `analyze_feature_tags` on your files and propose rules (it explains each one and applies nothing until you agree, then stores them with `set_preferences`).
 
 ```yaml
 # EXAMPLE ONLY: tag names here are made up
@@ -188,8 +189,8 @@ featureImport:
 
 - Key form (`tag`, a string or a list): matches `key=value` and `key:value`. Actions: `label`, `testSet` and `field` take templates (`{value}`, `{key}`, `{tag}`); `split` splits the value into several.
 - Regex form (`match`): matches the whole tag; templates may use only `{tag}` and `$1`..`$9` (`{value}` and `{key}` are refused).
-- The first matching rule wins. Project `tagRules` replace the top-level list.
-- `tagsAsLabels: false` ignores `label` actions and drops unmatched tags; `testSet` and `field` actions still apply.
+- The first matching rule wins. Project `tagRules` replace the top-level list; remembered rules (answers to `tagRule.<key>` questions or `set_preferences`) come after the settings rules.
+- `tagsAsLabels` only concerns plain tags no rule covers: `false` drops them. A rule's `label`, `testSet` and `field` actions always apply.
 - A rule that would produce an invalid label or a conflicting field value refuses the whole import before anything is written.
 - Tags no rule covers appear in the preview's `tagSummary.unmatched`.
 
