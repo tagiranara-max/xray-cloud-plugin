@@ -116,6 +116,8 @@ In `claude_desktop_config.json` (Settings, Developer, Edit Config). Claude Deskt
 
 Run `python3 /path/to/xray-cloud-plugin/plugin/server/main.py` with these environment variables. A value that is entirely an unsubstituted `${...}` placeholder is ignored, so clients that leave unset variables unexpanded still work.
 
+Claude Code and Cursor hand their plugin prompts to the server as `NAME_SETTING` (for example `XRAY_CLIENT_ID_SETTING`). A non-empty prompt takes precedence over the environment variable `NAME`; an empty prompt falls back to the environment variable, so credentials exported in the shell that starts Claude Code keep working when you leave the prompts blank.
+
 | Variable | Meaning | Claude Code prompt |
 | --- | --- | --- |
 | `XRAY_CLIENT_ID` | Xray Cloud API key client ID (required). | Xray client ID |

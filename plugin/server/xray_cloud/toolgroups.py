@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Mapping, Optional, Set
 
-from .config import SettingsError, _get
+from .config import SettingsError, _setting
 
 GROUPS: Dict[str, List[str]] = {
     "tests": ["search_tests", "get_test", "create_test", "update_test_type", "edit_test",
@@ -32,7 +32,7 @@ ALWAYS_ON = "setup"
 
 def active_groups(env: Mapping[str, str]) -> Optional[List[str]]:
     """Selected group names (setup always included), or None when everything is exposed."""
-    raw = _get(env, "XRAY_TOOLS")
+    raw = _setting(env, "XRAY_TOOLS")
     if raw is None:
         return None
     names = [p.strip().lower() for p in raw.split(",") if p.strip()]

@@ -85,3 +85,14 @@ def test_bogus_xray_tools_exits_2_with_valid_groups(tmp_path):
     assert "Unknown XRAY_TOOLS" in proc.stderr
     for g in GROUPS:
         assert g in proc.stderr
+
+
+def test_empty_plugin_prompts_do_not_hide_environment_credentials(tmp_path):
+    """Claude Code with blank prompts: *_SETTING arrive empty / as placeholders, the shell
+    variables must still configure the server."""
+    proc, _, _ = _run(tmp_path, _msgs(), XRAY_CLIENT_ID_SETTING="",
+                      XRAY_CLIENT_SECRET_SETTING="${user_config.xray_client_secret}",
+                      XRAY_REGION_SETTING="")
+    assert proc.returncode == 0, proc.stderr
+    _, status = _status(proc)
+    assert status["credentials"]["configured"] is True
