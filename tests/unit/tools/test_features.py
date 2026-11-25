@@ -181,7 +181,7 @@ def test_key_tag_updates_existing_test(tmp_path):
                                             "jira": {"key": "P-5", "summary": "A", "labels": []}}})
     ctx = ctx_for(tmp_path, world)
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath="a.feature",
-                    apply=True, **ans(createTestSet=False))
+                    apply=True, existingTests="update", **ans(createTestSet=False))
     assert not err, res
     assert writes(ctx) == ["UpdateGherkin"]
     assert ctx.xray.calls_of("UpdateGherkin")[0] == {"issueId": "55", "gherkin": "Given changed"}
@@ -487,7 +487,7 @@ def test_key_tag_update_with_jira_applies_labels_and_links(tmp_path):
     ctx = ctx_for(tmp_path, _existing_world())
     ctx.jira = RecJira(linked=["R-1"])
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath="a.feature",
-                    apply=True, **ans(createTestSet=False))
+                    apply=True, existingTests="update", **ans(createTestSet=False))
     assert not err, res
     assert ctx.jira.edits == [("P-5", {"labels": ["old", "new"]})]
     assert ctx.jira.links == [("P-5", "R-2")]
@@ -500,7 +500,7 @@ def test_key_tag_update_without_jira_warns_about_links(tmp_path):
     f.write_text("Feature: F\n  @TEST_P-5 @REQ_R-1\n  Scenario: A\n    Given x\n", encoding="utf-8")
     ctx = ctx_for(tmp_path, _existing_world())
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath="a.feature",
-                    apply=True, **ans(createTestSet=False))
+                    apply=True, existingTests="update", **ans(createTestSet=False))
     assert not err, res
     assert res["notDone"] == [{"item": "P-5", "what": "requirement links R-1",
                                "reason": "no Jira token or Atlassian MCP",
@@ -520,7 +520,7 @@ def test_partial_failure_reports_links_and_labels_already_applied(tmp_path):
             super().link_requirement(key, req)
     ctx.jira = Failing()
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath="a.feature",
-                    apply=True, **ans(createTestSet=False))
+                    apply=True, existingTests="update", **ans(createTestSet=False))
     assert err and res["updated"] == ["P-5"]
     assert res["linkedRequirements"] == [{"test": "P-5", "requirements": ["R-1"]}]
     assert res["labelsApplied"] == [{"test": "P-5", "added": ["new"]}]
@@ -625,6 +625,7 @@ def test_first_import_asks_apply_refuses_with_zero_calls_then_remembered(project
 ])
 def test_not_applicable_questions_are_never_asked(tmp_path, text, args, expected):
     world = FakeXrayWorld(existing={"P-5": {"issueId": "55", "testType": {"name": "Cucumber"},
+                                            "gherkin": "Given a",  # nothing would change
                                             "jira": {"key": "P-5", "summary": "A", "labels": []}}})
     ctx = ctx_for(tmp_path, world)
     path = feature_file(tmp_path, text)
@@ -752,11 +753,11 @@ def test_existing_tests_join_reused_sets_without_jira(tmp_path):
         {"issueId": "70", "jira": {"key": "P-70", "summary": "ui"}}]}}
     path = feature_file(tmp_path, "Feature: F\n  @TEST_P-5 @area=ui\n  Scenario: A\n    Given x\n"
                                   "  @area=ui\n  Scenario: B\n    Given y\n")
-    res = preview(ctx, path, **ans(createTestSet=False))
+    res = preview(ctx, path, existingTests="update", **ans(createTestSet=False))
     assert res["testSets"] == {"reuse": [{"name": "ui", "key": "P-70", "members": ["P-5", "B"]}],
                                "create": []}
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
-                    apply=True, **ans(createTestSet=False))
+                    apply=True, existingTests="update", **ans(createTestSet=False))
     assert not err, res
     assert ctx.xray.calls_of("AddTestsToTestSet") == [{"issueId": "70",
                                                        "testIssueIds": ["55", "101"]}]
@@ -775,10 +776,10 @@ def test_rule_field_on_existing_test_never_overwrites(tmp_path):
     expected = [{"item": "P-5", "what": "field Component = backend",
                  "reason": "already set to frontend",
                  "fix": "existing values are never overwritten; change it in Jira if wanted"}]
-    res = preview(ctx, path, **ans(createTestSet=False))
+    res = preview(ctx, path, existingTests="update", **ans(createTestSet=False))
     assert res["notDone"] == expected and ctx.jira.edits == []
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
-                    apply=True, **ans(createTestSet=False))
+                    apply=True, existingTests="update", **ans(createTestSet=False))
     assert not err, res
     assert res["notDone"] == expected
     assert ctx.jira.edits == [("P-6", {"customfield_9": {"value": "backend"}})]
@@ -793,10 +794,10 @@ def test_not_done_items_for_existing_test_without_jira(tmp_path):
     expected = [dict(item="P-5", what="labels new", **NO_JIRA),
                 dict(item="P-5", what="fields Component = backend", **NO_JIRA),
                 dict(item="P-5", what="requirement links R-1", **NO_JIRA)]
-    res = preview(ctx, path, **ans(createTestSet=False))
+    res = preview(ctx, path, existingTests="update", **ans(createTestSet=False))
     assert res["notDone"] == expected
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
-                    apply=True, **ans(createTestSet=False))
+                    apply=True, existingTests="update", **ans(createTestSet=False))
     assert not err, res
     assert res["notDone"] == expected and "warnings" not in res
     assert writes(ctx) == ["UpdateGherkin"]
@@ -812,7 +813,7 @@ def test_ai_label_scope(project, scope, on_pre, on_set):
             "  Scenario: Successful login", "  @TEST_P-5 @new\n  Scenario: Successful login"),
         encoding="utf-8")
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=LOGIN,
-                    apply=True, **ans(aiLabel="ai-made", aiLabelScope=scope))
+                    apply=True, existingTests="update", **ans(aiLabel="ai-made", aiLabelScope=scope))
     assert not err, res
     assert "ai-made" in ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]["labels"]
     pre = ctx.xray.calls_of("CreatePrecondition")[0]["jira"]["fields"]["labels"]
@@ -927,10 +928,10 @@ def test_rule_field_equal_to_existing_value_is_silent(tmp_path):
     ctx.jira = RecJira()
     path = feature_file(tmp_path, "Feature: F\n  @TEST_P-5 @comp=backend\n  Scenario: A\n"
                                   "    Given x\n")
-    res = preview(ctx, path, **ans(createTestSet=False))
+    res = preview(ctx, path, existingTests="update", **ans(createTestSet=False))
     assert res["notDone"] == []
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
-                    apply=True, **ans(createTestSet=False))
+                    apply=True, existingTests="update", **ans(createTestSet=False))
     assert not err, res
     assert res["notDone"] == [] and ctx.jira.edits == [] and "fieldsApplied" not in res
 
@@ -944,10 +945,10 @@ def test_rule_field_unreadable_on_existing_test_is_not_done_never_written(tmp_pa
     expected = [{"item": "P-5", "what": "field Component = backend",
                  "reason": "current value could not be read; not changed",
                  "fix": "check the field id in the settings file; set it in Jira if wanted"}]
-    res = preview(ctx, path, **ans(createTestSet=False))
+    res = preview(ctx, path, existingTests="update", **ans(createTestSet=False))
     assert res["notDone"] == expected
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
-                    apply=True, **ans(createTestSet=False))
+                    apply=True, existingTests="update", **ans(createTestSet=False))
     assert not err, res
     assert res["notDone"] == expected and ctx.jira.edits == []
 
@@ -1274,19 +1275,26 @@ def test_each_answer_gives_its_rule_outcome_and_is_remembered(tmp_path, form, an
 
 
 def test_existing_test_is_asked_too_then_labelled(tmp_path):
-    ctx = ctx_for(tmp_path, FakeXrayWorld(existing=_existing(labels=["old"])))
+    """A new key:value tag on an existing test is asked about together with the existing-test
+    question, in one round; nothing is written before both are answered."""
+    world = FakeXrayWorld(existing=_existing(labels=["old"]))
+    world.existing["P-5"]["gherkin"] = "Given x"  # only the tag would change it
+    ctx = ctx_for(tmp_path, world)
     ctx.jira = RecJira()
     path = feature_file(tmp_path, "Feature: F\n  @TEST_P-5 @suite:regression\n  Scenario: A\n"
                                   "    Given x\n")
     res = preview(ctx, path, **ans(createTestSet=False))
-    assert qids(res) == ["tagRule.suite"]
+    assert qids(res) == ["tagRule.suite", "existingTests"]
+    assert res["existingTests"] == [{"key": "P-5", "scenarioIndex": 0, "scenario": "A",
+                                     "stepsChanged": False, "pendingTags": ["suite:regression"]}]
     res, err = _apply(ctx, path)
     assert not err and res["status"] == "needs_answer"
+    assert [q["id"] for q in res["questions"]] == ["tagRule.suite", "existingTests"]
     assert writes(ctx) == [] and ctx.jira.edits == []
-    res, err = _apply(ctx, path, tagRuleAnswers={"suite": {"action": "label_as_is"}})
+    res, err = _apply(ctx, path, tagRuleAnswers={"suite": {"action": "label_as_is"}},
+                      existingTests="update")
     assert not err, res
     assert ctx.jira.edits == [("P-5", {"labels": ["old", "suite:regression"]})]
-
 
 def test_settings_or_remembered_rule_covering_the_key_asks_nothing(tmp_path):
     ctx = ctx_for(tmp_path, yaml=RULES_YAML)
@@ -1388,7 +1396,7 @@ def test_field_id_on_existing_test_converts_by_create_metadata(tmp_path):
     ctx.jira = TypedMetaJira()
     path = feature_file(tmp_path, "Feature: F\n  @TEST_P-5 @suite:regression\n  Scenario: A\n"
                                   "    Given x\n")
-    res, err = _apply(ctx, path, tagRuleAnswers={"suite": {"action": "field",
+    res, err = _apply(ctx, path, existingTests="update", tagRuleAnswers={"suite": {"action": "field",
                                                            "field": "customfield_44"}})
     assert not err, res
     assert ctx.jira.edits == [("P-5", {"customfield_44": {"value": "regression"}})]
@@ -1400,7 +1408,7 @@ def test_field_id_without_metadata_on_existing_test_is_not_done_never_written(tm
     ctx.jira = RecJira()  # create metadata without the field
     path = feature_file(tmp_path, "Feature: F\n  @TEST_P-5 @suite:regression\n  Scenario: A\n"
                                   "    Given x\n")
-    res, err = _apply(ctx, path, tagRuleAnswers={"suite": {"action": "field",
+    res, err = _apply(ctx, path, existingTests="update", tagRuleAnswers={"suite": {"action": "field",
                                                            "field": "customfield_44"}})
     assert not err, res
     assert ctx.jira.edits == []
@@ -1506,3 +1514,111 @@ def test_edge_case_file_previews_without_refusal(tmp_path):
     iso = next(a for a in tests if a["summary"].startswith("Code expiry"))
     assert "ISO-8601" in iso["labels"]
     assert writes(ctx) == []
+
+
+# -- existing tests the import would change are asked about first --------------------------
+
+TWO_EXISTING = ("Feature: F\n  @TEST_P-5 @new @REQ_R-1\n  Scenario: A\n    Given a\n"
+                "  @P-6\n  Scenario: B\n    Given b\n  Scenario: C\n    Given c\n")
+
+
+def _two_world(gherkin_b="Given old"):
+    rows = dict(_existing(labels=["old"]), **_existing("P-6", "66"))
+    rows["P-5"]["gherkin"] = "Given a"           # steps as in the file
+    rows["P-6"]["gherkin"] = gherkin_b
+    rows["P-6"]["testSets"] = {"results": [{"issueId": "70"}]}  # already in the Test Set
+    return FakeXrayWorld(existing=rows)
+
+
+def _with_set(ctx):
+    ctx.xray.responses["FindTestSets"] = {"getTestSets": {"results": [
+        {"issueId": "70", "jira": {"key": "P-70", "summary": "F"}}]}}
+
+
+def test_preview_lists_what_would_change_on_each_existing_test(tmp_path):
+    ctx = ctx_for(tmp_path, _two_world())
+    _with_set(ctx)
+    ctx.jira = RecJira()
+    path = feature_file(tmp_path, TWO_EXISTING)
+    res = preview(ctx, path, **ans())
+    assert qids(res) == ["existingTests"]
+    assert res["existingTests"] == [
+        {"key": "P-5", "scenarioIndex": 0, "scenario": "A", "stepsChanged": False,
+         "labelsAdded": ["new"], "links": ["R-1"], "testSets": ["F"]},
+        {"key": "P-6", "scenarioIndex": 1, "scenario": "B", "stepsChanged": True}]
+    q = res["questions"][0]
+    assert q["choices"] == ["update", "keep", "skip"] and "default" not in q
+    assert "P-5 (A): steps unchanged; labels +new; requirement links +R-1; joins Test Set(s) F" \
+        in q["question"]
+    assert writes(ctx) == []
+
+
+def test_existing_tests_answers_update_keep_skip_and_overrides(tmp_path):
+    path = feature_file(tmp_path, TWO_EXISTING)
+
+    def run(**answers):
+        ctx = ctx_for(tmp_path, _two_world())
+        _with_set(ctx)
+        ctx.jira = RecJira()
+        res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
+                        apply=True, **ans(), **answers)
+        assert not err, res
+        return ctx, res
+
+    ctx, res = run(existingTests="update")
+    assert res["updated"] == ["P-5", "P-6"] and ctx.jira.edits == [("P-5", {"labels": ["old", "new"]})]
+    assert ctx.xray.calls_of("AddTestsToTestSet")[0]["testIssueIds"] == ["55", "66", "101"]
+    ctx, res = run(existingTests="keep")
+    assert res["updated"] == [] and ctx.jira.edits == [] and ctx.jira.links == []
+    assert "UpdateGherkin" not in writes(ctx) and res["unchanged"] == ["P-5", "P-6"]
+    assert res["tests"] == [{"index": 0, "key": "P-5"}, {"index": 1, "key": "P-6"},
+                            {"index": 2, "key": "P-101"}]
+    assert ctx.xray.calls_of("AddTestsToTestSet")[0]["testIssueIds"] == ["101"]
+    ctx, res = run(existingTests="skip")
+    assert res["updated"] == [] and "unchanged" not in res
+    assert res["tests"] == [{"index": 2, "key": "P-101"}]
+    ctx, res = run(existingTests="update", existingTestOverrides={"p-6": "skip"})
+    assert res["updated"] == ["P-5"]
+    # overrides alone answer every test: no question
+    ctx, res = run(existingTestOverrides={"P-5": "keep", "P-6": "update"})
+    assert res["updated"] == ["P-6"] and res["unchanged"] == ["P-5"]
+
+
+def test_existing_tests_question_unanswered_on_apply_writes_nothing(tmp_path):
+    ctx = ctx_for(tmp_path, _two_world())
+    path = feature_file(tmp_path, TWO_EXISTING)
+    res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
+                    apply=True, existingTestOverrides={"P-5": "keep"}, **ans())
+    assert not err and res["status"] == "needs_answer"
+    assert [t["key"] for t in res["questions"][0]["context"]["tests"]] == ["P-6"]
+    assert writes(ctx) == []
+    res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
+                    apply=True, existingTests="maybe", **ans())
+    assert err and "existingTests" in res["error"]
+
+
+def test_existing_test_with_nothing_to_change_is_only_mapped(tmp_path):
+    ctx = ctx_for(tmp_path, _two_world(gherkin_b="Given b"))
+    path = feature_file(tmp_path, "Feature: F\n  @P-6\n  Scenario: B\n    Given b\n")
+    res = preview(ctx, path, **ans(createTestSet=False))
+    assert qids(res) == [] and "existingTests" not in res
+    assert res["actions"][0]["kind"] == "keep_test"
+    res, err = _apply(ctx, path)
+    assert not err, res
+    assert writes(ctx) == [] and res["unchanged"] == ["P-6"]
+
+
+def test_existing_tests_question_joins_the_elicitation_form(tmp_path):
+    ctx = ctx_for(tmp_path, _two_world())
+    ctx.channel = FormChannel({"tagRule.suite": "label_value", "existingTests": "keep",
+                               "existingTests.P-6": "update"})
+    path = feature_file(tmp_path, TWO_EXISTING.replace("@P-6", "@P-6 @suite:smoke"))
+    res, err = _apply(ctx, path)
+    assert not err, res
+    props = ctx.channel.asked[0]["properties"]
+    assert ctx.channel.asked[0]["required"] == ["tagRule.suite"]
+    assert props["existingTests"]["enum"] == ["update", "keep", "skip"]
+    # without Jira and a Test Set, nothing would change on P-5: not asked, only mapped
+    assert "existingTests.P-6" in props and "existingTests.P-5" not in props
+    assert res["updated"] == ["P-6"] and res["unchanged"] == ["P-5"]
+    assert len(ctx.channel.asked) == 1

@@ -76,6 +76,11 @@ class ImportAction:
     feature_set: bool = False            # the Feature's Test Set (vs. one from tags)
     similar: List[dict] = field(default_factory=list)  # new tests: similar, not duplicates
     reason: str = ""                     # skip_test: why the scenario is not imported
+    # existing test (update_test): what it has now, to tell what the import would change
+    current_definition: Optional[str] = None
+    current_set_ids: Optional[List[str]] = None
+    current_pre_ids: Optional[List[str]] = None
+    new_links: List[str] = field(default_factory=list)   # with Jira: links not there yet
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {"kind": self.kind, "summary": self.summary, "line": self.source_line}
@@ -640,6 +645,61 @@ def _existing_test_fields(ctx: ServerContext, a: ImportAction, current: Dict[str
     a.field_names = names
 
 
+_MEMBERSHIP = ("testSets(limit: 100) { results { issueId } } "
+               "preconditions(limit: 100) { results { issueId } } ")
+
+
+def _ids(results: Any) -> Optional[List[str]]:
+    """issueIds of a testSets/preconditions selection; None when it was not returned."""
+    if not isinstance(results, dict):
+        return None
+    return [str(r.get("issueId")) for r in results.get("results") or [] if isinstance(r, dict)]
+
+
+def existing_test_changes(plan: List[ImportAction], analysis: TagAnalysis,
+                          has_jira: bool) -> List[Dict[str, Any]]:
+    """What the import would change on each existing test it maps a scenario to: steps,
+    labels added, fields, requirement links, Test Sets joined, Pre-Conditions linked, and
+    key:value tags still awaiting a tag-rule answer. Only tests with some change are listed.
+    Labels, fields and links need Jira; without it they are notDone, not changes. A
+    membership that could not be read counts as a change."""
+    out: List[Dict[str, Any]] = []
+    for a in plan:
+        if a.kind != "update_test":
+            continue
+        st = analysis.scenarios[a.index]
+        c: Dict[str, Any] = {"key": a.key, "scenarioIndex": a.index, "scenario": a.summary,
+                             "stepsChanged": (a.current_definition or "").strip()
+                             != a.definition.strip()}
+        if has_jira:
+            added = [x for x in a.labels if x not in a.current_labels]
+            if added:
+                c["labelsAdded"] = added
+            if a.field_names:
+                c["fields"] = list(a.field_names)
+            if a.new_links:
+                c["links"] = list(a.new_links)
+        sets = [s.summary for s in plan if s.kind in ("create_test_set", "reuse_test_set")
+                and a.index in s.tests and (s.kind == "create_test_set"
+                                            or a.current_set_ids is None
+                                            or s.issue_id not in a.current_set_ids)]
+        if sets:
+            c["testSets"] = sets
+        pres = [p.key or p.summary or "(new)" for p in plan
+                if p.kind in ("create_precondition", "reuse_precondition")
+                and a.index in p.tests and (p.kind == "create_precondition"
+                                            or a.current_pre_ids is None
+                                            or p.issue_id not in a.current_pre_ids)]
+        if pres:
+            c["preconditions"] = pres
+        pending = [t for t in st.outcome.unmatched if kv_key(t) in analysis.uncovered]
+        if pending:
+            c["pendingTags"] = pending
+        if c["stepsChanged"] or len(c) > 4:  # more than the four identifying entries
+            out.append(c)
+    return out
+
+
 def plan_import(ctx: ServerContext, project_key: str, feature: ParsedFeature, feature_path: str,
                 options: Union[bool, ImportOptions] = True,
                 analysis: Optional[TagAnalysis] = None) -> List[ImportAction]:
@@ -675,13 +735,17 @@ def plan_import(ctx: ServerContext, project_key: str, feature: ParsedFeature, fe
             a.labels, a.test_sets, a.fields, a.requirement_keys = [], [], {}, []
         elif st.test_key:
             ids = [fid for fid in (_field_id(opts, n) for n in a.fields) if fid]
-            r = fetch_test(ctx, project_key, st.test_key, jira_fields=ids)
+            r = fetch_test(ctx, project_key, st.test_key, detail=True, jira_fields=ids,
+                           xray_extra=_MEMBERSHIP)
             tt = r.get("testType")
             tt = tt.get("name") if isinstance(tt, dict) else tt
             if tt != CUCUMBER:
                 raise ToolError("Test %s is a %s test; only Cucumber tests can take a scenario "
                                 "definition" % (st.test_key, tt), testKey=st.test_key, testType=tt)
             a.kind, a.key, a.issue_id = "update_test", st.test_key, r["issueId"]
+            a.current_definition = r.get("gherkin")
+            a.current_set_ids = _ids(r.get("testSets"))
+            a.current_pre_ids = _ids(r.get("preconditions"))
             current = r.get("jira") or {}
             a.current_labels = list(current.get("labels") or [])
             new_labels = [x for x in a.labels if x not in a.current_labels]
@@ -693,6 +757,9 @@ def plan_import(ctx: ServerContext, project_key: str, feature: ParsedFeature, fe
                 a.not_done.append(not_done(a.key, "requirement links "
                                            + ", ".join(a.requirement_keys),
                                            *jira_reason_fix(ctx.env)))
+            elif a.requirement_keys:
+                have = set(ctx.jira.linked_keys(a.key))
+                a.new_links = [k for k in a.requirement_keys if k not in have]
         else:
             if opts.ai_label:
                 a.labels = dedupe(a.labels + [opts.ai_label])

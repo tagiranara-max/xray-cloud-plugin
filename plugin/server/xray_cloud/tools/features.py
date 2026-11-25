@@ -4,19 +4,19 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-from .. import choices, tagquestions
+from .. import choices, existingtests, tagquestions
 from ..config import ProjectSettings, project_dir
 from ..context import (ServerContext, dedupe, is_permission_error, partial_failure,
                        permission_denied, require_project, require_write)
-from ..errors import ToolError
+from ..errors import NeedsAnswer, ToolError
 from .. import requiredfields
 from ..gherkin.parse import ParsedFeature, parse_feature
 from ..gherkin.tagrules import FIELD_ID, TagRule, kv_key, parse_rules
 from ..jira_client import LINK_TYPE
 from ..localfiles import PATH_NOTE, read_local_file
 from ..gherkin.plan import (CUCUMBER, UNNAMED_PREFIX, ImportAction, ImportOptions, TagAnalysis,
-                            analyze_tags, existing_set_names, feature_set_name,
-                            lookup_key_tags, plan_import)
+                            analyze_tags, existing_set_names, existing_test_changes,
+                            feature_set_name, lookup_key_tags, plan_import)
 from ..gherkin.tagsummary import summarize_tags, tag_values
 from ..registry import REGISTRY
 from .containers import _CREATE, _add
@@ -299,6 +299,26 @@ def _skipped(plan: List[ImportAction], create_dups: List[int]) -> List[dict]:
             and a.index not in create_dups]
 
 
+def _apply_existing_answers(plan: List[ImportAction], changes: List[dict],
+                            answers: Dict[str, Any]) -> None:
+    """Existing tests: one with nothing to change is only mapped (keep_test); otherwise the
+    answer decides: update (as planned), keep (mapped, nothing written to it) or skip (the
+    scenario is left out). Unanswered (preview): left as planned."""
+    changed = {c["key"] for c in changes}
+    for a in plan:
+        if a.kind != "update_test":
+            continue
+        ans = existingtests.answer_for(answers, a.key) if a.key in changed else "unchanged"
+        if ans in ("keep", "unchanged"):
+            a.kind = "keep_test"
+            if ans == "keep":
+                a.not_done = []
+        elif ans == "skip":
+            a.kind, a.not_done = "skip_test", []
+            a.reason = "existing test %s left as it is and the scenario left out " \
+                       "(existingTests: skip)" % a.key
+
+
 QUESTION_IDS = ("createTestSet", "backgrounds", "tagsAsLabels", "aiLabel", "aiLabelScope")
 _BOOL = {"type": "boolean"}
 
@@ -380,7 +400,7 @@ def _would_create(plan: List[ImportAction], skip: set) -> Dict[str, int]:
 
 def _members(plan: List[ImportAction], indexes: List[int]) -> List[str]:
     by_index = {a.index: a for a in plan
-                if a.kind in ("create_test", "update_test", "skip_test")}
+                if a.kind in ("create_test", "update_test", "skip_test", "keep_test")}
     return [by_index[i].key or by_index[i].summary for i in indexes]
 
 
@@ -398,7 +418,7 @@ def _preview_sets(plan: List[ImportAction]) -> Dict[str, List[dict]]:
 def _per_test(plan: List[ImportAction]) -> List[dict]:
     out = []
     for a in plan:
-        if a.kind in ("create_test", "update_test"):
+        if a.kind in ("create_test", "update_test", "keep_test"):
             row = {"scenarioIndex": a.index, "scenario": a.summary}
             if a.key:
                 row["key"] = a.key
@@ -454,7 +474,8 @@ def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: 
     "Sets and fields. Issue-key tags are looked up: @<KEY> of a test in this project maps the "
     "scenario to it, of another issue links it, of no issue is a plain tag (tagSummary."
     "keyTags); @REQ_<KEY> links. Unanswered choices (createTestSet, backgrounds, tagsAsLabels, "
-    "aiLabel, aiLabelScope, tagRule.<key> in tagRuleAnswers) are in a non-empty `questions`: ask the user "
+    "aiLabel, aiLabelScope, tagRule.<key> in tagRuleAnswers, existingTests for tests it would "
+    "change) are in a non-empty `questions`: ask the user "
     "once, call again with the answers. apply=false (default) previews; apply=true executes, "
     "skipping scenarios whose summary an existing test has unless indexed in "
     "createDuplicates (`similar` ones are only listed). Anything not doable is in notDone "
@@ -475,6 +496,7 @@ def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: 
                           "remembered yet. Default false: a differing answer applies to this "
                           "call only; true makes it replace the remembered one."},
              "tagRuleAnswers": tagquestions.PARAM_SCHEMA,
+             **existingtests.PARAM_SCHEMAS,
              "createDuplicates": {"type": "array", "items": {"type": "integer", "minimum": 0}},
              "fields": _OBJ, "rawFields": _OBJ,
              "preconditionFields": {"type": "object", "description":
@@ -512,6 +534,7 @@ def create_tests_from_feature(ctx, args):
         ai_scope=values["aiLabelScope"] or "tests", project=project)
     # key:value tags no rule covers: answered rules are added (remembered on apply)
     tag_answers = tagquestions.parse_answers(args.get(tagquestions.PARAM))
+    exist_answers = existingtests.parse(args)
     names = set(project.fields.get("test") or {})
     new_rules: List[dict] = []
 
@@ -534,11 +557,35 @@ def create_tests_from_feature(ctx, args):
                         % ", ".join(unanswered + ["tagRule.%s" % k for k in analysis.uncovered]),
                         questions=[choices.question(n, contexts[n]) for n in unanswered]
                         + tagquestions.questions(analysis.uncovered, project))
-    if apply and analysis.uncovered:  # elicitation form, else needs_answer
-        asked = tagquestions.ask(ctx, analysis.uncovered, project)
-        new_rules = new_rules + tagquestions.pending(asked, analysis.uncovered, project)
-        analysis = analyze()
-        applicable = _applicable(feature, analysis, values)
+    def make_plan():
+        """(plan, changes to existing tests). Planned this early (it only reads) only when a
+        scenario maps to an existing test, so that question joins the tag ones; otherwise
+        after the field checks, which refuse before any call."""
+        if not any(st.test_key for st in analysis.scenarios):
+            return None, []
+        if not applicable["aiLabel"]:
+            opts.ai_label = ""
+        p = plan_import(ctx, pk, feature, rel, opts, analysis)
+        return p, existing_test_changes(p, analysis, ctx.jira is not None)
+
+    plan, changes = make_plan()
+    ask_changes = existingtests.unanswered(changes, exist_answers)
+    if apply and (analysis.uncovered or ask_changes):  # elicitation form, else needs_answer
+        asked, ex = tagquestions.ask(ctx, analysis.uncovered, project, ask_changes)
+        if ex is not None:
+            exist_answers = {"all": exist_answers["all"] or ex["all"],
+                             "keys": dict(ex["keys"], **exist_answers["keys"])}
+        if analysis.uncovered:
+            new_rules = new_rules + tagquestions.pending(asked, analysis.uncovered, project)
+            analysis = analyze()
+            applicable = _applicable(feature, analysis, values)
+            plan, changes = make_plan()
+        left = existingtests.unanswered(changes, exist_answers)
+        if left:
+            raise NeedsAnswer("Ask the user whether to update, keep or skip these existing "
+                              "tests, then call again with existingTests; never answer it "
+                              "yourself. Nothing was written.",
+                              [existingtests.question(left)], projectKey=pk)
     if not applicable["aiLabel"]:
         opts.ai_label = ""
 
@@ -569,7 +616,9 @@ def create_tests_from_feature(ctx, args):
     if bad:
         raise ToolError("createDuplicates index out of range: %s (the feature has %d scenarios)"
                         % (bad, len(feature.scenarios)))
-    plan = plan_import(ctx, pk, feature, rel, opts, analysis)
+    if plan is None:
+        plan = plan_import(ctx, pk, feature, rel, opts, analysis)
+    _apply_existing_answers(plan, changes, exist_answers)
     skipped = _skipped(plan, create_dups)
     skip = {s["index"] for s in skipped}
     not_done = list(analysis.notes) + [nd for a in plan if a.index not in skip
@@ -585,6 +634,7 @@ def create_tests_from_feature(ctx, args):
                                "questions": [choices.question(n, contexts[n])
                                              for n in unanswered]
                                + tagquestions.questions(analysis.uncovered, project)
+                               + ([existingtests.question(ask_changes)] if ask_changes else [])
                                + field_questions,
                                "choices": shown,
                                "actions": [a.to_dict() for a in plan],
@@ -596,9 +646,12 @@ def create_tests_from_feature(ctx, args):
                                "notDone": not_done}
         if analysis.warnings:
             out["warnings"] = list(analysis.warnings)
-        if unanswered or analysis.uncovered:
+        if changes:
+            out["existingTests"] = changes
+        if unanswered or analysis.uncovered or ask_changes:
             out["hint"] = ("answer the questions (ask the user once), then call again with the "
-                           "answers (tagRule.<key> ones in tagRuleAnswers); until then the "
+                           "answers (tagRule.<key> ones in tagRuleAnswers, existingTests in "
+                           "existingTests / existingTestOverrides); until then the "
                            "actions assume createTestSet=true, backgrounds=preconditions, "
                            "tagsAsLabels=true, no AI label and nothing from unanswered "
                            "key:value tags")
@@ -619,8 +672,12 @@ def create_tests_from_feature(ctx, args):
     choices.add_tag_rules(ctx, pk, new_rules)
     run = _Run(ctx, pk, plan, skip, test_extras, pre_extra, set_extra)
     result = run.run()
+    kept = {a.index: a.key for a in plan if a.kind == "keep_test"}
+    mapped = {**run.test_keys, **kept}
     out = {"feature": feature.name, "path": rel, "created": run.created, "updated": run.updated,
-           "tests": [{"index": i, "key": run.test_keys[i]} for i in sorted(run.test_keys)]}
+           "tests": [{"index": i, "key": mapped[i]} for i in sorted(mapped)]}
+    if kept:
+        out["unchanged"] = [kept[i] for i in sorted(kept)]
     out.update(result)
     out["testSetsCreated"] = run.sets_created
     out["testSetMemberships"] = run.memberships

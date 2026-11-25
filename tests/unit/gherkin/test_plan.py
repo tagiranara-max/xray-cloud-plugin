@@ -79,6 +79,9 @@ class TypeJira:
         self.asked.append(key)
         return self.types.get(key)
 
+    def linked_keys(self, key):
+        return []
+
 
 def test_tags_become_labels_except_issue_keys():
     text = """@smoke @REQ_Q-9 @R-1

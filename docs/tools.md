@@ -138,6 +138,7 @@ A few import choices are yours to make, and the plugin asks about them instead o
 - `backgrounds`: Backgrounds as Pre-Conditions (`preconditions`) or copied into each test (`inline`)?
 - `tagsAsLabels`: turn plain tags (such as `@smoke`) into labels?
 - `tagRule.<key>`: what a `key:value` or `key=value` tag means when no tag rule covers its key (see "Tag rules").
+- `existingTests`: asked when a scenario maps to an existing test of the project (`@<KEY>` or `@TEST_<KEY>`) and the import would change it. The question lists each such test with what would change (steps, labels added, fields, requirement links, Test Sets joined, Pre-Conditions, tags still awaiting a tag-rule answer); the preview has the same list in `existingTests`. Answers: `update` (change the test from the file), `keep` (the scenario only maps to the test; nothing is written to it, and it is not added to Test Sets or Pre-Conditions) or `skip` (leave those scenarios out). `existingTestOverrides: {"PROJ-12": "skip"}` answers single tests. It is asked in the same round as the `tagRule.<key>` questions, is never remembered, and is not asked for a test the import would not change (that test is only mapped).
 - `aiLabel` and `aiLabelScope`: mark what the AI creates (see "AI label" below).
 
 Each is asked once per project. When a tool answers `status: needs_answer` (or an import preview returns `questions`), Claude asks you and calls again with your answer, and the plugin remembers it for that project. Nothing is written to Xray until every applicable question is answered.

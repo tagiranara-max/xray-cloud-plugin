@@ -124,8 +124,8 @@ def _shape(result: dict) -> dict:
 
 
 def _search(ctx: ServerContext, jql: str, limit: int, detail: bool,
-            jira_fields: List[str] = (), start: int = 0) -> List[dict]:
-    extra = "gherkin steps { action data result } " if detail else ""
+            jira_fields: List[str] = (), start: int = 0, xray_extra: str = "") -> List[dict]:
+    extra = ("gherkin steps { action data result } " if detail else "") + xray_extra
     names = list(_DETAIL_JIRA if detail else _BASE_JIRA)
     names += [f for f in jira_fields if f not in names]
     variables: Dict[str, Any] = {"jql": jql, "limit": limit}
@@ -187,11 +187,13 @@ def find_duplicates(ctx: ServerContext, project_key: str, summary: str) -> List[
 
 
 def fetch_test(ctx: ServerContext, project_key: str, test_key: str, detail: bool = False,
-               jira_fields: List[str] = ()) -> dict:
+               jira_fields: List[str] = (), xray_extra: str = "") -> dict:
     """Validated lookup: returns the raw getTests result (issueId, testType, jira) or raises.
-    jira_fields: extra Jira field ids to read (e.g. custom fields)."""
+    jira_fields: extra Jira field ids to read (e.g. custom fields); xray_extra: extra Xray
+    selections (GraphQL)."""
     check_issue_in_project(test_key, project_key)
-    results = _search(ctx, "issue = %s" % test_key, 1, detail, jira_fields)
+    results = _search(ctx, "issue = %s" % test_key, 1, detail, jira_fields,
+                      xray_extra=xray_extra)
     if not results:
         raise ToolError("Test not found: %s" % test_key, testKey=test_key)
     return results[0]
