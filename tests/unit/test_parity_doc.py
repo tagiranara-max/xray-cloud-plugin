@@ -76,8 +76,8 @@ def test_parity_audit_without_credentials(monkeypatch, capsys):
     assert "XRAY_CLIENT_ID" in capsys.readouterr().err
 
 
-def test_readme_lists_every_tool():
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
-    listed = set(re.findall(r"^\| `(\w+)` \|", readme, re.M))
+def test_tools_doc_lists_every_tool():
+    doc = (REPO / "docs" / "tools.md").read_text(encoding="utf-8")
+    listed = set(re.findall(r"^\| `(\w+)` \|", doc, re.M))
     missing = {t["name"] for t in REGISTRY.list()} - listed
     assert not missing, sorted(missing)

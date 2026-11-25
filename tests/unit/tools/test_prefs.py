@@ -334,3 +334,33 @@ def test_set_preferences_rejects_unknown_item_type_and_bad_project_key(tmp_path,
     res, err = run(make(tmp_path), "set_preferences", projectKey="P", **args)
     assert err and ("itemType must be one of" in res["error"]
                     or "revokeProject must be a project key" in res["error"]), res
+
+
+def test_status_shows_unknown_project_dir(tmp_path, monkeypatch):
+    from xray_cloud import config
+    ctx = status_ctx(tmp_path)
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    monkeypatch.setattr(config, "PLUGIN_DIR", plugin)
+    monkeypatch.chdir(plugin)
+    for name in ("XRAY_PROJECT_DIR", "CLAUDE_PROJECT_DIR"):
+        ctx.env.pop(name, None)
+    res, err = run(ctx, "get_status")
+    assert not err, res
+    assert res["projectDir"]["known"] is False and res["projectDir"]["path"] is None
+    assert "absolute" in res["projectDir"]["note"]
+    ctx.env["XRAY_PROJECT_DIR"] = str(tmp_path)
+    res, _ = run(ctx, "get_status")
+    assert res["projectDir"] == {"path": str(tmp_path), "source": "XRAY_PROJECT_DIR", "known": True}
+
+
+def test_file_parameters_tell_the_agent_to_use_absolute_paths():
+    from xray_cloud.localfiles import PATH_NOTE
+    wanted = {("create_tests_from_feature", "featureFilePath"), ("import_feature_file", "filePath"),
+              ("export_cucumber_features", "directory"), ("import_execution_results", "filePath"),
+              ("analyze_feature_tags", "featureFilePaths"), ("analyze_feature_tags", "folder"),
+              ("update_test_run", "attachments")}
+    tools = {t["name"]: t for t in REGISTRY.list()}
+    for tool, param in wanted:
+        desc = tools[tool]["inputSchema"]["properties"][param].get("description", "")
+        assert PATH_NOTE in desc, (tool, param)

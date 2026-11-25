@@ -5,7 +5,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from ._vendor_path import import_vendored
 from .errors import ToolError
@@ -128,20 +128,41 @@ class Settings:
         return cls(None, {}, list(DEFAULT_LIFECYCLE_LABELS), True)
 
 
-def project_dir(env: Mapping[str, str]) -> str:
+# The plugin's own folder (plugin/): a client that starts the server there (Codex runs plugin
+# servers with the plugin folder as cwd) gives no hint where the user's project is.
+PLUGIN_DIR = Path(__file__).resolve().parents[2]
+
+
+def project_dir_info(env: Mapping[str, str]) -> Tuple[Optional[str], Optional[str]]:
+    """-> (project directory, source). Source is XRAY_PROJECT_DIR, CLAUDE_PROJECT_DIR or cwd.
+    When neither variable is set and the cwd is inside the plugin's own folder, the project
+    directory is unknown: (None, None)."""
+    for name in ("XRAY_PROJECT_DIR", "CLAUDE_PROJECT_DIR"):
+        value = _get(env, name)
+        if value:
+            return value, name
+    cwd = os.getcwd()
+    real, plugin = os.path.realpath(cwd), os.path.realpath(str(PLUGIN_DIR))
+    if real == plugin or real.startswith(plugin + os.sep):
+        return None, None
+    return cwd, "cwd"
+
+
+def project_dir(env: Mapping[str, str]) -> Optional[str]:
     """The project directory: $XRAY_PROJECT_DIR, else Claude Code's $CLAUDE_PROJECT_DIR, else
-    the current directory."""
-    return _get(env, "XRAY_PROJECT_DIR") or _get(env, "CLAUDE_PROJECT_DIR") or os.getcwd()
+    the current directory; None when unknown (see project_dir_info)."""
+    return project_dir_info(env)[0]
 
 
 def settings_search_paths(env: Mapping[str, str]) -> List[Path]:
-    """Every location a settings file is looked for, in priority order."""
+    """Every location a settings file is looked for, in priority order: XRAY_SETTINGS_FILE,
+    then ~/.config/xray-cloud/settings.{yml,yaml,json}. The project folder is never searched,
+    so settings do not depend on where the client starts the server; a team that commits a
+    file in its repository points XRAY_SETTINGS_FILE at it."""
     candidates: List[Path] = []
     explicit = _get(env, "XRAY_SETTINGS_FILE")
     if explicit:
         candidates.append(Path(os.path.expanduser(explicit)))
-    for ext in ("yml", "yaml", "json"):
-        candidates.append(Path(project_dir(env)) / ".xray" / ("settings." + ext))
     home = Path(os.path.expanduser("~")) / ".config" / "xray-cloud"
     for ext in ("yml", "yaml", "json"):
         candidates.append(home / ("settings." + ext))

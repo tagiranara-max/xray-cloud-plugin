@@ -12,6 +12,7 @@ from xray_cloud.config import (
     SettingsError,
     SettingsStore,
     find_settings_file,
+    settings_search_paths,
     load_credentials,
     load_jira_credentials,
     load_read_only,
@@ -96,19 +97,33 @@ def test_lookup_order_first_found_wins(tmp_path, monkeypatch):
     (home / ".config" / "xray-cloud").mkdir(parents=True)
     (home / ".config" / "xray-cloud" / "settings.yml").write_text("projects: {HOME: {}}")
     monkeypatch.setenv("HOME", str(home))
-    proj = tmp_path / "proj"
-    (proj / ".xray").mkdir(parents=True)
-    (proj / ".xray" / "settings.yml").write_text("projects: {PROJ: {}}")
     explicit = tmp_path / "x.json"
     explicit.write_text('{"projects": {"EXPL": {}}}')
 
-    e = {"CLAUDE_PROJECT_DIR": str(proj)}
-    assert find_settings_file(e) == proj / ".xray" / "settings.yml"
-    assert list(SettingsStore(e).get().projects) == ["PROJ"]
-    e["XRAY_SETTINGS_FILE"] = str(explicit)
-    assert list(SettingsStore(e).get().projects) == ["EXPL"]
-    monkeypatch.chdir(tmp_path)  # no CLAUDE_PROJECT_DIR: cwd is the project dir
     assert find_settings_file({}) == home / ".config" / "xray-cloud" / "settings.yml"
+    assert list(SettingsStore({}).get().projects) == ["HOME"]
+    e = {"XRAY_SETTINGS_FILE": str(explicit)}
+    assert list(SettingsStore(e).get().projects) == ["EXPL"]
+
+
+def test_no_settings_file_anywhere(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    assert find_settings_file({}) is None
+    assert SettingsStore({}).get().path is None
+
+
+def test_project_folder_settings_file_is_ignored(tmp_path, monkeypatch):
+    """.xray/settings.yml in the project folder (or the cwd) is never read."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    proj = tmp_path / "proj"
+    (proj / ".xray").mkdir(parents=True)
+    (proj / ".xray" / "settings.yml").write_text("projects: {PROJ: {}}")
+    monkeypatch.chdir(proj)
+    for env in ({}, {"CLAUDE_PROJECT_DIR": str(proj)}, {"XRAY_PROJECT_DIR": str(proj)}):
+        assert find_settings_file(env) is None, env
+        assert all(".xray" not in p.parts for p in settings_search_paths(env)), env
+        assert SettingsStore(env).get().projects == {}, env
 
 
 def test_explicit_settings_file_missing_is_an_error(tmp_path, monkeypatch):
@@ -124,14 +139,6 @@ def test_explicit_settings_file_missing_is_an_error(tmp_path, monkeypatch):
     e["XRAY_SETTINGS_FILE"] = str(tmp_path)  # a directory is not a settings file either
     with pytest.raises(SettingsError):
         find_settings_file(e)
-
-
-def test_project_dir_falls_back_to_cwd(tmp_path, monkeypatch):
-    (tmp_path / ".xray").mkdir()
-    (tmp_path / ".xray" / "settings.yml").write_text("projects: {CWD: {}}")
-    monkeypatch.chdir(tmp_path)
-    assert find_settings_file({}) == tmp_path / ".xray" / "settings.yml"
-    assert list(SettingsStore({}).get().projects) == ["CWD"]
 
 
 def test_no_file_gives_empty_settings(tmp_path, monkeypatch):
@@ -397,3 +404,20 @@ def test_unsubstituted_placeholders_are_ignored(monkeypatch):
     assert project_dir({"XRAY_PROJECT_DIR": "${workspacePath}"}) == os.getcwd()
     assert project_dir({"XRAY_PROJECT_DIR": "${user_config.x}"}) == os.getcwd()
     assert project_dir({"XRAY_PROJECT_DIR": "/a/${weird}/b"}) == "/a/${weird}/b"
+
+
+def test_project_dir_unknown_inside_plugin_folder(tmp_path, monkeypatch):
+    from xray_cloud import config
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    monkeypatch.setattr(config, "PLUGIN_DIR", plugin)
+    monkeypatch.chdir(plugin)
+    assert config.project_dir_info({}) == (None, None)
+    assert config.project_dir_info({"CLAUDE_PROJECT_DIR": "/w"}) == ("/w", "CLAUDE_PROJECT_DIR")
+    monkeypatch.chdir(tmp_path)
+    assert config.project_dir_info({}) == (str(tmp_path), "cwd")
+
+
+def test_plugin_dir_is_the_plugin_folder():
+    from xray_cloud import config
+    assert (config.PLUGIN_DIR / ".claude-plugin" / "plugin.json").is_file()

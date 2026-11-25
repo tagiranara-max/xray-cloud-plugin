@@ -93,10 +93,10 @@ def test_skills_say_relay_needs_answer(name):
     assert "needs_answer" in section and "relay" in section and "never answer" in section, name
 
 
-def test_readme_settings_says_optional():
-    text = (ROOT / "README.md").read_text(encoding="utf-8")
+def test_configuration_settings_says_optional():
+    text = (ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
     m = re.search(r"^## Settings\n(.*?)(?=^## )", text, re.S | re.M)
-    assert m, "README has no Settings section"
+    assert m, "docs/configuration.md has no Settings section"
     section = m.group(1).lower()
     assert "optional" in section
     assert "no setup" in section
@@ -105,7 +105,10 @@ def test_readme_settings_says_optional():
     assert "asks you directly" in text and "the agent asks you" in text
 
 
-@pytest.mark.parametrize("path", [ROOT / "README.md"] + skill_files(), ids=lambda p: p.parent.name)
+DOCS = [ROOT / "README.md", ROOT / "docs" / "configuration.md", ROOT / "docs" / "tools.md"]
+
+
+@pytest.mark.parametrize("path", DOCS + skill_files(), ids=lambda p: p.relative_to(ROOT).as_posix())
 def test_no_stale_allowlist_wording(path):
     lowered = path.read_text(encoding="utf-8").lower()
     for stale in ("allowlist", "projects claude may use"):

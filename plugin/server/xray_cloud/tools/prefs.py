@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from .. import choices
 from ..config import (PROJECT_KEY_RE, REGIONS, ai_created_problem, feature_import_problem,
-                      find_settings_file, settings_search_paths)
+                      find_settings_file, project_dir_info, settings_search_paths)
 from ..context import require_project
 from ..errors import ToolError
 from ..gherkin.tagrules import parse_rules
@@ -162,6 +162,16 @@ def _settings_status(ctx) -> Dict[str, Any]:
     return out
 
 
+def _project_dir_status(ctx) -> Dict[str, Any]:
+    path, source = project_dir_info(ctx.env)
+    out: Dict[str, Any] = {"path": path, "source": source, "known": path is not None}
+    if path is None:
+        out["note"] = ("Project folder unknown (the client started the server in its plugin "
+                       "folder): relative file paths are refused. Pass absolute paths or set "
+                       "XRAY_PROJECT_DIR.")
+    return out
+
+
 def _jira_status(ctx, check: bool) -> Dict[str, Any]:
     creds = ctx.jira_creds
     out: Dict[str, Any] = {"configured": creds is not None,
@@ -192,8 +202,10 @@ def _project_status(ctx, pk: str) -> Dict[str, Any]:
 @REGISTRY.tool(
     "get_status",
     "Show the plugin's state: version, region and base URL, whether Xray credentials are "
-    "configured (never their values), the settings file (path, locations searched, load "
-    "error), projects, read-only mode, Jira (configured, site; with check=true also "
+    "configured (never their values), the settings file (path, locations searched: "
+    "XRAY_SETTINGS_FILE, then ~/.config/xray-cloud/settings.yml; load error), the project "
+    "folder used for relative file paths (projectDir: path, source, known; when unknown, "
+    "relative file paths are refused), projects, read-only mode, Jira (configured, site; with check=true also "
     "reachable and user, using one Jira /myself call), the preferences file, and per project "
     "the effective import choices with their source (call, settings, remembered, default or "
     "unanswered; `unanswered` lists the ones still to ask), the result-import testKeyTag "
@@ -213,7 +225,7 @@ def get_status(ctx, args):
     out: Dict[str, Any] = {
         "version": _version(), "region": region, "baseUrl": REGIONS[region],
         "credentials": {"configured": ctx.has_credentials},
-        "settings": settings, "projects": projects, "readOnly": bool(ctx.read_only),
+        "settings": settings, "projectDir": _project_dir_status(ctx), "projects": projects, "readOnly": bool(ctx.read_only),
         "jira": _jira_status(ctx, bool(args.get("check"))),
         "preferencesFile": str(ctx.preferences.path), "perProject": {},
         "approvals": {"approveAll": False, "approvedProjects": []}}

@@ -9,7 +9,7 @@ from ..errors import ToolError
 from ..gherkin.parse import ParsedFeature, parse_feature
 from ..gherkin.plan import existing_set_names
 from ..gherkin.tagsummary import summarize_tags, tag_values
-from ..localfiles import resolve_local_path
+from ..localfiles import PATH_NOTE, resolve_local_path
 from ..registry import REGISTRY
 from .features import _rules, read_feature
 from .tests import _schema
@@ -48,9 +48,10 @@ def _folder_files(env, folder: str, room: int) -> Dict[str, Any]:
     "`testSet`, `field` or `skip`; for example (an example only, not a default) {tag: "
     "\"group\", split: \",\", testSet: \"{value}\"} turns @group=alpha,beta into Test Sets alpha "
     "and beta.",
-    _schema({"featureFilePaths": {"type": "array", "items": {"type": "string"}},
+    _schema({"featureFilePaths": {"type": "array", "items": {"type": "string"},
+                                  "description": "Local .feature files. " + PATH_NOTE},
              "folder": {"type": "string", "description":
-                        "Searched recursively. Rules have one or more of label/testSet/"
+                        "Local folder, searched recursively. " + PATH_NOTE + " Rules have one or more of label/testSet/"
                         "field/skip; issue-key tags (issueKeys) are never subject to rules."}},
             []))
 def analyze_feature_tags(ctx, args):

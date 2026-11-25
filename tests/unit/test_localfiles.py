@@ -57,3 +57,35 @@ def test_size_cap(tmp_path, monkeypatch):
         read_local_file({}, str(tmp_path / "big.bin"), "Attachment file")
     assert ei.value.data["sizeBytes"] == 5
     assert read_local_file({}, str(tmp_path / "ok.bin"))[1] == b"1234"
+
+
+@pytest.fixture
+def in_plugin_dir(tmp_path, monkeypatch):
+    """cwd inside the plugin's own folder, no project variables: the project dir is unknown."""
+    from xray_cloud import config
+    plugin = tmp_path / "plugin"
+    (plugin / "server").mkdir(parents=True)
+    monkeypatch.setattr(config, "PLUGIN_DIR", plugin)
+    monkeypatch.chdir(plugin / "server")
+    return plugin
+
+
+def test_relative_path_refused_when_project_dir_unknown(in_plugin_dir):
+    (in_plugin_dir / "server" / "f.feature").write_bytes(b"x")
+    with pytest.raises(ToolError) as e:
+        read_local_file({}, "f.feature")
+    assert "absolute path" in e.value.message and "XRAY_PROJECT_DIR" in e.value.message
+    assert e.value.data["reason"] == "project_dir_unknown"
+
+
+def test_absolute_and_tilde_paths_work_when_project_dir_unknown(in_plugin_dir, tmp_path, monkeypatch):
+    target = tmp_path / "abs.txt"
+    target.write_bytes(b"a")
+    assert read_local_file({}, str(target))[1] == b"a"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert read_local_file({}, "~/abs.txt")[1] == b"a"
+
+
+def test_project_variable_wins_over_plugin_cwd(in_plugin_dir, tmp_path):
+    (tmp_path / "p.txt").write_bytes(b"p")
+    assert read_local_file({"XRAY_PROJECT_DIR": str(tmp_path)}, "p.txt")[1] == b"p"

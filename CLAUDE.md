@@ -8,6 +8,8 @@ Claude Code plugin `xray-cloud`: a stdlib-only Python 3.9 MCP server (stdio) for
 - `plugin/skills/` holds the four skills (`xray-setup`, `import-results`, `import-tests`, `predict-affected-tests`), each a `SKILL.md`.
 - `scripts/install_skills.py` copies the skills into Codex, Cursor or Gemini CLI skills folders (`--client`, `--scope`, `--force`, `--dry-run`).
 - `gemini-extension.json` is the Gemini CLI extension manifest (versioned by git commit; its version is a placeholder).
+- Codex: `.agents/plugins/marketplace.json` (repo marketplace) and `plugin/.codex-plugin/plugin.json` with the server in `plugin/codex-mcp.json` (credentials forwarded via `env_vars`). Cursor: `.cursor-plugin/marketplace.json` (repo root) and `plugin/.cursor-plugin/plugin.json` (`variables`) with the server in `plugin/mcp.json`. None carries a `version`. Field sources are in `docs/coverage.md`.
+- `README.md` is the short install guide; `docs/configuration.md` holds credentials, env vars, manual client setup and the settings file; `docs/tools.md` the tool reference.
 - `dev/` holds dev-only scripts (`parity_audit.py`: lists the live GraphQL schema's mutations and queries, read-only, needs credentials; compare with `docs/coverage.md`).
 - `.claude-plugin/marketplace.json` makes the repo root a one-plugin marketplace (`xray-cloud-plugin`).
 - `.xray/settings.example.yml` is the settings example; `docs/field-ids.md` the field-id guide.

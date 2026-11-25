@@ -16,4 +16,4 @@ System fields use their plain id, for example `fixVersions` or `components`.
 - **Atlassian (Rovo) MCP.** Use the Atlassian MCP's issue-type metadata tool (find it via its `discover` tool) to get the create metadata of the issue type; it lists every field id, type and allowed values.
 - **Optional Jira token.** Once the token is configured, call the `get_create_fields` tool with the project key and issue type (for example `PROJ` and `Test`).
 
-Then add the ids to `.xray/settings.yml`; see `.xray/settings.example.yml`.
+Then add the ids to your settings file (`~/.config/xray-cloud/settings.yml`, or the file `XRAY_SETTINGS_FILE` names); see `.xray/settings.example.yml`.
