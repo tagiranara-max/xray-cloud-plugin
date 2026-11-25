@@ -78,7 +78,7 @@ def test_import_omits_empty_info_parts_and_folder(tmp_path):
 def test_import_required_test_field_missing_refused_before_upload(tmp_path):
     ctx = imp_ctx(tmp_path, YAML_REQ)
     out, err = call(ctx, "import_feature_file", filePath=feature_file(tmp_path))
-    assert err and "Backend" in json.dumps(out)
+    assert not err and out["status"] == "needs_answer" and "Backend" in json.dumps(out)
     assert ctx.xray.rest_calls == []
 
 

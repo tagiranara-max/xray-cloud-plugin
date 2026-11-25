@@ -5,8 +5,10 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Set
 
-from .context import is_permission_error, permission_denied, require_write
-from .errors import ToolError
+from . import requiredfields
+from .approval import ALLOW_PROJECT_PARAM
+from .context import PartialFailure, is_permission_error, permission_denied, require_write
+from .errors import NeedsAnswer, ToolError
 
 
 @dataclass
@@ -16,6 +18,7 @@ class Tool:
     params: dict
     handler: Callable[[Any, dict], Any]
     write: bool = False
+    approval: bool = False  # takes allowProject (may write to a project); see Registry.tool
 
 
 _TYPE_CHECKS = {
@@ -113,9 +116,18 @@ class Registry:
         self._tools: Dict[str, Tool] = {}
         self.allowed: Optional[Set[str]] = None  # None = every tool (XRAY_TOOLS unset)
 
-    def tool(self, name: str, description: str, params: dict, write: bool = False):
+    def tool(self, name: str, description: str, params: dict, write: bool = False,
+             approval: Optional[bool] = None):
+        """write: blocked in read-only mode before the handler runs. approval (default:
+        write): the tool can write to a project, so it takes allowProject, the user's answer
+        to the approval question; set it for a write=False tool that writes on some calls."""
+        approval = write if approval is None else approval
+        if approval:
+            params = dict(params, properties=dict(params.get("properties") or {},
+                                                  allowProject=ALLOW_PROJECT_PARAM))
+
         def decorator(fn):
-            self._tools[name] = Tool(name, description, params, fn, write)
+            self._tools[name] = Tool(name, description, params, fn, write, approval)
             return fn
 
         return decorator
@@ -140,14 +152,41 @@ class Registry:
             clean = coerce(args or {}, tool.params)
             if tool.write:
                 require_write(ctx)
+            # allowProject is read by require_project (via ctx.call_args), not by handlers.
+            # ctx.call_args is per-context state: it relies on tool calls being handled serially.
+            if tool.approval:
+                ctx.call_args = {"allowProject": clean.pop("allowProject", None)}
+            requiredfields.reset(ctx)  # answers of an earlier call never leak into this one
             try:
-                result = tool.handler(ctx, clean)
+                try:
+                    result = tool.handler(ctx, clean)
+                except requiredfields.RequiredFieldsRejected:
+                    # Jira named required fields and nothing was created: they are learned
+                    # now, so running the call again asks for them (once).
+                    requiredfields.reset(ctx)
+                    try:
+                        result = tool.handler(ctx, clean)
+                    except requiredfields.RequiredFieldsRejected as again:
+                        raise ToolError(
+                            "%s Nothing was created. Call again with `%s` set to {field id: "
+                            "value}; %s." % (again.message, again.data.get("param", "fields"),
+                                             requiredfields.FIELD_IDS_GUIDANCE),
+                            **again.data) from None
             except ToolError as e:
-                if tool.write and is_permission_error(e):
+                # a partial failure always reports what was created: never replaced
+                if tool.write and is_permission_error(e) and \
+                        not isinstance(e, PartialFailure):
                     raise permission_denied(e, action="run %s" % name,
                                             project_key=clean.get("projectKey")) from None
                 raise
+            finally:
+                requiredfields.reset(ctx)
+                if tool.approval:
+                    ctx.call_args = {}
             return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]}
+        except NeedsAnswer as e:  # a question, not an error: nothing was written
+            return {"content": [{"type": "text",
+                                 "text": json.dumps(e.to_dict(), ensure_ascii=False)}]}
         except ToolError as e:
             return _error_result(e.to_dict())
         except Exception as e:  # never leak a traceback to stdout

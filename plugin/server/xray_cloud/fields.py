@@ -33,6 +33,9 @@ def _convert(spec: FieldSpec, value: Any) -> Any:
     return value
 
 
+convert_value = _convert  # FieldSpec value -> Jira value
+
+
 def _resolve(project: ProjectSettings, item_type: str, fields: Optional[Dict[str, Any]]):
     """Return {friendly name: converted value} after defaults; checks unknown names."""
     specs = project.fields.get(item_type) or {}

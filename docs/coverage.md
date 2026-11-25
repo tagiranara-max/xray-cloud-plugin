@@ -57,7 +57,7 @@ file and temp `CLAUDE_PLUGIN_DATA`, so remembered answers start empty):
 
 | Item | Outcome |
 |---|---|
-| Feature import: questions / `needs_answer`, answers remembered per project | ok: the first preview asks `createTestSet`, `backgrounds`, `tagsAsLabels`, `aiLabel`, `aiLabelScope`; `apply` without answers is refused with the same questions and writes nothing; the answers are stored on apply under `"<region>/<PROJECT>"` in `preferences.json`; a second preview asks nothing (every source `remembered`) |
+| Feature import: questions / `needs_answer`, answers remembered per project | ok: the first preview asks `createTestSet`, `backgrounds`, `tagsAsLabels`, `aiLabel`, `aiLabelScope`; `apply` without answers is refused with the same questions and writes nothing; the answers are stored on apply under a site-scoped key (verified before site scoping, when the key was `"<region>/<PROJECT>"`; that older key is still read as a fallback) in `preferences.json`; a second preview asks nothing (every source `remembered`) |
 | AI label scope `all` on feature import | ok: the label is on the created test, Pre-Condition and Test Set (read back via Xray) |
 | AI label on `create_test`, `create_test_set`, `create_test_plan` | partly: live only with `aiLabel: ""` (don't mark; the existing live tests run unchanged); a non-empty label on these single creates is unit-tested only |
 | Feature import: `backgrounds=inline` | ok (`regression/inline_backgrounds.feature`): no Pre-Conditions; each test starts with the feature Background, then the Rule Background; data tables (incl. an escaped pipe) and doc strings (media type, blank and indented lines, a ```` ``` ```` block containing `"""`) read back intact |
@@ -160,6 +160,46 @@ passed steps, the test run's `results[].backgrounds` was **empty**. The Backgrou
 as the run's Pre-Condition (`preconditions.definition = "Given the app is running"`). This
 matches the forum report: Background steps are not shown as run steps.
 
+## Required Jira fields without the Jira token
+
+Probed live on 2026-11-24 with Xray credentials only (no Jira token in the probing process).
+Components was made required, temporarily, for the Test issue type of the live test project
+(the project the live suite writes to); that project had no components.
+
+| `createTest` with | Result |
+|---|---|
+| no `components` | GraphQL error `Create issue failed! - components: Components is required., Components: Components is required.`; **nothing created** (JQL by the unique summary: 0 issues) |
+| `"components": []` (by field id, empty) | `Create issue failed! - components: Components is required.`; nothing created |
+| `"Components": [{"name": ...}]` (by field name) | `Create issue failed! - Components: Field 'Components' cannot be set. It is not on the appropriate screen, or unknown.`; nothing created |
+| `"components": [{"name": "<new name>"}]` (by field id, a component that did not exist) | **created**, and Jira **created the component** on the fly (the probing user administers the project); the test was deleted at once and the component left for the owner to remove |
+
+So Jira's "X is required" error reaches the caller through Xray, names each field by id (and
+again by name), and nothing is created; `jira.fields` takes field ids only, not names. The
+plugin therefore parses the field ids and names from the error (`<id>: <Name> is required.`),
+learns them for the server run, drops the cached create-meta of that project and item type,
+and runs the call once more, which asks for them like discovered fields (elicitation for
+simple fields, otherwise `needs_answer`); the answers are converted for known system fields
+(`components`, `fixVersions`, `priority`, ...) and remembered per field. A component name
+that does not exist yet may be created by Jira when the user can administer the project.
+
+- When such a refusal comes after the call already wrote other items (a container's later new
+  test, a feature import's Pre-Condition or Test Set), the call stops with `partial_failure`
+  naming the item not created and the parameter for its values (`testFields`,
+  `preconditionFields`, `testSetFields`). A container whose first new test is refused is
+  deleted again and the call asks, as above.
+- A "Create issue failed!" error naming no readable field returns `needs_answer` with Jira's
+  raw message and the field-ids guidance; nothing is retried automatically. An error naming
+  only system fields (for example the reporter) is passed through unchanged.
+- Answers for an item type are remembered only after a create of that item type succeeded
+  (a container's answers on the container create, `testFields` answers on its first new
+  test), so a container rolled back after its first test was refused leaves the test answers
+  unsaved. If that rollback itself fails, the `partial_failure` still lists the container in
+  `created`, with the delete error in `rollbackError`.
+- Known gap: `import_execution_results` and `import_feature_file` go through Xray's REST
+  import, which is not wrapped; Jira's required-field error is passed through without asking.
+- No live test covers this path: it needs a field made required in Jira, a temporary change
+  by the project owner. It is covered by unit tests built from the recorded error text.
+
 ## Notes
 
 - Xray answered with HTTP 502 or a connection reset a few times during the runs. When it
@@ -253,3 +293,17 @@ that every named tool is registered.
 | REST `import/execution*` (JUnit, TestNG, NUnit, Robot, Cucumber, Behave, Xray JSON, with `/multipart`) | tool: import_execution_results |
 | REST `import/feature` | tool: import_feature_file |
 | REST `export/cucumber` | tool: export_cucumber_features |
+
+## Client support for MCP elicitation
+
+The server asks for write approval and missing required fields by MCP elicitation when the client declares the capability at initialize. Otherwise it returns `needs_answer` and the agent asks. Checked 2026-11-24 against each client's official documentation:
+
+| Client | Elicitation | Source |
+|---|---|---|
+| Claude Code | yes (interactive dialog in terminal sessions; not in `claude -p` runs) | https://code.claude.com/docs/en/mcp (section "Respond to MCP elicitation requests") |
+| Cursor | yes | https://cursor.com/docs/context/mcp (protocol support table: Elicitation) |
+| VS Code (Copilot agent) | yes (form and URL, during an active turn) | https://code.visualstudio.com/docs/copilot/guides/mcp-developer-guide |
+| OpenAI Codex | unknown: the official MCP page does not mention elicitation | https://developers.openai.com/codex/mcp |
+| Gemini CLI | unknown: the official MCP page does not mention elicitation | https://geminicli.com/docs/tools/mcp-server/ |
+
+Where a client's documentation is silent the README says "the agent asks you"; behaviour can differ by version, and some clients have open bug reports about prompts not showing (for example in specific windows or platforms). The server falls back to `needs_answer` when the client does not declare the capability.

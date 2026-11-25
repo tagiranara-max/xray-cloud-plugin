@@ -13,3 +13,17 @@ class ToolError(Exception):
         out = {"error": self.message}
         out.update(self.data)
         return out
+
+
+class NeedsAnswer(ToolError):
+    """Stops a tool call to ask the user: returned as a normal (non-error) result
+    {"status": "needs_answer", "questions": [...], **data}. Nothing has been written."""
+
+    def __init__(self, message: str, questions: list, **data) -> None:
+        super().__init__(message, **data)
+        self.questions = questions
+
+    def to_dict(self) -> dict:
+        out = {"status": "needs_answer", "message": self.message, "questions": self.questions}
+        out.update(self.data)
+        return out

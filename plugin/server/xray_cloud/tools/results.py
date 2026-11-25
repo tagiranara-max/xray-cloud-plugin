@@ -9,10 +9,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from .. import resultmatch as rm
 from ..context import ISSUE_KEY_RE, check_issue_in_project, dedupe, require_project
 from ..errors import ToolError
-from ..fields import build_jira_fields
+from .. import requiredfields
 from .. import localfiles
 from ..registry import REGISTRY
-from .tests import _OBJ, _schema
+from .tests import _OBJ, _REMEMBER, _schema
 
 XML_FORMATS = ("junit", "testng", "nunit", "robot")
 JSON_FORMATS = ("xray", "cucumber", "behave")
@@ -626,7 +626,7 @@ def _exec_info(pk: str, summary: str, extra: Dict[str, Any], plan_key: Optional[
                                   "createdTests and get no AI label."},
              "skipMissing": {"type": "boolean", "description":
                              "Leave results that match no test out of the import."},
-             "detail": {"type": "boolean"}}, ["format"]),
+             "detail": {"type": "boolean"}, "remember": _REMEMBER}, ["format"]),
     write=True)
 def import_execution_results(ctx, args):
     pk, fmt = args["projectKey"], args["format"]
@@ -672,18 +672,6 @@ def import_execution_results(ctx, args):
         xml_cases = rm.xml_cases(root, fmt, pk)
     else:
         xray_entries = _xray_cases(report)
-    # Decide the endpoint and validate the Jira fields before the first Xray call.
-    multipart = False
-    info: Optional[dict] = None
-    if not target_exec and (wants_fields or (project.fields.get("testExecution") or {})
-                            or fmt in ("cucumber", "behave")):
-        # A new execution with Jira fields; Cucumber/Behave always come this way, because
-        # their plain endpoints take no project (the multipart info sets fields.project).
-        extra = build_jira_fields(project, "testExecution", args.get("fields"),
-                                  args.get("rawFields"))
-        multipart = True
-        info = _exec_info(pk, args.get("summary") or "Imported results (%s)" % fmt, extra,
-                          plan_key, envs)
     # testKeys and scenario tag keys must name existing Tests: anything else would be a link
     # to Xray (a Robot tag), a dropped scenario or a failed upload, and the result could fall
     # back to Xray creating a test.
@@ -710,6 +698,23 @@ def import_execution_results(ctx, args):
         # Entries Xray would match by definition itself stay as they are.
     if res.ambiguous or (res.missing and not allow_create and not skip_missing):
         return _needs_answer(res, fmt)
+    # Decide the endpoint and resolve the Jira fields of a new execution, after the matching
+    # question (an elicited answer is then not lost to it) and before any write.
+    multipart = False
+    info: Optional[dict] = None
+    applied: Dict[str, Any] = {}
+    extra: Dict[str, Any] = {}
+    if not target_exec:
+        extra, applied = requiredfields.resolve(ctx, project, "testExecution", args.get("fields"),
+                                                args.get("rawFields"),
+                                                bool(args.get("remember", False)))
+    if not target_exec and (wants_fields or extra or (project.fields.get("testExecution") or {})
+                            or fmt in ("cucumber", "behave")):
+        # A new execution with Jira fields; Cucumber/Behave always come this way, because
+        # their plain endpoints take no project (the multipart info sets fields.project).
+        multipart = True
+        info = _exec_info(pk, args.get("summary") or "Imported results (%s)" % fmt, extra,
+                          plan_key, envs)
     skipped = set(res.missing) if skip_missing else set()
     creating = allow_create and bool(res.missing)
     names = [c.name for c in scen] or [c.name for c in xml_cases] or \
@@ -767,6 +772,7 @@ def import_execution_results(ctx, args):
     before: List[str] = _exec_test_keys(ctx, target_exec) if creating and target_exec else []
     ctype = "text/xml" if fmt in XML_FORMATS else "application/json"
     path = _endpoint(sent_as, multipart)
+    requiredfields.commit(ctx)
     if multipart:
         # The results part is "results": verified live for JUnit, Cucumber and Xray JSON
         # (Cucumber with "result" gets HTTP 400 "Unexpected field (result)").
@@ -794,6 +800,7 @@ def import_execution_results(ctx, args):
         else resp_d
     key = issue.get("key") or target_exec
     out: Dict[str, Any] = {"testExecKey": key, "created": not target_exec}
+    requiredfields.add_applied(out, "testExecution", applied)
     issue_id = issue.get("id")
     run_keys: Optional[List[str]] = None
     try:

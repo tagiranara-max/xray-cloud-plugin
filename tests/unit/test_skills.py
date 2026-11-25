@@ -53,12 +53,13 @@ def test_all_four_skills_present():
         assert (SKILLS_DIR / name / "SKILL.md").is_file(), name
 
 
-def test_no_settings_error_mentions_xray_setup(tmp_path):
+def test_write_without_settings_or_credentials_points_at_credentials_setup(tmp_path):
     from conftest import make_context
-    from xray_cloud.context import require_project
+    from xray_cloud.context import NO_CREDENTIALS_MESSAGE, require_project
     from xray_cloud.errors import ToolError
-    with pytest.raises(ToolError, match="xray-setup skill"):
+    with pytest.raises(ToolError) as ei:
         require_project(make_context(tmp_path=tmp_path), "P", write=True)
+    assert ei.value.message == NO_CREDENTIALS_MESSAGE
 
 
 def test_xray_setup_yaml_skeleton_loads(tmp_path):
@@ -78,3 +79,34 @@ def test_skill_text_is_client_neutral(path):
     for line in path.read_text(encoding="utf-8").splitlines():
         if "Claude Code" in line:
             assert re.search(r"\bor\b", line), "%s: Claude Code without an alternative: %s" % (path.parent.name, line)
+
+
+WRITING_SKILLS = ["xray-setup", "import-tests", "import-results", "predict-affected-tests"]
+
+
+@pytest.mark.parametrize("name", WRITING_SKILLS)
+def test_skills_say_relay_needs_answer(name):
+    text = (SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8")
+    m = re.search(r"^## Questions from the tool \(`needs_answer`\)\n(.*?)(?=^## |\Z)", text, re.S | re.M)
+    assert m, name
+    section = m.group(1).lower()
+    assert "needs_answer" in section and "relay" in section and "never answer" in section, name
+
+
+def test_readme_settings_says_optional():
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    m = re.search(r"^## Settings\n(.*?)(?=^## )", text, re.S | re.M)
+    assert m, "README has no Settings section"
+    section = m.group(1).lower()
+    assert "optional" in section
+    assert "no setup" in section
+    assert "all projects" in section
+    assert "revokeproject" in section.replace("`", "")
+    assert "asks you directly" in text and "the agent asks you" in text
+
+
+@pytest.mark.parametrize("path", [ROOT / "README.md"] + skill_files(), ids=lambda p: p.parent.name)
+def test_no_stale_allowlist_wording(path):
+    lowered = path.read_text(encoding="utf-8").lower()
+    for stale in ("allowlist", "projects claude may use"):
+        assert stale not in lowered, "%s still says %r" % (path, stale)

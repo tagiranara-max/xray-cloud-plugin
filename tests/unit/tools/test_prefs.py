@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from conftest import FakeTransport, json_response, make_context
 from xray_cloud.http import Response
 from xray_cloud.preferences import PreferenceStore
@@ -263,3 +265,72 @@ def test_status_lists_result_import_test_key_tag(tmp_path):
     assert not err, res
     assert res["perProject"]["Q"]["resultImport"] == {"testKeyTag": "issue"}
     assert res["perProject"]["P"]["resultImport"] == {"testKeyTag": None}
+
+
+def _site_ctx(tmp_path):
+    ctx = make(tmp_path)
+    ctx.env = dict(ctx.env, XRAY_CLIENT_ID="id-SECRET-111", XRAY_CLIENT_SECRET="sec-SECRET-222")
+    return ctx
+
+
+def test_set_preferences_revoke_and_clear(tmp_path):
+    ctx = _site_ctx(tmp_path)
+    site = ctx.site
+    assert site
+    ctx.preferences.approve("global", site, "P", True)
+    ctx.preferences.approve("global", site, "Q", False)
+    ctx.preferences.remember_fields("global", site, "P", "test", {"customfield_12345": "Backend"})
+    ctx.preferences.remember_fields("global", site, "P", "testPlan", {"customfield_2": "x"})
+    res, err = run(ctx, "set_preferences", projectKey="P", revokeProject="Q", approveAll=False,
+                   clearFieldValues={"itemType": "test"})
+    assert not err
+    assert ctx.preferences.approval("global", site) == {"approveAll": False,
+                                                        "approvedProjects": ["P"]}
+    assert ctx.preferences.field_values("global", site, "P", "test") == {}
+    assert ctx.preferences.field_values("global", site, "P", "testPlan") == {"customfield_2": "x"}
+    res, err = run(ctx, "set_preferences", projectKey="P", clearFieldValues={})
+    assert not err and ctx.preferences.field_values("global", site, "P", "testPlan") == {}
+    res, err = run(ctx, "set_preferences", projectKey="P", approveAll=True)
+    assert err and "false" in res["error"]
+
+
+def test_get_status_shows_approvals_and_field_values_without_site_id(tmp_path):
+    ctx = _site_ctx(tmp_path)
+    site = ctx.site
+    ctx.preferences.approve("global", site, "P", False)
+    ctx.preferences.remember_fields("global", site, "P", "test", {"customfield_12345": "Backend"})
+    res, err = run(ctx, "get_status")
+    assert not err
+    per = res["perProject"]["P"]
+    assert "approvals" not in per
+    assert res["approvals"] == {"approveAll": False, "approvedProjects": ["P"]}
+    assert per["fieldValues"] == {"test": {"customfield_12345": "Backend"}}
+    assert site not in json.dumps(res)
+    assert "SECRET" not in json.dumps(res)
+
+
+def test_get_status_zero_config_shows_approvals_and_unlisted_field_values(tmp_path):
+    ctx = make(tmp_path, yaml="")
+    ctx.env = dict(ctx.env, XRAY_CLIENT_ID="id-SECRET-111", XRAY_CLIENT_SECRET="sec-SECRET-222")
+    site = ctx.site
+    ctx.preferences.approve("global", site, "PROJ", False)
+    ctx.preferences.approve("global", site, None, True)
+    ctx.preferences.remember_fields("global", site, "PROJ", "test", {"customfield_12345": "Backend"})
+    res, err = run(ctx, "get_status")
+    assert not err
+    assert res["approvals"] == {"approveAll": True, "approvedProjects": ["PROJ"]}
+    assert res["perProject"]["PROJ"]["fieldValues"] == {"test": {"customfield_12345": "Backend"}}
+
+
+def test_clear_field_values_rejects_empty_item_type(tmp_path):
+    res, err = run(make(tmp_path), "set_preferences", projectKey="P",
+                   clearFieldValues={"itemType": ""})
+    assert err
+
+
+@pytest.mark.parametrize("args", [{"clearFieldValues": {"itemType": "plan"}},
+                                  {"revokeProject": "not a key"}, {"revokeProject": "proj"}])
+def test_set_preferences_rejects_unknown_item_type_and_bad_project_key(tmp_path, args):
+    res, err = run(make(tmp_path), "set_preferences", projectKey="P", **args)
+    assert err and ("itemType must be one of" in res["error"]
+                    or "revokeProject must be a project key" in res["error"]), res

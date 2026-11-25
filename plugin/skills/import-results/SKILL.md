@@ -27,7 +27,7 @@ Ask which one:
 
 - an existing test execution: pass `testExecKey`. Cucumber and Behave results for an existing execution are sent as Xray JSON, one status per test (step details are not kept; failures become the run comment), because Xray's Cucumber and Behave imports always create a new execution. An Xray JSON report's own `testExecutionKey` also targets that execution; every key in an Xray JSON report must belong to the project, or the import is refused;
 - a test plan: pass `testPlanKey` (any format);
-- a new test execution: omit `testExecKey`, and ask for a `summary`. The project's `testExecution` fields from the settings file apply. Call `get_create_fields` with issue type `Test Execution` to see which are required. A required field with no default must be given in `fields` (friendly names from the settings file) or `rawFields`; the import is refused before any upload if one is missing.
+- a new test execution: omit `testExecKey`, and ask for a `summary`. The project's `testExecution` fields from the settings file and the user's remembered values apply. With the Jira token, the required fields are discovered and the user is asked for any without a value before the upload. Without the token they are not known up front: if Jira refuses the new execution, its error is passed through as is; then ask the user for the values and call again with `fields` set to {field id: value} (or `rawFields`).
 
 ## 3. Environments
 
@@ -71,3 +71,18 @@ If tests were created, `createdTests` lists them. They carry no AI label and no 
 ## 7. Failures
 
 If there are failures, offer to check for flaky tests: call `get_test_runs` for each failed test key (ask which ones, or start with a few). A test is flaky when `flaky` is true, meaning both PASSED and FAILED appear in its recent runs. Report the flaky ones separately from consistent failures.
+
+## Choosing the project
+
+Every call needs a project key. Take it, in this order:
+
+1. from the user's words;
+2. from keys in the input (a `@TEST_PROJ-12` tag, a story key, the branch name);
+3. if exactly one specific project is approved or listed in the settings file, that one (`get_status` shows them; with approve-all and no specific project, go on to the next step);
+4. otherwise ask the user. When working autonomously and you cannot ask, choose the most likely project and state the choice in your result.
+
+The first write to a project that is not in a settings file and not yet approved asks the user once (see below).
+
+## Questions from the tool (`needs_answer`)
+
+When a tool returns `status: needs_answer`, nothing was done. Relay the question to the user in plain words and wait for their answer. Never answer it yourself, and never pass `allowProject`, `allowCreateTests` or any other answer on your own. Then call the tool again with the answer. Some clients show the question to the user directly (an approval prompt with "All projects" pre-selected); in that case just wait for the result.

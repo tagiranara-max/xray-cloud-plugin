@@ -38,19 +38,27 @@ def test_require_project_known(tmp_path):
     assert require_project(ctx, "PROJ", write=True).key == "PROJ"
 
 
-def test_require_project_unknown_lists_known_even_for_reads(tmp_path):
+def test_require_project_unknown_lists_known_for_reads(tmp_path):
     ctx = make_context(YAML, tmp_path=tmp_path)
-    for write in (True, False):
-        with pytest.raises(ToolError, match="Unknown Xray project key") as ei:
-            require_project(ctx, "NOPE", write=write)
-        assert ei.value.data["known"] == ["ALPHA", "PROJ"]
+    with pytest.raises(ToolError, match="Unknown Xray project key") as ei:
+        require_project(ctx, "NOPE", write=False)
+    assert ei.value.data["known"] == ["ALPHA", "PROJ"]
 
 
-def test_require_project_no_file_write_fails_with_searched(tmp_path):
+def test_require_project_unlisted_write_goes_through_approval(tmp_path):
+    # Without credentials no approval can be stored: the no-credentials message, not
+    # "Unknown Xray project key" (approval itself is covered in test_approval.py).
+    ctx = make_context(YAML, tmp_path=tmp_path)
+    with pytest.raises(ToolError) as ei:
+        require_project(ctx, "NOPE", write=True)
+    assert ei.value.message == NO_CREDENTIALS_MESSAGE
+
+
+def test_require_project_no_file_write_goes_through_approval(tmp_path):
     ctx = make_context(tmp_path=tmp_path)
-    with pytest.raises(ToolError, match="No settings file found") as ei:
+    with pytest.raises(ToolError) as ei:
         require_project(ctx, "P", write=True)
-    assert ei.value.data["searched"]
+    assert ei.value.message == NO_CREDENTIALS_MESSAGE
 
 
 def test_require_project_no_file_read_returns_empty(tmp_path):

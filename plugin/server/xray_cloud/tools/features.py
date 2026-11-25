@@ -9,7 +9,7 @@ from ..config import ProjectSettings, project_dir
 from ..context import (ServerContext, dedupe, is_permission_error, partial_failure,
                        permission_denied, require_project, require_write)
 from ..errors import ToolError
-from ..fields import build_jira_fields
+from .. import requiredfields
 from ..gherkin.parse import ParsedFeature, parse_feature
 from ..gherkin.tagrules import TagRule, parse_rules
 from ..jira_client import LINK_TYPE
@@ -100,6 +100,7 @@ class _Run:
         fields: Dict[str, Any] = {"project": {"key": self.pk}, "summary": a.summary}
         if a.description:
             fields["description"] = a.description
+            extra.pop("description", None)  # the feature's own text wins
         labels = _merge_labels(a.labels, extra)
         fields.update(extra)
         if labels:
@@ -107,8 +108,9 @@ class _Run:
         jira: Dict[str, Any] = {"fields": fields}
         if a.requirement_keys:
             jira["update"] = {"issuelinks": _link_update(a.requirement_keys)}
-        data = self.gql(_CREATE_TEST, {"jira": jira, "testType": {"name": CUCUMBER},
-                                       "gherkin": a.definition})
+        with requiredfields.creating(self.ctx, self.pk, "test"):
+            data = self.gql(_CREATE_TEST, {"jira": jira, "testType": {"name": CUCUMBER},
+                                           "gherkin": a.definition})
         res = data.get("createTest") or {}
         test = res.get("test") or {}
         key = (test.get("jira") or {}).get("key")
@@ -165,12 +167,15 @@ class _Run:
             fields: Dict[str, Any] = {"project": {"key": self.pk}, "summary": summary}
             if a.description:
                 fields["description"] = a.description
+                extra.pop("description", None)  # the Background's own text wins
             labels = _merge_labels(a.labels, extra)
             fields.update(extra)
             fields["labels"] = labels
-            data = self.gql(_CREATE_PRECONDITION, {
-                "jira": {"fields": fields}, "preconditionType": {"name": CUCUMBER},
-                "definition": a.definition, "testIssueIds": ids})
+            with requiredfields.creating(self.ctx, self.pk, "precondition",
+                                         "preconditionFields"):
+                data = self.gql(_CREATE_PRECONDITION, {
+                    "jira": {"fields": fields}, "preconditionType": {"name": CUCUMBER},
+                    "definition": a.definition, "testIssueIds": ids})
             res = data.get("createPrecondition") or {}
             key = ((res.get("precondition") or {}).get("jira") or {}).get("key")
             if not key:
@@ -212,11 +217,13 @@ class _Run:
             fields: Dict[str, Any] = {"project": {"key": self.pk}, "summary": a.summary}
             if a.description:
                 fields["description"] = a.description
+                extra.pop("description", None)  # the Feature's own text wins
             labels = _merge_labels(a.labels, extra)
             fields.update(extra)
             if labels:
                 fields["labels"] = labels
-            data = self.gql(SET.q(_CREATE), {"jira": {"fields": fields}})
+            with requiredfields.creating(self.ctx, self.pk, "testSet", "testSetFields"):
+                data = self.gql(SET.q(_CREATE), {"jira": {"fields": fields}})
             node = (data.get("createTestSet") or {}).get("testSet") or {}
             key = (node.get("jira") or {}).get("key")
             if not key:
@@ -263,8 +270,10 @@ class _Run:
                     raise permission_denied(e, action="run create_tests_from_feature",
                                             project_key=self.pk) from None
                 raise
-            err = partial_failure("Feature import stopped while %s; the issues listed were "
-                                  "already written" % self.step, self.created, e)
+            msg = ("Feature import stopped while %s; the issues listed were already written"
+                   % self.step)
+            err = (requiredfields.refusal_failure(msg, self.created, e)
+                   if requiredfields.is_refusal(e) else partial_failure(msg, self.created, e))
             err.data["updated"] = list(self.updated)
             err.data["failedStep"] = self.step
             if self.result.get("linkedRequirements"):
@@ -389,12 +398,25 @@ def _per_test(plan: List[ImportAction]) -> List[dict]:
     return out
 
 
-def _test_extras(project: ProjectSettings, feature: ParsedFeature, analysis: TagAnalysis,
+def _own_description(items) -> List[str]:
+    """["description"] when every item (with a .description) has its own, else []."""
+    items = list(items)
+    return ["description"] if items and all(getattr(x, "description", "") for x in items) \
+        else []
+
+
+def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: TagAnalysis,
                  args: dict) -> Dict[int, dict]:
     """Jira fields per new test: the call's fields plus the rule fields of that test. A rule
-    value that differs from the call's value for the same field refuses the file."""
+    value that differs from the call's value for the same field refuses the file. Missing
+    required fields are collected only for scenarios that create a test, with their rule
+    fields."""
     call_fields = dict(args.get("fields") or {})
-    base = build_jira_fields(project, "test", call_fields, args.get("rawFields"))
+    base_users = [i for i, st in enumerate(analysis.scenarios)
+                  if st.test_key is None and not st.outcome.fields]
+    # description is not asked for tests whose scenario has its own
+    base = c("test", call_fields, args.get("rawFields"), required=bool(base_users),
+             provided=_own_description(feature.scenarios[i] for i in base_users))
     out: Dict[int, dict] = {}
     for i, st in enumerate(analysis.scenarios):
         rule_fields = st.outcome.fields
@@ -410,8 +432,9 @@ def _test_extras(project: ProjectSettings, feature: ParsedFeature, analysis: Tag
                                st.outcome.sources.get(name, "a tag rule"),
                                feature.scenarios[i].name, feature.scenarios[i].line),
                             field=name)
-        out[i] = build_jira_fields(project, "test", dict(call_fields, **rule_fields),
-                                   args.get("rawFields"))
+        out[i] = c("test", dict(call_fields, **rule_fields), args.get("rawFields"),
+                   record=False,  # a rule value is never remembered
+                   provided=_own_description([feature.scenarios[i]]))
     return out
 
 
@@ -447,7 +470,7 @@ def _test_extras(project: ProjectSettings, feature: ParsedFeature, analysis: Tag
                                     "Field values applied to created Pre-Conditions."},
              "testSetFields": {"type": "object", "description":
                                "Field values applied to created Test Sets."}},
-            ["featureFilePath"]))
+            ["featureFilePath"]), approval=True)
 # Registered read-only so the preview (apply=false, zero writes) works in read-only mode;
 # apply=true checks require_write itself.
 def create_tests_from_feature(ctx, args):
@@ -488,11 +511,27 @@ def create_tests_from_feature(ctx, args):
                         questions=[choices.question(n, contexts[n]) for n in unanswered])
 
     # -- fields for every item type that may be created: refuse the whole file first
-    test_extras = _test_extras(project, feature, analysis, args)
-    pre_extra = (build_jira_fields(project, "precondition", args.get("preconditionFields"), None)
-                 if feature.backgrounds and not opts.inline else {})
-    set_extra = (build_jira_fields(project, "testSet", args.get("testSetFields"), None)
-                 if opts.create_test_set or analysis.tag_sets else {})
+    def build(c):
+        tests = _test_extras(c, feature, analysis, args)
+        pre = (c("precondition", args.get("preconditionFields"), None, "preconditionFields",
+                 provided=_own_description(feature.backgrounds))
+               if feature.backgrounds and not opts.inline else {})
+        # tag Test Sets have no description; the Feature Test Set has the Feature's
+        set_items = ([feature] if opts.create_test_set else []) + \
+            ([None] if analysis.tag_sets else [])
+        sets = (c("testSet", args.get("testSetFields"), None, "testSetFields",
+                  provided=_own_description(set_items))
+                if opts.create_test_set or analysis.tag_sets else {})
+        return tests, pre, sets
+
+    field_questions: List[dict] = []
+    if apply:  # every missing field of every item type is asked at once
+        (test_extras, pre_extra, set_extra), applied_defaults = requiredfields.resolve_all(
+            ctx, project, build, bool(args.get("remember", False)))
+    else:  # the preview never asks: the questions are listed
+        collector = requiredfields.Collector(ctx, project)
+        test_extras, pre_extra, set_extra = build(collector)
+        field_questions = collector.questions()
     create_dups = list(args.get("createDuplicates") or [])
     bad = [i for i in create_dups if i >= len(feature.scenarios)]
     if bad:
@@ -511,7 +550,7 @@ def create_tests_from_feature(ctx, args):
         shown["tagRules"] = {"count": len(rules), "source": rules_source}
         out: Dict[str, Any] = {"preview": True, "feature": feature.name, "path": rel,
                                "questions": [choices.question(n, contexts[n])
-                                             for n in unanswered],
+                                             for n in unanswered] + field_questions,
                                "choices": shown,
                                "actions": [a.to_dict() for a in plan],
                                "perTest": _per_test(plan), "testSets": _preview_sets(plan),
@@ -525,6 +564,9 @@ def create_tests_from_feature(ctx, args):
             out["hint"] = ("answer the questions (ask the user once), then call again with the "
                            "answers; until then the actions assume createTestSet=true, "
                            "backgrounds=preconditions, tagsAsLabels=true and no AI label")
+        elif field_questions:
+            out["hint"] = ("required fields have no value: ask the user, then call again with "
+                           "each answer in the question's `param` ({field id: value})")
         elif skipped:
             out["hint"] = ("scenarios with possible duplicates are skipped on apply unless "
                            "their scenarioIndex is in createDuplicates; pass apply: true to import")
@@ -545,6 +587,8 @@ def create_tests_from_feature(ctx, args):
     out["testSetMemberships"] = run.memberships
     if run.fields_applied:
         out["fieldsApplied"] = run.fields_applied
+    for item_type, applied in applied_defaults.items():
+        requiredfields.add_applied(out, item_type, applied)
     out["notDone"] = not_done
     if skipped:
         out["skippedDuplicates"] = skipped

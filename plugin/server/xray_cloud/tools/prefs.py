@@ -6,13 +6,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .. import choices
-from ..config import (REGIONS, ai_created_problem, feature_import_problem,
+from ..config import (PROJECT_KEY_RE, REGIONS, ai_created_problem, feature_import_problem,
                       find_settings_file, settings_search_paths)
 from ..context import require_project
 from ..errors import ToolError
 from ..gherkin.tagrules import parse_rules
 from ..jira_client import normalize_site_url
 from ..protocol import SERVER_INFO
+from ..requiredfields import ITEM_TYPE_NAMES
 from ..registry import REGISTRY
 from ..toolgroups import GROUPS, active_groups
 from .tests import _schema, check_ai_label
@@ -33,6 +34,14 @@ _SET_PARAMS = {
                  "Raw tag rules (replaces the remembered list; [] = none). Rule fields: tag or "
                  "match, split, label, testSet, field, skip. Example only, not a default: "
                  "[{\"tag\": \"group\", \"testSet\": \"{value}\"}]."},
+    "revokeProject": {"type": "string", "description":
+                      "Project key whose approval is removed (it is asked about again)."},
+    "approveAll": {"type": "boolean", "description":
+                   "Only false is accepted: revokes the approve-all permission."},
+    "clearFieldValues": {"type": "object", "properties": {"itemType": {"type": "string"}},
+                         "additionalProperties": False, "description":
+                         "Forget the remembered required-field values of the project: those of "
+                         "itemType, or of every item type when omitted."},
     "clear": {"type": "array", "items": {"type": "string"}, "description":
               "Choice names whose remembered value is removed (they become unanswered)."},
 }
@@ -64,7 +73,9 @@ def _validate(project, args: Dict[str, Any]) -> Dict[str, Any]:
 @REGISTRY.tool(
     "set_preferences",
     "Change the remembered import choices of a project (createTestSet, backgrounds, "
-    "tagsAsLabels, unmatchedTags, aiLabel, aiLabelScope, tagRules) or remove some with `clear`. "
+    "tagsAsLabels, unmatchedTags, aiLabel, aiLabelScope, tagRules) or remove some with `clear`; "
+    "also revoke write approvals (revokeProject: one project; approveAll: false: the "
+    "all-projects approval) and forget remembered required-field values (clearFieldValues). "
     "An explicit change: it overwrites the remembered values (validated like the settings "
     "file). Writes only the plugin's own preferences file, never Xray, so read-only mode does "
     "not block it. Returns every choice's effective value and source (call, settings, "
@@ -84,18 +95,45 @@ def set_preferences(ctx, args):
     both = sorted(set(clear) & set(values))
     if both:
         raise ToolError("Cannot set and clear the same choice: %s" % ", ".join(both))
-    if not values and not clear:
+    revoke = args.get("revokeProject")
+    if revoke is not None and (not isinstance(revoke, str)
+                               or not PROJECT_KEY_RE.fullmatch(revoke)):
+        raise ToolError("revokeProject must be a project key (for example PROJ)",
+                        revokeProject=revoke)
+    if args.get("approveAll") not in (None, False):
+        raise ToolError("approveAll only accepts false (to revoke); approval happens when a "
+                        "write is first asked for")
+    revoke_all = args.get("approveAll") is False
+    clear_fv = args.get("clearFieldValues")
+    if clear_fv is not None:
+        it = clear_fv.get("itemType", "x") if isinstance(clear_fv, dict) else None
+        if not isinstance(clear_fv, dict) or set(clear_fv) - {"itemType"} or not (
+                isinstance(it, str) and it):
+            raise ToolError("clearFieldValues must be an object with an optional non-empty "
+                            "itemType string")
+        if "itemType" in clear_fv and it not in ITEM_TYPE_NAMES:
+            raise ToolError("clearFieldValues.itemType must be one of %s"
+                            % ", ".join(ITEM_TYPE_NAMES), itemType=it,
+                            known=list(ITEM_TYPE_NAMES))
+    if not values and not clear and revoke is None and not revoke_all and clear_fv is None:
         raise ToolError("Nothing to do: give at least one value to set or names to clear")
     region = choices.region_of(ctx)
+    site = ctx.site
     if clear:
-        ctx.preferences.clear(region, pk, clear)
+        ctx.preferences.clear(region, pk, clear, site)
     if values:
-        ctx.preferences.update(region, pk, values)
+        ctx.preferences.update(region, pk, values, site)
+    if clear_fv is not None:
+        ctx.preferences.clear_fields(region, site, pk, clear_fv.get("itemType"))
+    if revoke is not None or revoke_all:
+        ctx.preferences.revoke(region, site, revoke, revoke_all)
     effective = choices.effective(ctx, pk)
     warnings = ["%s was saved, but the settings file sets it to %r, which always wins; edit "
                 "the settings file to change it" % (n, effective[n]["value"])
                 for n in values if effective[n]["source"] == "settings"]
     return {"projectKey": pk, "region": region, "set": sorted(values), "cleared": sorted(clear),
+            "revoked": {"project": revoke, "all": revoke_all},
+            "fieldValuesCleared": clear_fv is not None,
             "effective": effective, "warnings": warnings,
             "preferencesFile": str(ctx.preferences.path)}
 
@@ -146,6 +184,8 @@ def _project_status(ctx, pk: str) -> Dict[str, Any]:
     return {"featureImport": {n: eff[n] for n in _FEATURE_IMPORT},
             "aiCreated": {n: eff[n] for n in _AI_CREATED},
             "resultImport": {"testKeyTag": project.test_key_tag if project else None},
+            "fieldValues": (ctx.preferences.get(choices.region_of(ctx), pk, ctx.site)
+                            .get("fieldValues") or {}),
             "unanswered": [n for n, v in eff.items() if v["source"] == "unanswered"]}
 
 
@@ -156,8 +196,9 @@ def _project_status(ctx, pk: str) -> Dict[str, Any]:
     "error), projects, read-only mode, Jira (configured, site; with check=true also "
     "reachable and user, using one Jira /myself call), the preferences file, and per project "
     "the effective import choices with their source (call, settings, remembered, default or "
-    "unanswered; `unanswered` lists the ones still to ask) and the result-import testKeyTag "
-    "setting. To change a choice, call "
+    "unanswered; `unanswered` lists the ones still to ask), the result-import testKeyTag "
+    "setting and the remembered required-field values (fieldValues), and the write approvals "
+    "(approvals: approveAll, approvedProjects). To change a choice or revoke an approval, call "
     "set_preferences or edit the user's settings file (a settings-file value always wins). "
     "Needs no projectKey. Contains no secrets.",
     {"type": "object", "properties": {"check": {"type": "boolean", "description":
@@ -174,14 +215,17 @@ def get_status(ctx, args):
         "credentials": {"configured": ctx.has_credentials},
         "settings": settings, "projects": projects, "readOnly": bool(ctx.read_only),
         "jira": _jira_status(ctx, bool(args.get("check"))),
-        "preferencesFile": str(ctx.preferences.path), "perProject": {}}
+        "preferencesFile": str(ctx.preferences.path), "perProject": {},
+        "approvals": {"approveAll": False, "approvedProjects": []}}
     try:
         groups = active_groups(ctx.env)
     except ToolError:  # startup already rejects this; stay readable
         groups = None
     out["toolGroups"] = list(GROUPS) if groups is None else groups
     try:
-        out["perProject"] = {pk: _project_status(ctx, pk) for pk in projects}
+        out["approvals"] = ctx.preferences.approval(region, ctx.site)
+        shown = sorted(set(projects) | set(ctx.preferences.projects_with_values(region, ctx.site)))
+        out["perProject"] = {pk: _project_status(ctx, pk) for pk in shown}
     except ToolError as exc:  # unreadable preferences file: report, keep the rest
         out["preferencesError"] = exc.message
     return out

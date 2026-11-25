@@ -132,7 +132,8 @@ def test_create_test_gherkin_with_steps_refused_before_any_call():
 def test_create_test_maps_fields_and_refuses_missing_required_before_any_call():
     ctx = make_context(YAML, responses={"CreateTest": create_resp()})
     res, err = call(ctx, "create_test", projectKey="P", aiLabel="", summary="S", allowDuplicates=True)
-    assert err and res["missingFields"][0]["name"] == "Severity"
+    assert not err and res["status"] == "needs_answer"
+    assert res["missingFields"][0]["name"] == "Severity"
     assert ctx.xray.calls == []
     call(ctx, "create_test", projectKey="P", aiLabel="", summary="S", allowDuplicates=True,
          fields={"Severity": "High"})

@@ -5,11 +5,11 @@ from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 
 from .config import (PROJECT_KEY_RE, Credentials, JiraCredentials, ProjectSettings,
-                     SettingsStore, settings_search_paths)
+                     SettingsStore)
 from .errors import ToolError
 from .http import Transport, urllib_transport
 from .jira_client import JiraClient
-from .preferences import PreferenceStore
+from .preferences import PreferenceStore, site_id
 from .ratelimit import RateLimiter
 from .stepcache import StepCache, TTLCache
 from .xray_client import XrayClient
@@ -42,6 +42,23 @@ class ServerContext:
         self._transport = transport or urllib_transport
         self._limiter = limiter or RateLimiter()
         self._xray = xray
+        # ClientChannel for server-to-client requests (elicitation); serve() attaches it.
+        self.channel: Optional[Any] = None
+        # Arguments of the tool call being handled that handlers do not see (allowProject);
+        # set by Registry.call.
+        self.call_args: Dict[str, Any] = {}
+        # Jira create-meta per (project, item type) for this server run (requiredfields).
+        self.create_meta_cache: Dict[Any, Any] = {}
+        # Required fields Jira named in a refused create, per (project, item type), for this
+        # server run (requiredfields.learn); used without the token, where create-meta is not read.
+        self.reported_fields: Dict[Any, Any] = {}
+        # Required-field answers of the current call, remembered on requiredfields.commit.
+        self.pending_fields: Dict[Any, Any] = {}
+
+    @property
+    def site(self) -> str:
+        """Hash of the Xray client id scoping approvals and remembered values; never shown."""
+        return site_id(self.env)
 
     @property
     def has_credentials(self) -> bool:
@@ -165,20 +182,30 @@ def require_write(ctx: ServerContext) -> None:
 
 
 def require_project(ctx: ServerContext, project_key: str, *, write: bool) -> ProjectSettings:
+    """Settings of a project; empty settings for a project the settings file does not list.
+    Writes go through approval (approval.ensure_write_allowed, with the call's allowProject
+    from ctx.call_args). Reads are allowed when there is no settings file, the file lists no
+    projects, the project is listed, or it is approved (or approve-all) on this site."""
     # Format first: on the no-settings-file read path the key goes raw into JQL.
     if not isinstance(project_key, str) or not PROJECT_KEY_RE.fullmatch(project_key):
         raise ToolError("Invalid project key", projectKey=project_key)
     settings = ctx.settings_store.get()
-    if settings.path is None:
-        if write:
-            raise ToolError(
-                "No settings file found. Create .xray/settings.yml (see README.md#settings) or run the xray-setup skill",
-                searched=[str(p) for p in settings_search_paths(ctx.env)])
-        return ProjectSettings(project_key, fields={})
+    if write:
+        from .approval import ensure_write_allowed
+        ensure_write_allowed(ctx, project_key, getattr(ctx, "call_args", None) or {})
+        return settings.projects.get(project_key) or ProjectSettings(project_key, fields={})
     project = settings.projects.get(project_key)
-    if project is None:
-        raise ToolError("Unknown Xray project key", known=sorted(settings.projects))
-    return project
+    if project is not None:
+        return project
+    if settings.path is None or not settings.projects:
+        return ProjectSettings(project_key, fields={})
+    from .approval import is_approved
+    if is_approved(ctx, project_key):
+        return ProjectSettings(project_key, fields={})
+    raise ToolError("Unknown Xray project key", known=sorted(settings.projects),
+                    hint="%s is not listed in the settings file %s. Writing to it asks the user "
+                         "for approval; once approved it can be read too."
+                         % (project_key, settings.path))
 
 
 _JQL_ESCAPES = (("\\", "\\\\"), ('"', '\\"'), ("\t", "\\t"), ("\n", "\\n"), ("\r", "\\r"))
@@ -278,7 +305,7 @@ def resolve_project_id(ctx: ServerContext, project_key: str) -> str:
             pid = str(results[0]["projectId"])
     if pid is None:
         raise ToolError("Could not determine the numeric Xray project id for %s" % project_key,
-                        projectKey=project_key)
+                        projectKey=project_key, reason="project_not_found")
     ctx.project_ids[project_key] = pid
     return pid
 

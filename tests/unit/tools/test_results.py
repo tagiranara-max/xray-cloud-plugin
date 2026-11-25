@@ -92,7 +92,8 @@ def test_new_execution_with_fields_uses_multipart_info(tmp_path):
 def test_required_execution_field_missing_refused_before_upload(tmp_path):
     ctx = make(tmp_path, YAML_REQ)
     out, err = call(ctx, format="junit", content="<x/>")
-    assert err and "Backend" in json.dumps(out) and "customfield_12345" in json.dumps(out)
+    assert not err and out["status"] == "needs_answer"
+    assert "Backend" in json.dumps(out) and "customfield_12345" in json.dumps(out)
     assert ctx.xray.rest_calls == [] and ctx.xray.calls == []
 
 

@@ -52,7 +52,7 @@ _PATH = {"type": "string", "description": "Folder path, e.g. /Orders/Returns"}
 
 
 def _pid(ctx: ServerContext, args: dict) -> str:
-    """The project id resolved from projectKey (the allowlisted key). A numericProjectId passed
+    """The project id resolved from projectKey (the project key). A numericProjectId passed
     by the caller must equal it, so an id cannot redirect writes to another project."""
     resolved = resolve_project_id(ctx, args["projectKey"])
     given = args.get("numericProjectId")

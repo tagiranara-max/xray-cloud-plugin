@@ -7,9 +7,9 @@ What it does that other Xray integrations do not:
 - Full step editing, including insert at a position and move, with attachments recovered when steps are rewritten.
 - Test Repository folders: create, rename, move, delete, and file tests into them.
 - Test environments.
-- Friendly custom fields: you declare them once in a settings file and use names like `component` instead of `customfield_12345`.
+- Friendly custom fields: you can declare them once in an optional settings file and use names like `component` instead of `customfield_12345`.
 - Full Gherkin import: every valid `.feature` file, with Backgrounds as Pre-Conditions, Features as Test Sets, tags as labels, Rules, Outlines with all Examples, DataTables and DocStrings preserved.
-- Safety: a project allowlist, duplicate checks before creating, explicit confirmation before deletes, a read-only mode, and region support (global/US, EU, AU).
+- Safety: a one-time approval per project (or an optional team project list), duplicate checks before creating, explicit confirmation before deletes, a read-only mode, and region support (global/US, EU, AU).
 
 ## Requirements
 
@@ -162,13 +162,38 @@ Pick the region of your Xray instance when enabling the plugin: `global` (US, th
 
 ## Settings
 
-The settings file lists the projects Claude may use and their custom fields. It is YAML (JSON is also accepted). The first file found wins; files are not merged:
+No setup is needed: install the plugin, add your credentials and start. A settings file is optional and is for teams (shared projects, field IDs and defaults, import choices). Use it when you want everyone on a repository to get the same choices.
+
+### What gets asked
+
+- **First write to a project.** If the project is not listed in a settings file and you have not approved it yet, you are asked once: "All projects" (every project on this Xray site, pre-selected), "This project only" or "No". The answer is remembered for your user and for that Xray site, so switching to a different Xray site asks again. Read-only mode still blocks every write.
+- **Required Jira fields.** With the optional Jira token, required fields are discovered from Jira and asked once, then remembered per field; created items list `appliedDefaults`. Without the token, the plugin tries the create; when Jira refuses it for missing required fields, nothing is created and the plugin asks for those fields (by field id; give values in the shape Jira expects for custom fields, see [docs/field-ids.md](docs/field-ids.md)), then creates the item and remembers the answers. Results import (`import_execution_results`) and `import_feature_file` do not ask: they pass Jira's error through.
+- **Who asks.** In clients that support MCP elicitation (see the table below) the client asks you directly with a form. In other clients the tool returns `needs_answer` and the agent asks you, then repeats the call with your answer. The agent never answers for you.
+- **Reads** work on approved projects, on projects listed in a settings file, and on any project when there is no settings file (or it lists no projects).
+
+| Client | Who asks | Basis |
+|---|---|---|
+| Claude Code | asks you directly in interactive sessions (headless runs may fall back to the agent asking) | official docs describe an interactive elicitation dialog |
+| Cursor | asks you directly | official docs list Elicitation as supported |
+| VS Code (Copilot agent) | asks you directly | official docs: form and URL elicitation during a turn |
+| Codex | unknown: the agent asks you | official docs do not say |
+| Gemini CLI | unknown: the agent asks you | official docs do not say |
+
+Sources and dates are in [docs/coverage.md](docs/coverage.md). If your client is not listed, or its behaviour changed, the question still reaches you through the agent.
+
+### Where answers are remembered, and how to revoke
+
+Approvals and remembered field values live in `preferences.json` inside `XRAY_DATA_DIR` (which wins), else `${CLAUDE_PLUGIN_DATA}`, else `~/.config/xray-cloud`, per user and per Xray site. `get_status` shows them. To take them back, ask the agent to call `set_preferences` with `revokeProject` (one project) or `approveAll: false` (the "All projects" approval); `clearFieldValues` forgets remembered field values.
+
+### The settings file
+
+The settings file lists projects and their custom fields. It is YAML (JSON is also accepted). Projects are optional: projects listed here write without asking, and a file with no projects behaves like no file. The first file found wins; files are not merged:
 
 1. the file chosen in the plugin's "Settings file" prompt (`XRAY_SETTINGS_FILE`); if that file does not exist, tools fail with an error instead of falling back to the other locations;
 2. `.xray/settings.yml`, `.xray/settings.yaml` or `.xray/settings.json` in Claude Code's project directory, or the current directory when that is not set (per repository, so different repositories can target different projects);
 3. `settings.yml`, `settings.yaml` or `settings.json` in `~/.config/xray-cloud/`.
 
-Without a settings file the server still starts and read tools work, but write tools refuse. The settings are re-read whenever the file changes. A complete example is in [`.xray/settings.example.yml`](.xray/settings.example.yml):
+Without a settings file the server works: reads are open, and writes ask as described above. The settings are re-read whenever the file changes. A complete example is in [`.xray/settings.example.yml`](.xray/settings.example.yml):
 
 ```yaml
 projects:
@@ -195,13 +220,13 @@ lifecycleLabels: [ai-draft, needs-refinement, automation-candidate, automated, o
 duplicateCheck: true
 ```
 
-- `projects`: the keys are an allowlist. Anything on an unlisted project is refused.
+- `projects` (optional): projects listed here are written to without asking. Other projects ask once for approval (see above).
 - Item types under `fields`: `test`, `testExecution`, `testPlan`, `testSet`, `precondition`, `testRun`.
 - Field `type`: `option`, `options`, `string` (default), `number`, `version`, `versions`, `user`, `raw`.
 - `required`: when true and there is no `default`, a create is refused before any API call until the value is given. `default` fills in the value when it is omitted.
 - `id` is the Jira field id. Not sure how to find it? See [docs/field-ids.md](docs/field-ids.md).
 - `testRun` fields are Xray test-run custom fields, not Jira fields: give the Xray field `name` (or an `id`).
-- Escape hatch: create tools accept `rawFields` (`{"customfield_12345": <Jira JSON>}`), passed through untouched for fields not in the settings. `update_test_run` takes `rawFields` keyed by Xray run field name or id.
+- Escape hatch: create tools accept `rawFields` (`{"customfield_12345": <Jira JSON>}`), passed through untouched for fields not in the settings (an explicit `reporter` included). `summary`, `project` and `issuetype` are set by the tool and refused in `fields`/`rawFields`. Without the Jira token, `fields` also takes Jira field ids (`customfield_12345`, `components`, `priority`, ...) for fields not in the settings. `update_test_run` takes `rawFields` keyed by Xray run field name or id.
 - `lifecycleLabels` (default shown above) are the labels `set_lifecycle_label` may apply. `duplicateCheck` turns the pre-create duplicate search on or off.
 - `projects.<KEY>.testKeyTag` (optional): a scenario tag that names the scenario's test in result imports, besides `@TEST_<KEY>`. With `testKeyTag: issue`, `@issue=PROJ-12`, `@issue:PROJ-12` and `@issue_PROJ-12` all mean PROJ-12.
 
@@ -322,7 +347,7 @@ Read-only tools for questions about test history and impact:
 
 Skills guide Claude through multi-step workflows on top of the tools:
 
-- **`xray-setup`**: create or update the settings file (projects, field IDs, defaults, import choices, tag rules) with you.
+- **`xray-setup`**: check your setup and, optionally, build a team settings file (field IDs, defaults, import choices, tag rules) from your answers.
 - **`import-results`**: import a test result file into Xray as a test execution and check for flaky tests.
 - **`import-tests`**: import tests from `.feature` files and from tabular or markdown sources.
 - **`predict-affected-tests`**: predict which tests a code change affects and optionally create an execution for the at-risk ones.
@@ -358,7 +383,7 @@ Each is asked once per project. When a tool answers `status: needs_answer` (or a
 
 Where a value comes from, first match wins: the call itself, then your settings file (the project's `featureImport` / `aiCreated`, then the top-level ones), then the remembered answer, then unanswered. A value in the settings file always wins, so a team can fix choices for everyone. A call value that differs from the remembered one applies to that call only, unless `remember: true` is passed.
 
-To change a remembered choice, tell Claude "change my import preferences" (it calls `set_preferences`), or edit the settings file. Remembered answers live in `${CLAUDE_PLUGIN_DATA}/preferences.json`, or `~/.config/xray-cloud/preferences.json` when that variable is not set; they are per user and survive plugin updates.
+To change a remembered choice, tell Claude "change my import preferences" (it calls `set_preferences`), or edit the settings file. Remembered answers live in `preferences.json` inside `XRAY_DATA_DIR` (which wins), else `${CLAUDE_PLUGIN_DATA}`, else `~/.config/xray-cloud`; they are per user and survive plugin updates.
 
 ```yaml
 # Optional, in your settings file; every key is optional (absent = asked or remembered)
@@ -420,7 +445,7 @@ Some things cannot be done without Jira: labels, fields or requirement links on 
 - **Settings file:** your own file, found in this order: the path from the plugin prompt; `.xray/settings.yml` in the project Claude Code is working in; `~/.config/xray-cloud/settings.yml`. The plugin ships no settings. A settings file committed in your team's project makes the choices team-wide.
 - **Import choices and tag rules:** ask Claude to "change my import preferences" (`set_preferences`), or edit the settings file. A settings-file value always wins over a remembered one.
 - **`get_status`:** shows the plugin's state without secrets: region, whether credentials are configured, the settings file in use and the locations searched, projects, Jira, and each project's effective choices with where each came from (call, settings, remembered, default or unanswered).
-- **Guided setup:** the `xray-setup` skill walks through all of this: it finds or creates the settings file, discovers field IDs (Jira token, Atlassian MCP, or manual steps), offers import choices, the AI-created label and tag rules, shows the diff, asks before saving and ends with `get_status`.
+- **Guided setup:** the `xray-setup` skill walks through all of this: it checks credentials, explains the first-use questions, and optionally builds a team settings file: discovers field IDs (Jira token, Atlassian MCP, or manual steps), offers import choices, the AI-created label and tag rules, shows the diff, asks before saving and ends with `get_status`.
 
 ## Limitations
 

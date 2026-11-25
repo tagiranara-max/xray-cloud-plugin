@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 from ..context import (ServerContext, check_issue_in_project, dedupe, delete_preview,
                        partial_failure, permission_guard, require_project)
 from ..errors import ToolError
-from ..fields import build_jira_fields
+from .. import requiredfields
 from ..registry import REGISTRY
 from .tests import (_AI_LABEL_PARAMS, _LIMIT, _OBJ, MAX_LIMIT, TEST_TYPES, _schema,
                     build_search_jql, check_ai_label, create_test, find_duplicates,
@@ -211,7 +211,9 @@ def register(kind: Kind, with_sets: bool) -> None:
         "summary": {"type": "string"}, "description": {"type": "string"},
         "testKeys": _KEYS, "newTests": _NEW_TESTS,
         "createDuplicates": {"type": "array", "items": {"type": "integer", "minimum": 0}},
-        "fields": _OBJ, "rawFields": _OBJ}
+        "fields": _OBJ, "rawFields": _OBJ,
+        "testFields": {"type": "object", "description":
+                       "Field values applied to the newTests (field name or id -> value)."}}
     if with_sets:
         props["testSetKeys"] = _KEYS
     props.update(_AI_LABEL_PARAMS)  # applies to newTests only
@@ -222,30 +224,48 @@ def register(kind: Kind, with_sets: bool) -> None:
         "(newTests). New tests whose summary matches an existing test are skipped and reported "
         "unless their 0-based index is listed in createDuplicates. If newTests are given and the "
         "result has status needs_answer (with `questions`; it asks for the AI label), ask the "
-        "user once and call again with the answer; it is remembered for the project." %
+        "user once and call again with the answer; it is remembered for the project. Required "
+        "Jira fields without a value are asked too (each question names its param: fields, or "
+        "testFields for newTests)." %
         (label, ", testSetKeys" if with_sets else ""),
         _schema(props, ["summary"]), write=True)
     def create(ctx, args):
         pk, summary = args["projectKey"], args["summary"]
         project = require_project(ctx, pk, write=True)
-        extra = build_jira_fields(project, kind.item, args.get("fields"), args.get("rawFields"))
+        remember = bool(args.get("remember", False))
         new_tests = args.get("newTests") or []
+        test_applied: Dict[str, Any] = {}
         ai_args: Dict[str, Any] = {}
         if new_tests:  # the AI label applies to newTests only; otherwise it is not applicable
             check_ai_label(args.get("aiLabel"))
             label, needs_answer = resolve_ai_label(ctx, pk, args, {"newTests": len(new_tests)})
             if needs_answer:
                 return needs_answer
-            ai_args = {RESOLVED_AI_LABEL: label}
-        direct, via_sets = members_of(ctx, pk, args)
+            ai_args = {RESOLVED_AI_LABEL: label, "remember": remember}
         create_dups = args.get("createDuplicates") or []
         bad = [i for i in create_dups if i >= len(new_tests)]
         if bad:
             raise ToolError("createDuplicates index out of range: %s" % bad)
-        if new_tests:
-            # create_test applies the project's test fields (required/defaults) to every new
-            # test: check them now so a missing required field cannot orphan the container.
-            build_jira_fields(project, "test", None, None)
+
+        def build(c):
+            out = c(kind.item, args.get("fields"), args.get("rawFields"),
+                    provided=["description"] if args.get("description") is not None else [])
+            if new_tests:
+                # create_test applies the project's test fields (required/defaults) to every
+                # new test: resolve them now so a missing one cannot orphan the container.
+                c("test", args.get("testFields"), None, "testFields",
+                  provided=["description"] if all(t.get("description") is not None
+                                                  for t in new_tests) else [])
+            return out
+
+        # Required fields after the AI-label question (an elicited answer is not lost to
+        # it); every item type is asked at once.
+        extra, applied_all = requiredfields.resolve_all(ctx, project, build, remember)
+        applied = applied_all.get(kind.item, {})
+        test_applied = applied_all.get("test", {})
+        if new_tests and args.get("testFields"):
+            ai_args["fields"] = args["testFields"]
+        direct, via_sets = members_of(ctx, pk, args)
         direct_map = resolve_test_id_map(ctx, pk, direct)  # fail before creating anything
         if new_tests:  # all validation passed: remember a call-supplied label before writing
             remember_ai_label(ctx, pk, args)
@@ -253,12 +273,14 @@ def register(kind: Kind, with_sets: bool) -> None:
         if args.get("description") is not None:
             jira_fields["description"] = args["description"]
         jira_fields.update(extra)
-        data = ctx.xray.graphql(kind.q(_CREATE), {"jira": {"fields": jira_fields}})
+        with requiredfields.creating(ctx, pk, kind.item):
+            data = ctx.xray.graphql(kind.q(_CREATE), {"jira": {"fields": jira_fields}})
         node = (data.get("create" + cap) or {}).get(kind.item) or {}
         key = _key(node)
         if not key:
             raise ToolError("Xray did not return a key for the created %s" % label)
         out: Dict[str, Any] = {"key": key, "summary": summary, "created": True}
+        requiredfields.add_applied(out, kind.item, applied)
         warnings = list((data.get("create" + cap) or {}).get("warnings") or [])
         created = [key]
         try:
@@ -273,10 +295,24 @@ def register(kind: Kind, with_sets: bool) -> None:
                 out["addedTests"] = res["added"]
                 warnings.extend(res["warnings"])
         except Exception as e:
-            raise partial_failure("%s %s was created but a later step failed" % (cap, key),
-                                  created, e)
+            msg = "%s %s was created but a later step failed" % (cap, key)
+            if not requiredfields.is_refusal(e):
+                raise partial_failure(msg, created, e)
+            if len(created) == 1 and isinstance(e, requiredfields.RequiredFieldsRejected):
+                # nothing but the container was written: remove it, so the call can run
+                # again and ask for the new tests' fields (testFields)
+                try:
+                    ctx.xray.graphql(kind.q(_DELETE), {"issueId": node["issueId"]})
+                except Exception as de:
+                    err = requiredfields.refusal_failure(msg, created, e, "testFields")
+                    err.data["rollbackError"] = str(de)
+                    raise err from None
+                e.data["param"] = "testFields"
+                raise e from None
+            raise requiredfields.refusal_failure(msg, created, e, "testFields") from None
         if len(created) > 1:
             out["createdTests"] = created[1:]
+            requiredfields.add_applied(out, "test", test_applied)
         if skipped:
             out["skippedDuplicates"] = skipped
             out["hint"] = "pass the skipped indexes in createDuplicates to create them anyway"

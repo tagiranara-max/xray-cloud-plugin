@@ -29,3 +29,18 @@ def test_unknown_method_is_32601():
     assert out[0]["error"]["code"] == -32601
     assert out[1]["error"]["code"] == -32601
     assert out[2]["result"] == {}  # still serving
+
+
+def test_elicitation_capability_leaves_initialize_result_unchanged():
+    msg = _init("2025-06-18")
+    msg["params"]["capabilities"] = {"elicitation": {}}
+    out = rpc(msg)
+    assert out["result"]["protocolVersion"] == "2025-06-18"
+    assert out["result"]["capabilities"] == {"tools": {}}
+
+
+def test_client_response_without_pending_request_gets_no_reply():
+    msgs = [{"jsonrpc": "2.0", "id": "xc-1", "result": {"action": "decline"}},
+            {"jsonrpc": "2.0", "id": "xc-2", "error": {"code": -1, "message": "x"}},
+            {"jsonrpc": "2.0", "id": 3, "method": "ping"}]
+    assert [o["id"] for o in run(msgs)] == [3]

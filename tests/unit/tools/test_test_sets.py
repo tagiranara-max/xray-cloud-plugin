@@ -84,8 +84,9 @@ def test_create_set_new_tests_missing_required_test_field_refused_before_any_wri
     ctx = make_context(yaml)
     res, err = call(ctx, "create_test_set", projectKey="P", summary="S", aiLabel="",
                     newTests=[{"summary": "A"}])
-    assert err and res["error"] == "Missing required fields"
+    assert not err and res["status"] == "needs_answer"
     assert res["missingFields"] == [{"name": "Area", "id": "customfield_7"}]
+    assert res["questions"][0]["param"] == "testFields"
     assert ctx.xray.calls == []
     # without newTests the test fields are irrelevant
     ctx = make_context(yaml, responses={
@@ -247,7 +248,7 @@ def test_create_set_refused_call_remembers_nothing():
     ctx = make_context(yaml)
     res, err = call(ctx, "create_test_set", projectKey="P", summary="S", aiLabel="",
                     newTests=[{"summary": "A"}])
-    assert err and _prefs(ctx) == {}
+    assert res["status"] == "needs_answer" and _prefs(ctx) == {}
     ctx = make_context(YAML)
     res, err = call(ctx, "create_test_set", projectKey="P", summary="S", aiLabel="bot",
                     createDuplicates=[5], newTests=[{"summary": "A"}])

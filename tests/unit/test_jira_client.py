@@ -88,7 +88,9 @@ def test_create_meta_resolves_type_case_insensitively_and_parses():
          "schema": {"type": "option"}, "allowedValues": [{"id": "5", "value": "High"},
                                                           {"id": "6", "value": "Low"}]},
         {"fieldId": "fixVersions", "name": "Fix versions", "required": False,
-         "schema": {"type": "array"}, "allowedValues": [{"id": "9", "name": "1.0"}]}],
+         "schema": {"type": "array", "items": "version", "custom": "x:y"},
+         "hasDefaultValue": True,
+         "allowedValues": [{"id": "9", "name": "1.0"}]}],
         "isLast": True}
     fake = FakeTransport().push(json_response(_types()), json_response(fields))
     out = make(fake).create_meta("P", "test")
@@ -98,6 +100,8 @@ def test_create_meta_resolves_type_case_insensitively_and_parses():
                       "schemaType": "string", "allowedValues": []}
     assert out[1]["allowedValues"] == ["High", "Low"] and out[1]["schemaType"] == "option"
     assert out[2]["allowedValues"] == ["1.0"]
+    assert out[2]["schemaItems"] == "version" and out[2]["hasDefaultValue"] is True
+    assert out[2]["schemaCustom"] == "x:y"
 
 
 def test_create_meta_paginates_by_total():

@@ -63,7 +63,7 @@ def ops(ctx):
 def test_execution_required_field_missing_refused_before_call():
     ctx = make_context(YAML)
     res, err = call(ctx, "create_test_execution", projectKey="P", summary="Run")
-    assert err and res["error"] == "Missing required fields"
+    assert not err and res["status"] == "needs_answer"
     assert res["missingFields"] == [{"name": "fixVersion", "id": "fixVersions"}]
     assert ctx.xray.calls == []
 

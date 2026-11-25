@@ -9,7 +9,7 @@ Map a change to candidate Xray tests, judge each one from its steps and run hist
 
 ## 1. Collect the change
 
-Ask for the base branch (default: the repository's main branch), the Xray project key (for example `PROJ`) and anything else the user wants considered.
+Ask for the base branch (default: the repository's main branch) and anything else the user wants considered. Choose the Xray project key as described under "Choosing the project" below.
 
 - Changed files: `git diff --name-only <base>...HEAD`. For a pull request, use its changed-files list or the diff the user gives.
 - Issue keys: match `[A-Z][A-Z0-9]+-\d+` in the branch name and in commit messages (`git log <base>..HEAD --format=%s%n%b`). Deduplicate. The pattern also matches things that are not issue keys, such as `UTF-8` or `SHA-256`: keep only keys whose project prefix is a real Jira project you saw in the branch or commit context (for example the prefix of the branch name or of the ticket the user mentioned).
@@ -54,3 +54,18 @@ If the Atlassian (Rovo) MCP tools are in your tool list, you may read the linked
 ## 5. Optional: create an execution
 
 Ask the user whether to create a test execution with the at-risk tests. Do nothing without a yes. Then call `create_test_execution` with `summary` (for example "Regression for <branch>"), `testKeys` (the high and medium risk tests, taken only from the results above) and optional `environments` (see `get_test_environments`). Report the new execution key.
+
+## Choosing the project
+
+Every call needs a project key. Take it, in this order:
+
+1. from the user's words;
+2. from keys in the input (a `@TEST_PROJ-12` tag, a story key, the branch name);
+3. if exactly one specific project is approved or listed in the settings file, that one (`get_status` shows them; with approve-all and no specific project, go on to the next step);
+4. otherwise ask the user. When working autonomously and you cannot ask, choose the most likely project and state the choice in your result.
+
+The first write to a project that is not in a settings file and not yet approved asks the user once (see below).
+
+## Questions from the tool (`needs_answer`)
+
+When a tool returns `status: needs_answer`, nothing was done. Relay the question to the user in plain words and wait for their answer. Never answer it yourself, and never pass `allowProject` or any other answer on your own. Then call the tool again with the answer. Some clients show the question to the user directly (an approval prompt with "All projects" pre-selected); in that case just wait for the result.

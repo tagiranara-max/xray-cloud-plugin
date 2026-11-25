@@ -115,3 +115,112 @@ def test_placeholder_data_dir_falls_back(bad, monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     s = PreferenceStore({"XRAY_DATA_DIR": bad, "CLAUDE_PLUGIN_DATA": bad})
     assert s.path == tmp_path / ".config" / "xray-cloud" / "preferences.json"
+
+
+# site-scoped approvals and field values
+
+from xray_cloud.preferences import site_id  # noqa: E402
+
+CREDS = {"XRAY_CLIENT_ID": "id-SECRET-111", "XRAY_CLIENT_SECRET": "sec-SECRET-222"}
+
+
+def _store(tmp_path):
+    return PreferenceStore({"CLAUDE_PLUGIN_DATA": str(tmp_path / "d")})
+
+
+def test_site_id_is_hash_prefix_and_never_raw_id():
+    import hashlib
+    sid = site_id(CREDS)
+    assert sid == hashlib.sha256(b"id-SECRET-111").hexdigest()[:12] and len(sid) == 12
+    assert "SECRET" not in sid
+    assert site_id({}) == ""
+    assert site_id({"XRAY_CLIENT_ID": "x"}) == ""
+    assert site_id(dict(CREDS, XRAY_REGION="bogus")) == ""
+
+
+def test_approve_and_revoke_project_and_all(tmp_path):
+    s = _store(tmp_path)
+    assert s.approval("global", "abc") == {"approveAll": False, "approvedProjects": []}
+    s.approve("global", "abc", "PROJ", False)
+    s.approve("global", "abc", "BACK", False)
+    assert s.approval("global", "abc") == {"approveAll": False,
+                                           "approvedProjects": ["BACK", "PROJ"]}
+    s.approve("global", "abc", None, True)
+    assert s.approval("global", "abc")["approveAll"] is True
+    s.revoke("global", "abc", "PROJ", False)
+    s.revoke("global", "abc", None, True)
+    assert s.approval("global", "abc") == {"approveAll": False, "approvedProjects": ["BACK"]}
+    assert json.loads(s.path.read_text())["global/abc"] == {
+        "approveAll": False, "approvedProjects": ["BACK"]}
+
+
+def test_old_choice_key_read_then_migrated(tmp_path):
+    s = _store(tmp_path)
+    s.path.parent.mkdir(parents=True)
+    s.path.write_text(json.dumps({"global/PROJ": {"createTestSet": True}}))
+    assert s.get("global", "PROJ", "abc") == {"createTestSet": True}
+    assert json.loads(s.path.read_text()) == {"global/PROJ": {"createTestSet": True}}
+    s.update("global", "PROJ", {"backgrounds": "inline"}, "abc")
+    assert json.loads(s.path.read_text()) == {
+        "global/abc/PROJ": {"createTestSet": True, "backgrounds": "inline"}}
+    assert s.get("global", "PROJ", "abc")["createTestSet"] is True
+
+
+def test_other_site_has_no_approval(tmp_path):
+    s = _store(tmp_path)
+    s.approve("global", "siteA", "PROJ", True)
+    assert s.approval("global", "siteB") == {"approveAll": False, "approvedProjects": []}
+    assert s.approval("eu", "siteA") == {"approveAll": False, "approvedProjects": []}
+    assert s.approval("global", "") == {"approveAll": False, "approvedProjects": []}
+
+
+def test_concurrent_write_merges_not_drops(tmp_path):
+    a, b = _store(tmp_path), _store(tmp_path)
+    real_load, state = b._load, {"fired": False}
+
+    def racing_load():  # A writes right after B loaded, before B saves
+        data = real_load()
+        if not state["fired"]:
+            state["fired"] = True
+            a.approve("global", "abc", "PROJ", False)
+        return data
+    b._load = racing_load
+    b.approve("global", "abc", "BACK", False)
+    assert state["fired"]
+    assert a.approval("global", "abc")["approvedProjects"] == ["BACK", "PROJ"]
+
+
+def test_old_and_new_keys_both_present_are_merged(tmp_path):
+    s = _store(tmp_path)
+    s.path.parent.mkdir(parents=True)
+    s.path.write_text(json.dumps({"global/PROJ": {"createTestSet": True, "backgrounds": "inline"},
+                                  "global/abc/PROJ": {"backgrounds": "preconditions",
+                                                      "tagsAsLabels": False}}))
+    assert s.get("global", "PROJ", "abc") == {
+        "createTestSet": True, "backgrounds": "preconditions", "tagsAsLabels": False}
+    s.update("global", "PROJ", {"aiLabel": "x"}, "abc")
+    assert json.loads(s.path.read_text()) == {"global/abc/PROJ": {
+        "createTestSet": True, "backgrounds": "preconditions", "tagsAsLabels": False,
+        "aiLabel": "x"}}
+
+
+def test_revoke_without_entry_writes_nothing(tmp_path):
+    s = _store(tmp_path)
+    s.revoke("global", "abc", "PROJ", True)
+    assert not s.path.exists()
+
+
+def test_field_values_remember_clear(tmp_path):
+    s = _store(tmp_path)
+    assert s.field_values("global", "abc", "PROJ", "test") == {}
+    s.remember_fields("global", "abc", "PROJ", "test", {"customfield_12345": "Backend"})
+    s.remember_fields("global", "abc", "PROJ", "test", {"customfield_2": 1})
+    s.remember_fields("global", "abc", "PROJ", "plan", {"customfield_3": "z"})
+    assert s.field_values("global", "abc", "PROJ", "test") == {
+        "customfield_12345": "Backend", "customfield_2": 1}
+    assert s.field_values("global", "other", "PROJ", "test") == {}
+    s.clear_fields("global", "abc", "PROJ", "test")
+    assert s.field_values("global", "abc", "PROJ", "test") == {}
+    assert s.field_values("global", "abc", "PROJ", "plan") == {"customfield_3": "z"}
+    s.clear_fields("global", "abc", "PROJ", None)
+    assert json.loads(s.path.read_text()) == {}

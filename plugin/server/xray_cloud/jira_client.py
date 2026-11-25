@@ -162,13 +162,21 @@ class JiraClient:
         for f in fields:
             if not isinstance(f, dict):
                 continue
-            out.append({
+            schema = f.get("schema") or {}
+            entry = {
                 "id": f.get("fieldId") or f.get("key"),
                 "name": f.get("name"),
                 "required": bool(f.get("required")),
-                "schemaType": (f.get("schema") or {}).get("type"),
+                "schemaType": schema.get("type"),
                 "allowedValues": [_label(v) for v in (f.get("allowedValues") or [])],
-            })
+            }
+            if schema.get("items"):
+                entry["schemaItems"] = schema["items"]
+            if schema.get("custom"):
+                entry["schemaCustom"] = schema["custom"]
+            if f.get("hasDefaultValue"):
+                entry["hasDefaultValue"] = True
+            out.append(entry)
         return out
 
     def edit_issue(self, key: str, fields: dict) -> None:
