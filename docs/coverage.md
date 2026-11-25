@@ -307,3 +307,29 @@ The server asks for write approval and missing required fields by MCP elicitatio
 | Gemini CLI | unknown: the official MCP page does not mention elicitation | https://geminicli.com/docs/tools/mcp-server/ |
 
 Where a client's documentation is silent the README says "the agent asks you"; behaviour can differ by version, and some clients have open bug reports about prompts not showing (for example in specific windows or platforms). The server falls back to `needs_answer` when the client does not declare the capability.
+
+## Native plugin manifests (Codex, Cursor)
+
+Checked 2026-11-25 against the official documentation and, where the documentation is silent, the Codex source (github.com/openai/codex, `main`). Nothing was installed; the manifests are covered by `tests/unit/test_native_manifests.py`, not by a live install.
+
+| File | Field | Confirmed against |
+|---|---|---|
+| `.agents/plugins/marketplace.json` | location; `name`, `interface.displayName`, `plugins[].name`, `source: {source: "local", path: "./plugin"}` (path relative to the marketplace root, `./` prefix, inside the root), `policy.installation: "AVAILABLE"`, `policy.authentication: "ON_INSTALL"`, `category` (all three required) | https://developers.openai.com/codex/plugins/build (sections "Marketplace metadata", "How local marketplaces work") |
+| same | `codex plugin marketplace add owner/repo`, then `/plugins` in the CLI | https://developers.openai.com/codex/plugins/build ("Add a marketplace from the CLI"), https://developers.openai.com/codex/plugins |
+| same | precedence over the repo's `.claude-plugin/marketplace.json` | Codex source `core-plugins/src/marketplace.rs` (`.agents/plugins/marketplace.json` is read first) |
+| `plugin/.codex-plugin/plugin.json` | compatibility manifest location; `name`, `description`, `author`, `license`, `keywords`, `skills: "./skills/"`, `mcpServers` as a `./` path to a companion file, `interface.displayName/shortDescription/developerName/category`; no `version` needed | https://developers.openai.com/plugins/build/plugins ("Plugin creator output", "Path rules", "Add OpenAI-specific metadata"); `version` optional per Codex source `core-plugins/src/manifest.rs` (`version: Option<String>`) |
+| same | discovered before `.claude-plugin/plugin.json` in the same folder | Codex source `exec-server-protocol/src/protocol.rs` (`DISCOVERABLE_PLUGIN_MANIFEST_PATHS`) |
+| `plugin/codex-mcp.json` | stdio keys `command`, `args`, `cwd`, `env_vars` (forward named variables from Codex's environment) | https://developers.openai.com/codex/mcp ("STDIO servers") |
+| same | the plugin MCP file is read into the same server config as `config.toml` (so `env_vars` applies), and a relative `cwd` is resolved against the plugin root | Codex source `codex-mcp/src/plugin_config.rs` (not in the docs) |
+| `plugin/.cursor-plugin/plugin.json` | `name` (required), `description`, `author.name`, `license`, `keywords`, `variables` (JSON Schema with `type`, `title`, `description`, `default`, `enum`, `required`), auto-discovery of `skills/` and `mcp.json` | https://cursor.com/docs/reference/plugins ("Cursor Plugin manifest", "Variables", "Cursor Plugin component discovery") |
+| `plugin/mcp.json` | `${CURSOR_PLUGIN_ROOT}` in `args`; `${VAR}` placeholders for declared variables in `env` | https://cursor.com/docs/reference/plugins ("MCP servers") |
+| `.cursor-plugin/marketplace.json` | repo-root location; `name`, `owner.name`, `metadata.description`, `plugins[].name/source/description`; `source` is the plugin folder (`plugin`) | https://cursor.com/docs/reference/plugins ("Cursor multi-plugin repositories") |
+| README Cursor install | team marketplace import (Teams/Enterprise), local folder `~/.cursor/plugins/local/<name>` (symlinks to folders outside it are skipped) | https://cursor.com/docs/plugins ("Team marketplaces", "Test plugins locally") |
+
+Not confirmed:
+
+- **Codex secrets.** Codex has no install-time prompt for a local (stdio) server's settings; the documented `auth` options apply to HTTP servers. The plugin therefore forwards the variables with `env_vars`, and the user exports them. The ChatGPT desktop app may not inherit shell variables.
+- **Codex working directory.** The server runs in the plugin folder (`cwd: "."`), because the compatibility format expands no plugin-root variable in `args`. Codex passes no project directory, so a per-repository `.xray/settings.yml` needs `XRAY_PROJECT_DIR` or `XRAY_SETTINGS_FILE`, and import paths should be absolute. The portable Agent Plugins format (root `plugin.json` + `mcp.json` with `${PLUGIN_ROOT}`) was not used: Cursor reads the same root `mcp.json` but does not expand `${PLUGIN_ROOT}`.
+- **Cursor variables for local plugins.** The docs say variable values are set under Plugins, Configure (by team admins for team marketplaces). Whether Cursor offers Configure, or substitutes the variables, for a plugin in `~/.cursor/plugins/local` is not documented. An unset variable left as a literal `${...}` is ignored by the server.
+- **Cursor project directory.** The docs do not say which working directory a plugin's stdio server gets, or whether `${workspaceFolder}` is expanded in a plugin's `mcp.json`, so `XRAY_PROJECT_DIR` is not set.
+- **Personal Cursor install from GitHub.** No documented "add marketplace from a repo" exists for individual users; only team marketplaces (admin import) and the local folder.
