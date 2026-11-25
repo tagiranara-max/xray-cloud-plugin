@@ -205,3 +205,14 @@ def test_mapped_user_config_prompts_have_no_default():
 def test_cursor_variables_mapped_to_settings_have_no_default_or_enum():
     for name, schema in load(CURSOR_MANIFEST)["variables"]["properties"].items():
         assert "default" not in schema and "enum" not in schema, name
+
+
+def test_jira_prompts_say_all_three_are_needed():
+    claude = load(CLAUDE_MANIFEST)["userConfig"]
+    cursor = load(CURSOR_MANIFEST)["variables"]["properties"]
+    texts = [claude["jira_site_url"]["description"], claude["jira_email"]["description"],
+             claude["jira_api_token"]["description"], cursor["JIRA_SITE_URL"]["description"],
+             cursor["JIRA_EMAIL"]["description"], cursor["JIRA_API_TOKEN"]["description"]]
+    for t in texts:
+        low = t.lower()
+        assert "email" in low and "site url" in low and "token" in low, t

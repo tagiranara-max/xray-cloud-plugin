@@ -89,6 +89,18 @@ def load_jira_credentials(env: Mapping[str, str]) -> Optional[JiraCredentials]:
     return JiraCredentials(site, email, token)
 
 
+JIRA_PARTS = (("JIRA_SITE_URL", "site URL"), ("JIRA_EMAIL", "email"), ("JIRA_API_TOKEN", "token"))
+JIRA_PARTIAL_FIX = ("Jira needs the site URL, the email of the account the token belongs to, "
+                    "and the token")
+
+
+def jira_config_state(env: Mapping[str, str]) -> Dict[str, Any]:
+    """Which of the three Jira settings are present (never their values)."""
+    have = [label for name, label in JIRA_PARTS if _setting(env, name)]
+    missing = [label for _, label in JIRA_PARTS if label not in have]
+    return {"configured": not missing, "set": have, "missing": missing}
+
+
 def load_read_only(env: Mapping[str, str]) -> bool:
     value = _setting(env, "XRAY_READ_ONLY")
     if value is None:

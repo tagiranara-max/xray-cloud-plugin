@@ -179,8 +179,50 @@ def test_status_without_credentials_or_jira(tmp_path):
     res, err = run(ctx, "get_status")
     assert not err, res
     assert res["credentials"] == {"configured": False}
-    assert res["jira"] == {"configured": False, "site": None}
+    assert res["jira"]["configured"] is False and res["jira"]["site"] is None
     assert res["region"] == "global"
+
+
+def test_status_jira_not_configured_has_no_partial_details(tmp_path):
+    ctx = make(tmp_path)
+    res, _ = run(ctx, "get_status")
+    assert res["jira"] == {"configured": False, "site": None}
+
+
+def test_status_jira_token_only_is_partial(tmp_path):
+    ctx = make(tmp_path)
+    ctx.env["JIRA_API_TOKEN"] = "tok-SECRET-333"
+    res, err = run(ctx, "get_status")
+    assert not err
+    jira = res["jira"]
+    assert jira["configured"] is False
+    assert jira["set"] == ["token"] and jira["missing"] == ["site URL", "email"]
+    assert "site URL, the email of the account the token belongs to" in jira["fix"]
+    assert "tok-SECRET-333" not in json.dumps(res)
+
+
+def test_jira_required_error_names_missing_parts_when_partial(tmp_path):
+    from xray_cloud.errors import ToolError
+    from xray_cloud.tools.tests import require_jira
+    ctx = make(tmp_path)
+    ctx.env["JIRA_API_TOKEN"] = "tok"
+    with pytest.raises(ToolError) as e:
+        require_jira(ctx)
+    assert "Jira access not configured: site URL, email missing" in str(e.value.message)
+    assert "no Jira token" not in str(e.value.message)
+    ctx.env.pop("JIRA_API_TOKEN")
+    with pytest.raises(ToolError) as e:
+        require_jira(ctx)
+    assert "no Jira token or Atlassian MCP" in str(e.value.message)
+
+
+def test_jira_config_state_all_three():
+    from xray_cloud.config import jira_config_state
+    env = {"JIRA_SITE_URL": "https://x.atlassian.net", "JIRA_EMAIL_SETTING": "a@b.c",
+           "JIRA_API_TOKEN": "t"}
+    assert jira_config_state(env) == {"configured": True,
+                                      "set": ["site URL", "email", "token"], "missing": []}
+    assert jira_config_state({})["missing"] == ["site URL", "email", "token"]
 
 
 def test_status_check_makes_one_myself_call(tmp_path):

@@ -34,19 +34,19 @@
     "jira_site_url": {
       "type": "string",
       "title": "Jira site URL",
-      "description": "Optional, enables Jira tools. Example: https://yourcompany.atlassian.net",
+      "description": "Jira site URL, needed together with the Jira email and API token; leave all three empty to use the environment variables. Example: https://yourcompany.atlassian.net",
       "required": false
     },
     "jira_email": {
       "type": "string",
       "title": "Jira email",
-      "description": "Optional, email of the Jira account used for Jira tools.",
+      "description": "Email of the Jira account the API token belongs to; needed together with the Jira site URL and API token.",
       "required": false
     },
     "jira_api_token": {
       "type": "string",
       "title": "Jira API token",
-      "description": "Optional, Jira API token that enables Jira tools.",
+      "description": "Jira API token, needed together with the Jira site URL and the email of its account; leave all three empty to use the environment variables.",
       "sensitive": true,
       "required": false
     },

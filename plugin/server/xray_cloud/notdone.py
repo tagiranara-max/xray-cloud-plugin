@@ -2,7 +2,9 @@
 the feature import and the no-token errors of the Jira-only tools use the same reason and fix."""
 from __future__ import annotations
 
-from typing import Dict
+from typing import Any, Dict, Mapping, Tuple
+
+from .config import JIRA_PARTIAL_FIX, jira_config_state
 
 NO_JIRA_REASON = "no Jira token or Atlassian MCP"
 NO_JIRA_FIX = ("set the Jira token in Claude Code's plugin settings, or as the JIRA_SITE_URL, "
@@ -11,6 +13,24 @@ NO_JIRA_FIX = ("set the Jira token in Claude Code's plugin settings, or as the J
 NEVER_OVERWRITE_FIX = "existing values are never overwritten; change it in Jira if wanted"
 UNREADABLE_REASON = "current value could not be read; not changed"
 UNREADABLE_FIX = "check the field id in the settings file; set it in Jira if wanted"
+
+
+def jira_reason_fix(env: Mapping[str, Any]) -> Tuple[str, str]:
+    """Reason and fix for work that needs Jira access: the generic no-token wording, or, when
+    Jira is partly configured, which parts are missing."""
+    state = jira_config_state(env)
+    if state["set"] and state["missing"]:
+        return ("Jira access not configured: %s missing" % ", ".join(state["missing"]),
+                JIRA_PARTIAL_FIX + "; add the missing part(s), or let the agent apply the edits "
+                "via the Atlassian MCP")
+    return NO_JIRA_REASON, NO_JIRA_FIX
+
+
+def jira_required_error(env: Mapping[str, Any]) -> Tuple[str, str, str]:
+    """(message, reason, fix) of the error for tools that need Jira for the whole operation."""
+    reason, fix = jira_reason_fix(env)
+    return ("Not done: %s. To fix: %s (see README.md#optional-jira-token)." % (reason, fix),
+            reason, fix)
 
 
 def not_done(item: str, what: str, reason: str = NO_JIRA_REASON,
