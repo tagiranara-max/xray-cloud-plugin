@@ -47,7 +47,8 @@ def _folder_files(env, folder: str, room: int) -> Dict[str, Any]:
     "store them with set_preferences. Rule fields: `tag`, optional `split`, and `label`, "
     "`testSet`, `field` or `skip`; for example (an example only, not a default) {tag: "
     "\"group\", split: \",\", testSet: \"{value}\"} turns @group=alpha,beta into Test Sets alpha "
-    "and beta.",
+    "and beta. (create_tests_from_feature itself asks per key about key:value tags no rule "
+    "covers; this tool proposes rules in bulk.)",
     _schema({"featureFilePaths": {"type": "array", "items": {"type": "string"},
                                   "description": "Local .feature files. " + PATH_NOTE},
              "folder": {"type": "string", "description":

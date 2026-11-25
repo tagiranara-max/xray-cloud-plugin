@@ -74,7 +74,7 @@ Offer each one; skip what the user declines.
 
 - `featureImport`: `createTestSet`, `backgrounds` (preconditions or inline), `tagsAsLabels`, `unmatchedTags` (keep or skip) and `tagRules`. It can be set at the top level and overridden per project.
 - `aiCreated`: the user's own label for what the AI creates (`label`, or null for none) and its `scope` (tests or all). There is no default label; never invent one.
-- `tagRules`: if the user has `.feature` files, call `analyze_feature_tags` on them (absolute paths), explain each proposed rule in plain words with its effect on a few real scenarios, and add a rule only after the user agrees. No rules are built in.
+- `tagRules`: if the user has `.feature` files, call `analyze_feature_tags` on them (absolute paths), explain each proposed rule in plain words with its effect on a few real scenarios, and add a rule only after the user agrees. No rules are built in. Without a rule, `create_tests_from_feature` asks per key what a `key:value` tag means (`tagRule.<key>`); relay that question, never answer it.
 
 ## 4. Team-wide settings or personal preferences
 

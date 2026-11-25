@@ -16,6 +16,16 @@ _PLACEHOLDER = re.compile(r"\{(value|key|tag)\}|\$([1-9])")
 _BRACES = re.compile(r"\{([^{}]*)\}")
 _SEPARATED = re.compile(r"([^=:]+)[=:](.*)", re.DOTALL)
 _WHITESPACE = re.compile(r"\s")
+# a Jira custom field id: accepted in a rule's `field` without a settings entry
+FIELD_ID = re.compile(r"customfield_\d+")
+
+
+def kv_key(tag: str) -> Optional[str]:
+    """The lower-cased key of a `key:value` or `key=value` tag (non-empty value), else None."""
+    m = _SEPARATED.fullmatch(tag)
+    if m is None or not m.group(1).strip() or not m.group(2).strip():
+        return None
+    return m.group(1).strip().lower()
 
 
 class TagRuleError(ToolError):
@@ -113,10 +123,10 @@ def _parse_rule(raw: Any, field_names: Set[str], where: str) -> TagRule:
         for name, tpl in f.items():
             if not isinstance(tpl, str):
                 raise TagRuleError("%s.field.%s must be a template string" % (where, name))
-            if name not in field_names:
+            if name not in field_names and not FIELD_ID.fullmatch(str(name)):
                 known = ", ".join(sorted(field_names)) or "none defined"
-                raise TagRuleError("%s.field: unknown field name %r (fields.test has: %s)"
-                                   % (where, name, known))
+                raise TagRuleError("%s.field: unknown field name %r (fields.test has: %s; a "
+                                   "customfield_<n> id also works)" % (where, name, known))
             fields[str(name)] = tpl
     has_action = bool(labels or test_sets or fields)
     if skip and has_action:
@@ -170,6 +180,8 @@ def _check_label(label: str) -> bool:
 
 def apply_rules(tags: List[str], rules: List[TagRule], tags_as_labels: bool,
                 unmatched: str = "keep") -> TagOutcome:
+    """tags_as_labels only governs plain tags no rule covers; a rule's `label` action always
+    applies. An uncovered `key:value` tag is never a label (the import asks about its key)."""
     out = TagOutcome()
     for tag in tags:
         hit = None
@@ -180,7 +192,7 @@ def apply_rules(tags: List[str], rules: List[TagRule], tags_as_labels: bool,
                 break
         if hit is None:
             out.unmatched.append(tag)
-            if unmatched == "keep" and tags_as_labels:
+            if unmatched == "keep" and tags_as_labels and kv_key(tag) is None:
                 if _check_label(tag):
                     _add(out.labels, tag)
                 else:
@@ -196,14 +208,13 @@ def apply_rules(tags: List[str], rules: List[TagRule], tags_as_labels: bool,
         for value in values:
             def r(t: str) -> str:
                 return _render(t, value, key, tag, groups)
-            if tags_as_labels:
-                for t in rule.labels:
-                    label = r(t)
-                    if _check_label(label):
-                        _add(out.labels, label)
-                    else:
-                        out.problems.append("%s: label result %r is invalid; labels must be "
-                                            "non-empty and contain no whitespace" % (who, label))
+            for t in rule.labels:
+                label = r(t)
+                if _check_label(label):
+                    _add(out.labels, label)
+                else:
+                    out.problems.append("%s: label result %r is invalid; labels must be "
+                                        "non-empty and contain no whitespace" % (who, label))
             for t in rule.test_sets:
                 name = r(t).strip()
                 if name:

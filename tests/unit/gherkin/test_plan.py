@@ -267,13 +267,14 @@ def test_rule_outcomes_per_test_inherit_feature_and_rule_tags():
     assert [(s.summary, s.tests, s.labels) for s in sets] == [
         ("Tagged checkout", [0, 1, 2], ["regression", "team"]),  # feature labels on the set
         ("ui", [0], []), ("api", [1, 2], []), ("users", [1, 2], [])]
-    # tagsAsLabels=false: no labels from tags; Test Sets and fields still apply
+    # tagsAsLabels=false: unmatched plain tags are not labels; rule actions still apply
     opts.tags_as_labels = False
     plan = plan_import(ctx, "P", feat, "tags.feature", opts)
     tests = [a for a in plan if a.kind == "create_test"]
-    assert [t.labels for t in tests] == [[], [], []]
+    assert [t.labels for t in tests] == [["regression"], ["regression"], ["regression"]]
     assert tests[1].test_sets == ["api", "users"] and tests[1].fields == {"Component": "backend"}
-    assert [s.labels for s in plan if s.kind == "create_test_set"] == [[], [], [], []]
+    assert [s.labels for s in plan if s.kind == "create_test_set"] == [
+        ["regression"], [], [], []]
 
 
 def test_examples_tags_are_not_used_for_actions():

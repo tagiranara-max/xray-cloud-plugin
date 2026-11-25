@@ -124,6 +124,19 @@ def test_settings_override_warns(tmp_path):
     assert "backgrounds" in text and "aiLabel" in text and "createTestSet" not in text
 
 
+def test_remembered_tag_rules_shown_with_settings_rules_and_not_warned(tmp_path):
+    yaml = YAML.replace("  Q: {}", "  Q: {}\nfeatureImport:\n  tagRules:\n"
+                                   "    - {tag: env, skip: true}\n")
+    ctx = make(tmp_path, yaml)
+    rules = [{"tag": "suite", "label": "{value}"}]
+    res, err = run(ctx, "set_preferences", projectKey="P", tagRules=rules)
+    assert not err, res
+    assert res["effective"]["tagRules"] == {
+        "value": {"settings": "1 rule(s) from the settings file", "remembered": rules},
+        "source": "settings+remembered"}
+    assert res["warnings"] == []
+
+
 def test_not_blocked_by_read_only(tmp_path):
     ctx = make(tmp_path, read_only=True)
     res, err = run(ctx, "set_preferences", projectKey="P", createTestSet=True)

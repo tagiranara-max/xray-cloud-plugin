@@ -81,8 +81,9 @@ def _validate(project, args: Dict[str, Any]) -> Dict[str, Any]:
     "file). Writes only the plugin's own preferences file, never Xray, so read-only mode does "
     "not block it. Returns every choice's effective value and source (call, settings, "
     "remembered, default or unanswered) and `warnings` when a settings-file value overrides "
-    "something just set (a settings value always wins). tagRules are raw rules; any rule shown in "
-    "documentation is an example only, never a default.",
+    "something just set (a settings value always wins, except tagRules: remembered rules apply "
+    "after the settings rules). tagRules are raw rules; any rule shown in documentation is an "
+    "example only, never a default.",
     _schema(_SET_PARAMS, []))
 def set_preferences(ctx, args):
     pk = args["projectKey"]
@@ -131,7 +132,7 @@ def set_preferences(ctx, args):
     effective = choices.effective(ctx, pk)
     warnings = ["%s was saved, but the settings file sets it to %r, which always wins; edit "
                 "the settings file to change it" % (n, effective[n]["value"])
-                for n in values if effective[n]["source"] == "settings"]
+                for n in values if effective[n]["source"] == "settings" and n != "tagRules"]
     return {"projectKey": pk, "region": region, "set": sorted(values), "cleared": sorted(clear),
             "revoked": {"project": revoke, "all": revoke_all},
             "fieldValuesCleared": clear_fv is not None,
