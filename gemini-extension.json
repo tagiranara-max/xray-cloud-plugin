@@ -14,9 +14,9 @@
     {"name": "Xray client secret", "description": "Xray Cloud API key client secret.", "envVar": "XRAY_CLIENT_SECRET", "sensitive": true},
     {"name": "Xray region", "description": "Xray Cloud region: global, eu or au.", "envVar": "XRAY_REGION"},
     {"name": "Settings file", "description": "Optional explicit path to the Xray settings file (YAML or JSON) listing projects and fields.", "envVar": "XRAY_SETTINGS_FILE"},
-    {"name": "Jira site URL", "description": "Optional, enables Jira tools. Example: https://yourcompany.atlassian.net", "envVar": "JIRA_SITE_URL"},
-    {"name": "Jira email", "description": "Optional, email of the Jira account used for Jira tools.", "envVar": "JIRA_EMAIL"},
-    {"name": "Jira API token", "description": "Optional, Jira API token that enables Jira tools.", "envVar": "JIRA_API_TOKEN", "sensitive": true},
+    {"name": "Jira site URL", "description": "Optional. Jira works only with the site URL, the email of the account the token belongs to, and the token, all three; leave all empty to use the JIRA_* environment variables. Example: https://yourcompany.atlassian.net", "envVar": "JIRA_SITE_URL"},
+    {"name": "Jira email", "description": "Optional. Email of the Jira account the API token belongs to; needed together with the site URL and token.", "envVar": "JIRA_EMAIL"},
+    {"name": "Jira API token", "description": "Optional. Jira API token; works only together with the email of its Jira account and the site URL (all three needed).", "envVar": "JIRA_API_TOKEN", "sensitive": true},
     {"name": "Read-only mode", "description": "Set to true to make every write tool refuse to run.", "envVar": "XRAY_READ_ONLY"},
     {"name": "Tool groups", "description": "Optional. Comma-separated tool groups; leave empty for all tools.", "envVar": "XRAY_TOOLS"}
   ]

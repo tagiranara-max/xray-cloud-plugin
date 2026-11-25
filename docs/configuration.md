@@ -128,8 +128,8 @@ Claude Code and Cursor hand their plugin prompts to the server as `NAME_SETTING`
 | `XRAY_PROJECT_DIR` | Project directory that relative file paths resolve against. Falls back to `CLAUDE_PROJECT_DIR`, then the current directory. | none (Claude Code sets `CLAUDE_PROJECT_DIR`) |
 | `XRAY_DATA_DIR` | Where remembered preferences live. Falls back to `CLAUDE_PLUGIN_DATA`, then `~/.config/xray-cloud`. | none (Claude Code sets `CLAUDE_PLUGIN_DATA`) |
 | `XRAY_TOOLS` | Comma-separated tool groups to expose; empty or unset means all. | none |
-| `JIRA_SITE_URL` | Jira site URL, enables Jira tools. | Jira site URL |
-| `JIRA_EMAIL` | Email of the Jira account. | Jira email |
+| `JIRA_SITE_URL` | Jira site URL; Jira needs all three `JIRA_*` values together. | Jira site URL |
+| `JIRA_EMAIL` | Email of the Jira account the token belongs to. | Jira email |
 | `JIRA_API_TOKEN` | Jira API token. | Jira API token |
 
 ### Notes
@@ -218,7 +218,7 @@ duplicateCheck: true
 
 Xray's API cannot edit Jira fields. With a Jira API token the plugin can also edit a test's summary, description, labels, priority and assignee, set lifecycle labels, list a project's versions (`list_project_versions`, which strictly needs the token), and read live create-field metadata for `get_create_fields` (without the token it answers from your settings file).
 
-To enable it, create a token at https://id.atlassian.com/manage-profile/security/api-tokens, then fill in the plugin prompts "Jira site URL" (for example `https://yourcompany.atlassian.net`), "Jira email" and "Jira API token". The token acts as you. Some organizations block API tokens, which is why it is optional; the Atlassian (Rovo) MCP can do the same Jira edits.
+To enable it, create a token at https://id.atlassian.com/manage-profile/security/api-tokens, then fill in the plugin prompts "Jira site URL" (for example `https://yourcompany.atlassian.net`), "Jira email" and "Jira API token". All three are needed together: the token works only with the email of the account it belongs to and the site URL; with only some of them set, Jira stays off and `get_status` names the missing parts. The token acts as you. Some organizations block API tokens, which is why it is optional; the Atlassian (Rovo) MCP can do the same Jira edits.
 
 ## Read-only mode
 

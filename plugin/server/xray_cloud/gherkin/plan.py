@@ -17,7 +17,7 @@ from ..context import (ISSUE_KEY_RE, ServerContext, check_issue_in_project, dedu
 from ..config import ProjectSettings
 from ..errors import ToolError
 from ..notdone import (NEVER_OVERWRITE_FIX, NO_JIRA_FIX, NO_JIRA_REASON,  # noqa: F401
-                       UNREADABLE_FIX, UNREADABLE_REASON, not_done)
+                       UNREADABLE_FIX, UNREADABLE_REASON, jira_reason_fix, not_done)
 from .parse import ParsedBackground, ParsedFeature, ParsedScenario
 from .serialize import background_definition, scenario_definition
 from .tagrules import TagOutcome, TagRule, apply_rules, merge_outcomes
@@ -470,11 +470,13 @@ def plan_import(ctx: ServerContext, project_key: str, feature: ParsedFeature, fe
             a.current_labels = list(current.get("labels") or [])
             new_labels = [x for x in a.labels if x not in a.current_labels]
             if new_labels and not has_jira:
-                a.not_done.append(not_done(a.key, "labels " + ", ".join(new_labels)))
+                a.not_done.append(not_done(a.key, "labels " + ", ".join(new_labels),
+                                           *jira_reason_fix(ctx.env)))
             _existing_test_fields(ctx, a, current, opts, has_jira)
             if a.requirement_keys and not has_jira:
                 a.not_done.append(not_done(a.key, "requirement links "
-                                           + ", ".join(a.requirement_keys)))
+                                           + ", ".join(a.requirement_keys),
+                                           *jira_reason_fix(ctx.env)))
         else:
             if opts.ai_label:
                 a.labels = dedupe(a.labels + [opts.ai_label])

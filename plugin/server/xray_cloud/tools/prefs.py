@@ -6,11 +6,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .. import choices
-from ..config import (PROJECT_KEY_RE, REGIONS, ai_created_problem, feature_import_problem,
+from ..config import (JIRA_PARTIAL_FIX, PROJECT_KEY_RE, REGIONS, ai_created_problem, feature_import_problem,
                       find_settings_file, project_dir_info, settings_search_paths)
 from ..context import require_project
 from ..errors import ToolError
 from ..gherkin.tagrules import parse_rules
+from ..config import jira_config_state
 from ..jira_client import normalize_site_url
 from ..protocol import SERVER_INFO
 from ..requiredfields import ITEM_TYPE_NAMES
@@ -185,6 +186,10 @@ def _jira_status(ctx, check: bool) -> Dict[str, Any]:
             out["reachable"] = False
             out["message"] = (exc.message if isinstance(exc, ToolError) else
                               "%s" % type(exc).__name__)[:300]
+    state = jira_config_state(ctx.env)
+    if creds is None and state["set"] and state["missing"]:
+        out["set"], out["missing"] = state["set"], state["missing"]
+        out["fix"] = JIRA_PARTIAL_FIX
     return out
 
 

@@ -76,7 +76,7 @@ Optionally, `~/.config/xray-cloud/settings.yml`, or any file named in `XRAY_SETT
 
 ## Documentation
 
-- [docs/configuration.md](docs/configuration.md): credentials, environment variables, manual client setup, settings file, Jira token, read-only mode, permissions.
+- [docs/configuration.md](docs/configuration.md): credentials, environment variables, manual client setup, settings file, optional Jira access (site URL, account email and token, all three together), read-only mode, permissions.
 - [docs/tools.md](docs/tools.md): every tool, result import and matching, feature import, choices and tag rules.
 - [docs/field-ids.md](docs/field-ids.md): finding Jira field IDs.
 - [docs/coverage.md](docs/coverage.md): what was verified live, API parity, client support.

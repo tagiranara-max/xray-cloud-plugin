@@ -12,7 +12,7 @@ from ..errors import ToolError
 from .. import requiredfields
 from ..fields import build_jira_fields
 from ..folderops import add_ids_to_folder, ensure_folder, normalize_folder_path
-from ..notdone import NO_JIRA_FIX, NO_JIRA_REASON
+from ..notdone import NO_JIRA_FIX, NO_JIRA_REASON, jira_reason_fix
 from ..registry import REGISTRY
 
 JIRA_TOKEN_MESSAGE = "Not done: %s. To fix: %s (see README.md#optional-jira-token)." % (
@@ -163,7 +163,10 @@ def fetch_test(ctx: ServerContext, project_key: str, test_key: str, detail: bool
 
 def require_jira(ctx: ServerContext) -> Any:
     if ctx.jira is None:
-        raise ToolError(JIRA_TOKEN_MESSAGE, reason=NO_JIRA_REASON, fix=NO_JIRA_FIX)
+        reason, fix = jira_reason_fix(ctx.env)
+        message = (JIRA_TOKEN_MESSAGE if reason == NO_JIRA_REASON else
+                   "Not done: %s. To fix: %s (see README.md#optional-jira-token)." % (reason, fix))
+        raise ToolError(message, reason=reason, fix=fix)
     return ctx.jira
 
 
