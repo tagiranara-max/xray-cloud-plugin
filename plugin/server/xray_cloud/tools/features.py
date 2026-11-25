@@ -4,18 +4,20 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-from .. import choices, tagquestions
+from .. import choices, existingtests, keytags, tagquestions
 from ..config import ProjectSettings, project_dir
 from ..context import (ServerContext, dedupe, is_permission_error, partial_failure,
                        permission_denied, require_project, require_write)
-from ..errors import ToolError
+from ..errors import NeedsAnswer, ToolError
 from .. import requiredfields
 from ..gherkin.parse import ParsedFeature, parse_feature
 from ..gherkin.tagrules import FIELD_ID, TagRule, kv_key, parse_rules
 from ..jira_client import LINK_TYPE
+from ..notdone import not_done
 from ..localfiles import PATH_NOTE, read_local_file
 from ..gherkin.plan import (CUCUMBER, UNNAMED_PREFIX, ImportAction, ImportOptions, TagAnalysis,
-                            analyze_tags, existing_set_names, feature_set_name, plan_import)
+                            analyze_tags, existing_set_names, existing_test_changes,
+                            feature_set_name, lookup_key_tags, plan_import)
 from ..gherkin.tagsummary import summarize_tags, tag_values
 from ..registry import REGISTRY
 from .containers import _CREATE, _add
@@ -72,6 +74,23 @@ def _link_update(req_keys: List[str]) -> List[dict]:
             for k in req_keys]
 
 
+_NOT_A_REFUSAL = (401, 403, 408, 429)
+
+
+def _link_refused(e: ToolError, keys: List[str]) -> bool:
+    """Whether Jira clearly refused a link (the issue may not exist): a 4xx answer other than
+    auth, permission, timeout or rate limit, or an error without an HTTP status (a GraphQL
+    validation error) that names the issue links or one of the keys. 5xx, timeouts, network
+    errors and anything else are not: the write may or may not have happened."""
+    if is_permission_error(e):
+        return False
+    status = e.data.get("status")
+    if isinstance(status, int):
+        return 400 <= status < 500 and status not in _NOT_A_REFUSAL
+    msg = e.message
+    return "issuelink" in msg.lower() or any(k in msg for k in keys)
+
+
 class _Run:
     """Executes a plan; tracks what was written for partial-failure reports."""
 
@@ -91,6 +110,7 @@ class _Run:
         self.fields_applied: List[dict] = []
         self.sets_created: List[dict] = []
         self.memberships: List[dict] = []
+        self.not_done: List[Dict[str, str]] = []  # found while writing (refused links)
 
     def gql(self, query: str, variables: dict) -> dict:
         return self.ctx.xray.graphql(query, variables)
@@ -109,9 +129,31 @@ class _Run:
         jira: Dict[str, Any] = {"fields": fields}
         if a.requirement_keys:
             jira["update"] = {"issuelinks": _link_update(a.requirement_keys)}
-        with requiredfields.creating(self.ctx, self.pk, "test"):
-            data = self.gql(_CREATE_TEST, {"jira": jira, "testType": {"name": CUCUMBER},
-                                           "gherkin": a.definition})
+        variables = {"jira": jira, "testType": {"name": CUCUMBER}, "gherkin": a.definition}
+        try:
+            with requiredfields.creating(self.ctx, self.pk, "test"):
+                data = self.gql(_CREATE_TEST, variables)
+        except ToolError as e:
+            # A link Xray could not confirm (keyTag answered "link", or @REQ_) may name no
+            # issue, and Jira then refuses the create: create the test without those links.
+            # Only on a clear refusal of a link: after any other (possibly ambiguous) failure
+            # a retry could create the test twice.
+            if not a.unverified_links or not _link_refused(e, a.unverified_links) \
+                    or requiredfields.is_refusal(e):
+                raise
+            keep = [k for k in a.requirement_keys if k not in a.unverified_links]
+            if keep:
+                jira["update"] = {"issuelinks": _link_update(keep)}
+            else:
+                jira.pop("update", None)
+            with requiredfields.creating(self.ctx, self.pk, "test"):
+                data = self.gql(_CREATE_TEST, variables)
+            for k in a.unverified_links:
+                self.not_done.append(not_done(
+                    "scenario %r (line %d)" % (a.summary, a.source_line),
+                    "requirement link %s" % k,
+                    "the test was created without it: Jira refused the link (%s may not "
+                    "exist): %s" % (k, e.message), "check the key, then link it yourself"))
         res = data.get("createTest") or {}
         test = res.get("test") or {}
         key = (test.get("jira") or {}).get("key")
@@ -147,7 +189,16 @@ class _Run:
             todo = [k for k in a.requirement_keys if k not in have]
             entry = None
             for k in todo:
-                jira.link_requirement(a.key, k)
+                try:
+                    jira.link_requirement(a.key, k)
+                except ToolError as e:
+                    if k not in a.unverified_links or not _link_refused(e, [k]):
+                        raise
+                    self.not_done.append(not_done(a.key, "requirement link %s" % k,
+                                                  "Jira refused the link (%s may not exist): "
+                                                  "%s" % (k, e.message),
+                                                  "check the key, then link it yourself"))
+                    continue
                 if entry is None:  # recorded as each link is made, for partial-failure reports
                     entry = {"test": a.key, "requirements": []}
                     self.result.setdefault("linkedRequirements", []).append(entry)
@@ -298,6 +349,26 @@ def _skipped(plan: List[ImportAction], create_dups: List[int]) -> List[dict]:
             and a.index not in create_dups]
 
 
+def _apply_existing_answers(plan: List[ImportAction], changes: List[dict],
+                            answers: Dict[str, Any]) -> None:
+    """Existing tests: one with nothing to change is only mapped (keep_test); otherwise the
+    answer decides: update (as planned), keep (mapped, nothing written to it) or skip (the
+    scenario is left out). Unanswered (preview): left as planned."""
+    changed = {c["key"] for c in changes}
+    for a in plan:
+        if a.kind != "update_test":
+            continue
+        ans = existingtests.answer_for(answers, a.key) if a.key in changed else "unchanged"
+        if ans in ("keep", "unchanged"):
+            a.kind = "keep_test"
+            if ans == "keep":
+                a.not_done = []
+        elif ans == "skip":
+            a.kind, a.not_done = "skip_test", []
+            a.reason = "existing test %s left as it is and the scenario left out " \
+                       "(existingTests: skip)" % a.key
+
+
 QUESTION_IDS = ("createTestSet", "backgrounds", "tagsAsLabels", "aiLabel", "aiLabelScope")
 _BOOL = {"type": "boolean"}
 
@@ -332,7 +403,7 @@ def _applicable(feature: ParsedFeature, analysis: TagAnalysis, values: Dict[str,
     creation is counted as possible when it may happen (duplicates and reuse are not known)."""
     named = bool(feature.name.strip())
     cts = values["createTestSet"]
-    new_tests = any(st.test_key is None for st in analysis.scenarios)
+    new_tests = any(st.test_key is None and not st.blocked for st in analysis.scenarios)
     new_pre = bool(feature.backgrounds) and values["backgrounds"] != "inline"
     new_sets = (named and cts is not False) or bool(analysis.tag_sets)
     ai = new_tests or new_pre or new_sets
@@ -346,7 +417,8 @@ def _applicable(feature: ParsedFeature, analysis: TagAnalysis, values: Dict[str,
 
 def _contexts(feature: ParsedFeature, analysis: TagAnalysis, rel: str,
               plan: Optional[List[ImportAction]], skip: set) -> Dict[str, dict]:
-    """Facts for each question. Without a plan (apply refusal: no calls) only file facts."""
+    """Facts for each question. Without a plan (the apply refusal for unanswered choices)
+    only file facts."""
     ctx_set: Dict[str, Any] = {"testSetName": feature_set_name(feature, rel)}
     out = {"createTestSet": ctx_set,
            "backgrounds": {"backgrounds": [
@@ -378,7 +450,8 @@ def _would_create(plan: List[ImportAction], skip: set) -> Dict[str, int]:
 
 
 def _members(plan: List[ImportAction], indexes: List[int]) -> List[str]:
-    by_index = {a.index: a for a in plan if a.kind in ("create_test", "update_test")}
+    by_index = {a.index: a for a in plan
+                if a.kind in ("create_test", "update_test", "skip_test", "keep_test")}
     return [by_index[i].key or by_index[i].summary for i in indexes]
 
 
@@ -396,7 +469,7 @@ def _preview_sets(plan: List[ImportAction]) -> Dict[str, List[dict]]:
 def _per_test(plan: List[ImportAction]) -> List[dict]:
     out = []
     for a in plan:
-        if a.kind in ("create_test", "update_test"):
+        if a.kind in ("create_test", "update_test", "keep_test"):
             row = {"scenarioIndex": a.index, "scenario": a.summary}
             if a.key:
                 row["key"] = a.key
@@ -420,14 +493,14 @@ def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: 
     fields."""
     call_fields = dict(args.get("fields") or {})
     base_users = [i for i, st in enumerate(analysis.scenarios)
-                  if st.test_key is None and not st.outcome.fields]
+                  if st.test_key is None and not st.blocked and not st.outcome.fields]
     # description is not asked for tests whose scenario has its own
     base = c("test", call_fields, args.get("rawFields"), required=bool(base_users),
              provided=_own_description(feature.scenarios[i] for i in base_users))
     out: Dict[int, dict] = {}
     for i, st in enumerate(analysis.scenarios):
         rule_fields = st.outcome.fields
-        if st.test_key is not None or not rule_fields:
+        if st.test_key is not None or st.blocked or not rule_fields:
             out[i] = base
             continue
         clash = {n: v for n, v in rule_fields.items() if n in call_fields and call_fields[n] != v}
@@ -447,19 +520,18 @@ def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: 
 
 @REGISTRY.tool(
     "create_tests_from_feature",
-    "Import a .feature file the Xray way: each Scenario/Outline becomes a Cucumber test. "
-    "Backgrounds become Pre-Conditions (or inline steps); the Feature can become a Test Set. "
-    "Tags go through the project's tag rules (settings or remembered)"
-    " into labels, Test Sets and fields; @TEST_<KEY> or @<KEY> updates that test, @REQ_<KEY> "
-    "links a requirement. A key:value tag no rule covers is asked about per key (tagRule.<key>"
-    ", answered in tagRuleAnswers, remembered as a rule). Choices (createTestSet, backgrounds,"
-    " tagsAsLabels, aiLabel, aiLabelScope) come from the call, settings or remembered answers."
-    " If the preview has non-empty `questions`, ask the user once and call again with the "
-    "answers. apply=false (default) previews; apply=true executes, skipping possible "
-    "duplicates unless indexed in createDuplicates. Anything not doable is in notDone {item, "
-    "what, reason, fix}: if the reason says Jira access is missing and Atlassian MCP tools "
-    "are available, offer to complete them with those. fields/rawFields "
-    "apply to created tests.",
+    "Import a .feature file: Scenario -> Cucumber test, Background -> Pre-Condition (or "
+    "inline), Feature -> Test Set. Tags go through the project's tag rules into labels, Test "
+    "Sets and fields. Issue-key tags are looked up in Xray: @<KEY> of a test in this project "
+    "maps the scenario to it, of a requirement links it, others are asked (keyTag.<KEY>); "
+    "@REQ_<KEY> links. Unanswered choices (createTestSet, backgrounds, tagsAsLabels, aiLabel, "
+    "aiLabelScope, tagRule.<key> in tagRuleAnswers, keyTag.<KEY> in keyTagAnswers, "
+    "existingTests for tests it would change) are in a non-empty `questions`: ask the user "
+    "once, call again with the answers. apply=false (default) previews; apply=true executes, "
+    "skipping scenarios whose summary an existing test has unless indexed in "
+    "createDuplicates (`similar` ones are only listed). Anything not doable is in notDone "
+    "{item, what, reason, fix}: if Jira access is missing and Atlassian MCP tools are "
+    "available, offer to complete them with those. fields/rawFields apply to created tests.",
     _schema({"featureFilePath": {"type": "string", "description":
                                  "Local .feature file. " + PATH_NOTE},
              "apply": {"type": "boolean"},
@@ -475,6 +547,8 @@ def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: 
                           "remembered yet. Default false: a differing answer applies to this "
                           "call only; true makes it replace the remembered one."},
              "tagRuleAnswers": tagquestions.PARAM_SCHEMA,
+             **existingtests.PARAM_SCHEMAS,
+             keytags.PARAM: keytags.PARAM_SCHEMA,
              "createDuplicates": {"type": "array", "items": {"type": "integer", "minimum": 0}},
              "fields": _OBJ, "rawFields": _OBJ,
              "preconditionFields": {"type": "object", "description":
@@ -512,6 +586,8 @@ def create_tests_from_feature(ctx, args):
         ai_scope=values["aiLabelScope"] or "tests", project=project)
     # key:value tags no rule covers: answered rules are added (remembered on apply)
     tag_answers = tagquestions.parse_answers(args.get(tagquestions.PARAM))
+    exist_answers = existingtests.parse(args)
+    opts.key_answers = keytags.parse(args.get(keytags.PARAM))
     names = set(project.fields.get("test") or {})
     new_rules: List[dict] = []
 
@@ -519,24 +595,57 @@ def create_tests_from_feature(ctx, args):
         opts.rules = rules + parse_rules(new_rules, names, tagquestions.PARAM)
         return analyze_tags(feature, pk, opts)
 
+    # what issue-key tags name: read before anything else is decided (nothing is written)
+    opts.key_info = lookup_key_tags(ctx, feature)
     analysis = analyze_tags(feature, pk, opts)
     new_rules = tagquestions.pending(tag_answers, analysis.uncovered, project)
     if new_rules:
         analysis = analyze()
     applicable = _applicable(feature, analysis, values)
     unanswered = [n for n in QUESTION_IDS if applicable[n] and values[n] is None]
-    if apply and unanswered:
+    def make_plan():
+        """(plan, changes to existing tests). Planned this early (it only reads) only when a
+        scenario maps to an existing test, so that question joins the tag ones; otherwise
+        after the field checks, which refuse before any call."""
+        if not any(st.test_key for st in analysis.scenarios):
+            return None, []
+        if not applicable["aiLabel"]:
+            opts.ai_label = ""
+        p = plan_import(ctx, pk, feature, rel, opts, analysis)
+        return p, existing_test_changes(p, analysis, ctx.jira is not None)
+
+    plan, changes = make_plan()
+    ask_changes = existingtests.unanswered(changes, exist_answers)
+    if apply and unanswered:  # every open question in one round; nothing was written
         contexts = _contexts(feature, analysis, rel, None, set())
         raise ToolError("Answer these first: %s (ask the user, then call again with the "
                         "answers; nothing was written)"
-                        % ", ".join(unanswered + ["tagRule.%s" % k for k in analysis.uncovered]),
+                        % ", ".join(unanswered + ["tagRule.%s" % k for k in analysis.uncovered]
+                                    + ["keyTag.%s" % k for k in analysis.key_questions]
+                                    + ([existingtests.QUESTION_ID] if ask_changes else [])),
                         questions=[choices.question(n, contexts[n]) for n in unanswered]
-                        + tagquestions.questions(analysis.uncovered, project))
-    if apply and analysis.uncovered:  # elicitation form, else needs_answer
-        asked = tagquestions.ask(ctx, analysis.uncovered, project)
-        new_rules = new_rules + tagquestions.pending(asked, analysis.uncovered, project)
-        analysis = analyze()
-        applicable = _applicable(feature, analysis, values)
+                        + tagquestions.questions(analysis.uncovered, project)
+                        + keytags.questions(analysis.key_questions)
+                        + ([existingtests.question(ask_changes)] if ask_changes else []))
+    if apply and (analysis.uncovered or analysis.key_questions or ask_changes):
+        # one elicitation form, else needs_answer
+        asked, ex, key_ans = tagquestions.ask(ctx, analysis.uncovered, project, ask_changes,
+                                              analysis.key_questions)
+        if ex is not None:
+            exist_answers = {"all": exist_answers["all"] or ex["all"],
+                             "keys": dict(ex["keys"], **exist_answers["keys"])}
+        if analysis.uncovered or key_ans:
+            new_rules = new_rules + tagquestions.pending(asked, analysis.uncovered, project)
+            opts.key_answers = dict(opts.key_answers, **key_ans)
+            analysis = analyze()
+            applicable = _applicable(feature, analysis, values)
+            plan, changes = make_plan()
+        left = existingtests.unanswered(changes, exist_answers)
+        if left:
+            raise NeedsAnswer("Ask the user whether to update, keep or skip these existing "
+                              "tests, then call again with existingTests; never answer it "
+                              "yourself. Nothing was written.",
+                              [existingtests.question(left)], projectKey=pk)
     if not applicable["aiLabel"]:
         opts.ai_label = ""
 
@@ -567,10 +676,13 @@ def create_tests_from_feature(ctx, args):
     if bad:
         raise ToolError("createDuplicates index out of range: %s (the feature has %d scenarios)"
                         % (bad, len(feature.scenarios)))
-    plan = plan_import(ctx, pk, feature, rel, opts, analysis)
+    if plan is None:
+        plan = plan_import(ctx, pk, feature, rel, opts, analysis)
+    _apply_existing_answers(plan, changes, exist_answers)
     skipped = _skipped(plan, create_dups)
     skip = {s["index"] for s in skipped}
-    not_done = [nd for a in plan if a.index not in skip for nd in a.not_done]
+    not_done = list(analysis.notes) + [nd for a in plan if a.index not in skip
+                                       for nd in a.not_done]
     if not apply:
         contexts = _contexts(feature, analysis, rel, plan, skip)
         shown = {n: {"value": v, "source": src} for n, (v, src) in resolved.items()}
@@ -582,22 +694,29 @@ def create_tests_from_feature(ctx, args):
                                "questions": [choices.question(n, contexts[n])
                                              for n in unanswered]
                                + tagquestions.questions(analysis.uncovered, project)
+                               + keytags.questions(analysis.key_questions)
+                               + ([existingtests.question(ask_changes)] if ask_changes else [])
                                + field_questions,
                                "choices": shown,
                                "actions": [a.to_dict() for a in plan],
                                "perTest": _per_test(plan), "testSets": _preview_sets(plan),
                                "tagSummary": summarize_tags(
                                    [feature], opts.rules,
-                                   existing_set_names(ctx, pk, tag_values([feature]))),
+                                   existing_set_names(ctx, pk, tag_values([feature])),
+                                   analysis.key_tags),
                                "notDone": not_done}
         if analysis.warnings:
             out["warnings"] = list(analysis.warnings)
-        if unanswered or analysis.uncovered:
+        if changes:
+            out["existingTests"] = changes
+        if unanswered or analysis.uncovered or analysis.key_questions or ask_changes:
             out["hint"] = ("answer the questions (ask the user once), then call again with the "
-                           "answers (tagRule.<key> ones in tagRuleAnswers); until then the "
+                           "answers (tagRule.<key> ones in tagRuleAnswers, keyTag.<KEY> ones "
+                           "in keyTagAnswers, existingTests in existingTests / "
+                           "existingTestOverrides); until then the "
                            "actions assume createTestSet=true, backgrounds=preconditions, "
                            "tagsAsLabels=true, no AI label and nothing from unanswered "
-                           "key:value tags")
+                           "key:value or issue-key tags")
         elif field_questions:
             out["hint"] = ("required fields have no value: ask the user, then call again with "
                            "each answer in the question's `param` ({field id: value})")
@@ -615,8 +734,12 @@ def create_tests_from_feature(ctx, args):
     choices.add_tag_rules(ctx, pk, new_rules)
     run = _Run(ctx, pk, plan, skip, test_extras, pre_extra, set_extra)
     result = run.run()
+    kept = {a.index: a.key for a in plan if a.kind == "keep_test"}
+    mapped = {**run.test_keys, **kept}
     out = {"feature": feature.name, "path": rel, "created": run.created, "updated": run.updated,
-           "tests": [{"index": i, "key": run.test_keys[i]} for i in sorted(run.test_keys)]}
+           "tests": [{"index": i, "key": mapped[i]} for i in sorted(mapped)]}
+    if kept:
+        out["unchanged"] = [kept[i] for i in sorted(kept)]
     out.update(result)
     out["testSetsCreated"] = run.sets_created
     out["testSetMemberships"] = run.memberships
@@ -624,7 +747,7 @@ def create_tests_from_feature(ctx, args):
         out["fieldsApplied"] = run.fields_applied
     for item_type, applied in applied_defaults.items():
         requiredfields.add_applied(out, item_type, applied)
-    out["notDone"] = not_done
+    out["notDone"] = not_done + run.not_done
     if skipped:
         out["skippedDuplicates"] = skipped
         out["hint"] = "pass the skipped indexes in createDuplicates to create them anyway"

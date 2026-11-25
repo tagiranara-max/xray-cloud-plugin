@@ -9,7 +9,7 @@ from ..errors import ToolError
 from .. import requiredfields
 from ..registry import REGISTRY
 from .tests import (_AI_LABEL_PARAMS, _LIMIT, _OBJ, MAX_LIMIT, TEST_TYPES, _schema,
-                    build_search_jql, check_ai_label, create_test, find_duplicates,
+                    build_search_jql, check_ai_label, check_duplicates, create_test,
                     remember_ai_label, resolve_ai_label, RESOLVED_AI_LABEL)
 
 PAGE = 100
@@ -166,13 +166,17 @@ def _add(ctx: ServerContext, kind: Kind, issue_id: str, test_ids: List[str],
 def _create_new_tests(ctx: ServerContext, pk: str, new_tests: List[dict],
                       create_dups: List[int], created: List[str],
                       ai_args: Optional[Dict[str, Any]] = None):
-    """Create newTests (skipping duplicates unless their index is in create_dups).
-    Appends created keys to `created`; returns ({issueId: key}, skipped)."""
+    """Create newTests (skipping duplicates, tests with the same summary, unless their index is
+    in create_dups). Appends created keys to `created`; returns ({issueId: key}, skipped,
+    similar), similar listing tests with merely similar summaries (informational)."""
     ids: Dict[str, str] = {}
     skipped: List[dict] = []
+    similar: List[dict] = []
     for i, nt in enumerate(new_tests):
         if i not in create_dups:
-            dups = find_duplicates(ctx, pk, nt["summary"])
+            dups, near = check_duplicates(ctx, pk, nt["summary"])
+            if near:
+                similar.append({"index": i, "summary": nt["summary"], "similar": near})
             if dups:
                 skipped.append({"index": i, "summary": nt["summary"], "candidates": dups})
                 continue
@@ -182,7 +186,7 @@ def _create_new_tests(ctx: ServerContext, pk: str, new_tests: List[dict],
         res = create_test(ctx, a)
         created.append(res["key"])
         ids.update({i: k for k, i in resolve_test_id_map(ctx, pk, [res["key"]]).items()})
-    return ids, skipped
+    return ids, skipped, similar
 
 
 _NEW_TESTS = {"type": "array", "items": {"type": "object", "properties": {
@@ -221,7 +225,8 @@ def register(kind: Kind, with_sets: bool) -> None:
     @REGISTRY.tool(
         "create_" + snake,
         "Create a %s, optionally adding existing tests (testKeys%s) and creating new ones "
-        "(newTests). New tests whose summary matches an existing test are skipped and reported "
+        "(newTests). New tests whose summary an existing test already has (ignoring case and "
+        "spacing) are skipped and reported (similar ones only listed, in similarTests) "
         "unless their 0-based index is listed in createDuplicates. If newTests are given and the "
         "result has status needs_answer (with `questions`; it asks for the AI label), ask the "
         "user once and call again with the answer; it is remembered for the project. Required "
@@ -284,7 +289,7 @@ def register(kind: Kind, with_sets: bool) -> None:
         warnings = list((data.get("create" + cap) or {}).get("warnings") or [])
         created = [key]
         try:
-            new_ids, skipped = _create_new_tests(ctx, pk, new_tests, create_dups, created,
+            new_ids, skipped, similar = _create_new_tests(ctx, pk, new_tests, create_dups, created,
                                                   ai_args)
             keys_by_id = {i: k for k, i in direct_map.items()}
             keys_by_id.update({m["issueId"]: m["key"] for m in via_sets})
@@ -313,6 +318,8 @@ def register(kind: Kind, with_sets: bool) -> None:
         if len(created) > 1:
             out["createdTests"] = created[1:]
             requiredfields.add_applied(out, "test", test_applied)
+        if similar:
+            out["similarTests"] = similar
         if skipped:
             out["skippedDuplicates"] = skipped
             out["hint"] = "pass the skipped indexes in createDuplicates to create them anyway"

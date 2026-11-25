@@ -79,6 +79,26 @@ def test_create_set_new_tests_skip_duplicates_and_create_listed():
     assert res["createdTests"] == ["P-77"] and "skippedDuplicates" not in res
 
 
+def test_create_set_new_tests_with_similar_summaries_are_created_and_listed():
+    def search(v):
+        if "summary ~" in v["jql"]:
+            return {"getTests": {"total": 1, "results": [
+                {"issueId": "5", "jira": {"key": "P-5", "summary": "Devices I signed in from"}}]}}
+        return {"getTests": {"total": 0, "results": []}}
+    ctx = make_context(YAML, responses={
+        "CreateTestSet": {"createTestSet": {"testSet": {"issueId": "900", "jira": {"key": "P-10"}}}},
+        "SearchTests": search,
+        "CreateTest": lambda v: {"createTest": {"test": {"issueId": "77", "jira": {
+            "key": "P-77", "summary": v["jira"]["fields"]["summary"]}}}},
+        "GetTestIssueIds": {"getTests": {"results": [{"issueId": "77", "jira": {"key": "P-77"}}]}},
+        "AddTestsToTestSet": {"addTestsToTestSet": {"addedTests": ["77"], "warning": None}}})
+    res, err = call(ctx, "create_test_set", projectKey="P", summary="S", aiLabel="",
+                    newTests=[{"summary": "Sign in"}])
+    assert not err and res["createdTests"] == ["P-77"] and "skippedDuplicates" not in res
+    assert res["similarTests"] == [{"index": 0, "summary": "Sign in", "similar": [
+        {"key": "P-5", "summary": "Devices I signed in from"}]}]
+
+
 def test_create_set_new_tests_missing_required_test_field_refused_before_any_write():
     yaml = YAML + "      test:\n        Area: {id: customfield_7, type: option, required: true}\n"
     ctx = make_context(yaml)

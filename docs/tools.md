@@ -8,7 +8,7 @@ The tools the server exposes, and how result import, analysis and feature import
 |---|---|
 | `search_tests` | Search tests in a project by summary text or issue key (query) and/or a JQL filter (jql) |
 | `get_test` | Get one test by key |
-| `create_test` | Create a test (Manual, Cucumber or Generic) in a project |
+| `create_test` | Create a test (Manual, Cucumber or Generic) in a project; a test with the same summary (trimmed, whitespace collapsed, any case) blocks it unless `allowDuplicates`, similar summaries are only listed |
 | `update_test_type` | Change a test's type (Manual, Cucumber or Generic) |
 | `edit_test` | Edit a test (Gherkin through Xray; Jira fields need the Jira token) |
 | `delete_test` | Delete a test |
@@ -122,11 +122,13 @@ Read-only tools for questions about test history and impact:
 | Scenario / Example | Cucumber test (Scenario) whose definition is its steps |
 | Scenario Outline / Template | Cucumber test (Scenario Outline) with its steps and all Examples blocks |
 | Plain tags | Labels |
-| `@TEST_<KEY>` or `@<KEY>` on a scenario | Updates that existing test |
-| `@REQ_<KEY>` (or a plain key on the Feature/Rule) | Links new tests to that requirement |
+| `@<KEY>` on a scenario | Looked up in Xray first, read-only, before anything is written (the Jira token is not needed). A test of the import's project: the scenario maps to that test (a non-Cucumber test leaves the scenario out, with a `notDone` entry). A test of another project: the scenario becomes a new test, with a `notDone` note. A requirement Xray knows: a requirement link. Anything else (Xray cannot tell an issue that is not a test or requirement from a key of no issue, such as `@ISO-8601`): asked, see `keyTag.<KEY>` below |
+| `@<KEY>` on the Feature/Rule | Looked up the same way: a requirement Xray knows is a link for every test below it; a test is an ordinary tag; anything else is asked |
+| `@TEST_<KEY>` on a scenario | Maps the scenario to that test when it is a test of the import's project; otherwise the scenario is left out, with the reason in `notDone` |
+| `@REQ_<KEY>` | Links new tests to that issue. Links on existing tests need the Jira token, else they are in `notDone`. If Jira refuses a link Xray could not confirm (the issue may not exist), the test is still created without it and the link is listed in `notDone` |
 | DocStrings and DataTables | Preserved exactly, with correct escaping |
 
-By default (`apply=false`) the tool only previews what would be created, updated and linked, with possible duplicates flagged. Call it again with `apply=true` to execute; scenarios with possible duplicates are skipped unless their index is listed in `createDuplicates`. A file that fails to parse creates nothing and reports the line and column.
+By default (`apply=false`) the tool only previews what would be created, updated and linked, with possible duplicates flagged. A possible duplicate is an existing test in the project with the same summary (compared trimmed, with whitespace runs collapsed, ignoring case); tests whose summaries are only similar are listed as `similar` and never cause a skip. Call it again with `apply=true` to execute; scenarios with possible duplicates are skipped unless their index is listed in `createDuplicates`. A file that fails to parse creates nothing and reports the line and column. A tag never refuses the file: an unusable one (an invalid key, `@TEST_` on a Feature or Rule, `@PRECOND_` outside a Background comment, several test keys on one scenario, one test named by two scenarios) is ignored or leaves only its scenario out, with a `notDone` entry. If a lookup itself fails (an Xray error other than "no such issue"), the import stops before anything is written. `tagSummary.keyTags` in the preview shows what each issue-key tag turned out to be (`test`, `otherTest`, `requirement`, `plain`, `notImported`, `missingRequirement`), with a note.
 
 ### Choices and preferences
 
@@ -136,6 +138,8 @@ A few import choices are yours to make, and the plugin asks about them instead o
 - `backgrounds`: Backgrounds as Pre-Conditions (`preconditions`) or copied into each test (`inline`)?
 - `tagsAsLabels`: turn plain tags (such as `@smoke`) into labels?
 - `tagRule.<key>`: what a `key:value` or `key=value` tag means when no tag rule covers its key (see "Tag rules").
+- `keyTag.<KEY>`: asked for an issue-key tag Xray knows neither as a test nor as a requirement (for example `@ISO-8601`, a bug's key, or a key of no issue). The question says where the tag sits (feature, rule or scenario, with names). Answers: `link` (link the tests to that issue as a related/requirement issue; if Jira refuses the link, the test is created without it and the link is in `notDone`), `label` (keep the tag as a label, through `tagsAsLabels` and the tag rules) or `ignore`. Pass `keyTagAnswers: {"PROJ-12": "link" | "label" | "ignore"}`. Asked in the same round as the other questions and never remembered.
+- `existingTests`: asked when a scenario maps to an existing test of the project (`@<KEY>` or `@TEST_<KEY>`) and the import would change it. The question lists each such test with what would change (steps, labels added, fields, requirement links, Test Sets joined, Pre-Conditions, tags still awaiting a tag-rule answer); the preview has the same list in `existingTests`. Answers: `update` (change the test from the file), `keep` (the scenario only maps to the test; nothing is written to it, and it is not added to Test Sets or Pre-Conditions) or `skip` (leave those scenarios out). `existingTestOverrides: {"PROJ-12": "skip"}` answers single tests. It is asked in the same round as the `tagRule.<key>` questions, is never remembered, and is not asked for a test the import would not change (that test is only mapped).
 - `aiLabel` and `aiLabelScope`: mark what the AI creates (see "AI label" below).
 
 Each is asked once per project. When a tool answers `status: needs_answer` (or an import preview returns `questions`), Claude asks you and calls again with your answer, and the plugin remembers it for that project. Nothing is written to Xray until every applicable question is answered.

@@ -5,7 +5,7 @@ turned into anything silently: the import asks, once per key, what the key means
 becomes a tag rule remembered for the project, so later tags with the same key follow it."""
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from .config import ProjectSettings
 from .errors import NeedsAnswer, ToolError
@@ -163,21 +163,46 @@ def _form(uncovered: Dict[str, List[str]]) -> dict:
             "required": ["tagRule.%s" % k for k in uncovered]}
 
 
-def ask(ctx: Any, uncovered: Dict[str, List[str]],
-        project: ProjectSettings) -> Dict[str, Dict[str, str]]:
-    """Ask the user about every uncovered key at once: one elicitation form when the client
-    supports it (answers returned, validated), else NeedsAnswer. Declined or incomplete:
-    ToolError; nothing is written or remembered."""
+def ask(ctx: Any, uncovered: Dict[str, List[str]], project: ProjectSettings,
+        changes: Optional[List[Dict[str, Any]]] = None,
+        key_tags: Optional[Dict[str, List[Dict[str, str]]]] = None
+        ) -> Tuple[Dict[str, Dict[str, str]], Optional[Dict[str, Any]], Dict[str, str]]:
+    """Ask the user about every uncovered key, issue-key tags Xray cannot place (key_tags)
+    and existing tests the import would change (changes), at once: one elicitation form when
+    the client supports it (answers returned, validated: (tag answers, existing-test answers
+    or None, key-tag answers)), else NeedsAnswer. Declined or incomplete: ToolError; nothing
+    is written or remembered."""
+    from . import existingtests, keytags
+    changes = changes or []
+    key_tags = key_tags or {}
     keys = ", ".join("@%s" % t[0] for t in uncovered.values() if t)
+    parts = []
+    if uncovered:
+        parts.append("The feature file has key:value tags no tag rule covers (%s)." % keys)
+    if key_tags:
+        parts.append("Tags look like issue keys Xray cannot place (%s)."
+                     % ", ".join("@" + k for k in key_tags))
+    if changes:
+        parts.append("Scenarios name existing tests the import would change (%s)."
+                     % ", ".join(c["key"] for c in changes))
     channel = getattr(ctx, "channel", None)
     if channel is not None and channel.supports_elicitation:
+        schema = _form(uncovered)
+        schema["properties"].update(keytags.form(key_tags))
+        schema["required"] = schema["required"] + ["keyTag.%s" % k for k in key_tags]
+        if changes:
+            schema["properties"].update(existingtests.form(changes))
         content = channel.elicit(
-            "The feature file has key:value tags no tag rule covers (%s). Choose what each "
-            "key means; the answers are remembered as tag rules of project %s."
-            % (keys, project.key), _form(uncovered))
+            " ".join(parts) + (" Choose what each key means; the answers are remembered as "
+                               "tag rules of project %s." % project.key if uncovered else "")
+            + (" Choose whether to link each key, keep it as a label or ignore it (not "
+               "remembered)." if key_tags else "")
+            + (" Choose whether to update those tests, keep them unchanged or skip their "
+               "scenarios (not remembered)." if changes else ""), schema)
         if not isinstance(content, dict):
-            raise ToolError("The tag questions were not answered; nothing was written and "
-                            "nothing was remembered.", projectKey=project.key,
+            raise ToolError("The %s questions were not answered; nothing was written and "
+                            "nothing was remembered."
+                            % ("tag" if not (changes or key_tags) else "import"), projectKey=project.key,
                             tagKeys=list(uncovered))
         raw: Dict[str, Dict[str, Any]] = {}
         for key in uncovered:
@@ -197,12 +222,24 @@ def ask(ctx: Any, uncovered: Dict[str, List[str]],
                                 % _example(uncovered[key]), projectKey=project.key,
                                 tagKeys=[key])
             raw[key] = ans
-        return parse_answers(raw)
+        return (parse_answers(raw),
+                (existingtests.from_form(content, changes) if changes else None),
+                keytags.from_form(content, key_tags))
+    asks = []
+    if uncovered:
+        asks.append("what each tag key means (%s set to {key: {action, testSet?, field?}})"
+                    % PARAM)
+    if key_tags:
+        asks.append("whether to link, label or ignore each issue-key tag (%s)" % keytags.PARAM)
+    if changes:
+        asks.append("whether to update, keep or skip the existing tests (%s, optionally %s)"
+                    % (existingtests.PARAM, existingtests.OVERRIDES))
     raise NeedsAnswer(
-        "The feature file has key:value tags no tag rule covers (%s). Ask the user what each "
-        "key means, then call again with %s set to {key: {action, testSet?, field?}}; never "
-        "answer it yourself. Nothing was written." % (keys, PARAM),
-        questions(uncovered, project), projectKey=project.key)
+        "%s Ask the user %s, then call again with the answers; never answer them yourself. "
+        "Nothing was written." % (" ".join(parts), " and ".join(asks)),
+        questions(uncovered, project) + keytags.questions(key_tags)
+        + ([existingtests.question(changes)] if changes else []),
+        projectKey=project.key)
 
 
 def pending(answers: Dict[str, Dict[str, str]], uncovered: Dict[str, List[str]],
