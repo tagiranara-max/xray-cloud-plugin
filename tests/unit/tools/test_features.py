@@ -234,7 +234,7 @@ def test_missing_required_field_refuses_whole_file_before_calls(project):
     assert not err and res["status"] == "needs_answer"
     assert res["missingFields"] == [{"name": "Team", "id": "customfield_2"}]
     assert res["questions"][0]["param"] == "preconditionFields"
-    assert ctx.xray.calls == []
+    assert writes(ctx) == []  # only reads (the duplicate search) before the question
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", apply=True,
                     featureFilePath="features/login flow.feature", preconditionFields={"Team": "A"},
                     **ans())
@@ -595,7 +595,7 @@ def test_first_import_asks_apply_refuses_with_zero_calls_then_remembered(project
                     apply=True)
     assert err and res["error"].startswith("Answer these first")
     assert qids(res) == ["createTestSet", "backgrounds", "aiLabel", "aiLabelScope"]
-    assert ctx.xray.calls == []
+    assert writes(ctx) == []  # planned (reads only) so every question is in this round
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=LOGIN,
                     apply=True, createTestSet=True, backgrounds="preconditions",
                     aiLabel="ai-made", aiLabelScope="tests")
@@ -724,7 +724,7 @@ def test_required_test_set_field_for_tag_sets_validated_before_any_call(tmp_path
                     apply=True, **ans(createTestSet=False))
     assert not err and res["status"] == "needs_answer"
     assert res["missingFields"] == [{"name": "Area", "id": "customfield_3"}]
-    assert ctx.xray.calls == []
+    assert writes(ctx) == []
 
 
 def test_ambiguous_tag_set_refused_and_feature_set_merged_with_tag_set(tmp_path):
@@ -899,16 +899,22 @@ projects:
     assert err and "Component" in res["error"] and ctx.xray.calls == []
 
 
-def test_tag_problems_and_call_field_conflicts_refuse_before_calls(tmp_path):
+def test_tag_problems_refuse_before_calls_and_the_calls_field_beats_a_rule(tmp_path):
     ctx = ctx_for(tmp_path, yaml=RULES_YAML)
     path = feature_file(tmp_path, "@comp=a\nFeature: F\n  @comp=b\n  Scenario: A\n    Given a\n")
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
                     apply=True, **ans())
     assert err and "conflicting" in res["error"] and ctx.xray.calls == []
+    # a value the call passes for the rule's field wins; never a conflict refusal
     path = feature_file(tmp_path, "Feature: F\n  @comp=b\n  Scenario: A\n    Given a\n", "b.feature")
-    res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
-                    apply=True, fields={"Component": "c"}, **ans())
-    assert err and "Component" in res["error"] and ctx.xray.calls == []
+    for given in ({"fields": {"Component": "c"}},
+                  {"rawFields": {"customfield_9": {"value": "c"}}}):
+        ctx = ctx_for(tmp_path, yaml=RULES_YAML)
+        res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
+                        apply=True, **ans(createTestSet=False), **given)
+        assert not err, res
+        sent = ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]
+        assert sent["customfield_9"] == {"value": "c"}
 
 
 def test_preview_includes_tag_summary_and_stays_read_only(tmp_path):
@@ -1259,8 +1265,6 @@ def test_both_separators_share_one_question_per_key(tmp_path):
     ({"action": "field", "field": "customfield_9"}, None, [],
      ("customfield_9", {"value": "regression"}),
      {"tag": "suite", "field": {"Component": "{value}"}}),
-    ({"action": "field", "field": "customfield_44"}, None, [], ("customfield_44", "regression"),
-     {"tag": "suite", "field": {"customfield_44": "{value}"}}),
     ({"action": "skip"}, None, [], None, {"tag": "suite", "skip": True}),
 ])
 def test_each_answer_gives_its_rule_outcome_and_is_remembered(tmp_path, form, answer, labels,
@@ -1336,7 +1340,7 @@ def test_plain_tags_still_go_through_tags_as_labels(tmp_path):
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
                     apply=True, createTestSet=False, aiLabel="")
     assert err and qids(res) == ["tagsAsLabels", "tagRule.suite"]
-    assert "tagRule.suite" in res["error"] and ctx.xray.calls == []
+    assert "tagRule.suite" in res["error"] and writes(ctx) == []
     res, err = _apply(ctx, path, tagsAsLabels=False,
                       tagRuleAnswers={"suite": {"action": "label_as_is"}})
     assert not err, res
@@ -1555,10 +1559,15 @@ def test_edge_case_file_previews_without_refusal(tmp_path):
     assert iso_q["context"]["where"] == [
         {"level": "scenario", "name": "Code expiry time is shown in ISO format"}]
     assert res["tagSummary"]["keyTags"] == [{"tag": "ISO-8601", "meaning": "asked", "note": (
-        "Xray knows no test or requirement ISO-8601 (it may be another kind of issue, or no "
-        "issue at all); question keyTag.ISO-8601")}]
+        "Xray doesn't know ISO-8601 as a test or a requirement (it may be another kind of "
+        "issue, or not an issue key at all); question keyTag.ISO-8601")}]
+    assert "doesn't know ISO-8601 as a test or a requirement" in iso_q["question"]
+    assert "exist" not in iso_q["question"]
     tests = [a for a in res["actions"] if a["kind"] == "create_test"]
-    assert [a["summary"] for a in tests].count("Sign in") == 2
+    # the same scenario name under two Rules: told apart by the Rule name
+    assert [a["summary"] for a in tests][-3:] == [
+        "Two-factor sign-in: Sign in", "Code expiry time is shown in ISO format",
+        "Passwordless sign-in: Sign in"]
     assert len(tests) == 8 and res["notDone"] == []
     assert "possibleDuplicates" not in res
     assert writes(ctx) == []
@@ -1596,11 +1605,14 @@ def test_preview_lists_what_would_change_on_each_existing_test(tmp_path):
     assert res["existingTests"] == [
         {"key": "P-5", "scenarioIndex": 0, "scenario": "A", "stepsChanged": False,
          "labelsAdded": ["new"], "links": ["R-1"], "testSets": ["F"]},
-        {"key": "P-6", "scenarioIndex": 1, "scenario": "B", "stepsChanged": True}]
+        {"key": "P-6", "scenarioIndex": 1, "scenario": "B", "stepsChanged": True,
+         "stepsDiff": {"added": 1, "removed": 1, "lines": ["- Given old", "+ Given b"]}}]
     q = res["questions"][0]
     assert q["choices"] == ["update", "keep", "skip"] and "default" not in q
-    assert "P-5 (A): steps unchanged; labels +new; requirement links +R-1; joins Test Set(s) F" \
-        in q["question"]
+    assert ("P-5 (A): named by a key tag; steps unchanged; labels +new; requirement links "
+            "+R-1; joins Test Set(s) F") in q["question"]
+    assert "P-6 (B): named by a key tag; steps changed (+1/-1 line(s))" in q["question"]
+    assert "create" not in q["choices"]
     assert writes(ctx) == []
 
 
@@ -1769,3 +1781,431 @@ def test_transient_link_failure_on_an_existing_test_is_not_taken_as_a_refusal(tm
     res, err = _apply(ctx, path, existingTests="update")
     assert err and "stopped while updating test P-5" in res["error"]  # partial failure
     assert res["updated"] == ["P-5"] and "503" in json.dumps(res)
+
+
+# -- round 3: tag-rule values, system fields, repeated names, summaries, name matches --------
+
+class TeamMetaJira(RecJira):
+    """Create metadata: a select list, a multi-select and an Atlassian Team field."""
+
+    def create_meta(self, pk, issue_type):
+        return [{"id": "customfield_44", "name": "Severity", "schemaType": "option",
+                 "allowedValues": ["High", "Low"]},
+                {"id": "customfield_45", "name": "Areas", "schemaType": "array",
+                 "schemaItems": "option", "allowedValues": ["Checkout", "Search"]},
+                {"id": "customfield_50", "name": "Team", "schemaType": "team"},
+                {"id": "priority", "name": "Priority", "schemaType": "priority",
+                 "allowedValues": ["Highest", "High", "Low"]}]
+
+
+def _team_rules(ctx, *rules):
+    ctx.preferences.update("global", "P", {"tagRules": list(rules)})
+
+
+def test_option_values_are_matched_by_name_with_create_metadata(tmp_path):
+    ctx = ctx_for(tmp_path)
+    ctx.jira = TeamMetaJira()
+    _team_rules(ctx, {"tag": "sev", "field": {"customfield_44": "{value}"}},
+                {"tag": "areas", "field": {"customfield_45": "{value}"}},
+                {"tag": "prio", "field": {"priority": "{value}"}})
+    path = feature_file(tmp_path, "Feature: F\n  @sev=high @areas=checkout @prio=HIGH\n"
+                                  "  Scenario: A\n    Given a\n")
+    assert qids(preview(ctx, path, **ans(createTestSet=False))) == []
+    res, err = _apply(ctx, path)
+    assert not err, res
+    sent = ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]
+    assert sent["customfield_44"] == {"value": "High"}
+    assert sent["customfield_45"] == [{"value": "Checkout"}]
+    assert sent["priority"] == {"name": "High"}
+
+
+def test_team_value_is_asked_once_remembered_and_asked_again_for_a_new_value(
+        tmp_path):
+    ctx = ctx_for(tmp_path)
+    ctx.jira = TeamMetaJira()
+    ctx.channel = NoFormChannel()
+    _team_rules(ctx, {"tag": "team", "field": {"customfield_50": "{value}"}})
+    path = feature_file(tmp_path, "Feature: F\n  @team=checkout\n  Scenario: A\n    Given a\n"
+                                  "  @team=checkout\n  Scenario: B\n    Given b\n")
+    res = preview(ctx, path, **ans(createTestSet=False))
+    assert qids(res) == ["tagValue.customfield_50.checkout"]
+    q = res["questions"][0]
+    assert q["param"] == "tagValueAnswers" and "choices" not in q and "default" not in q
+    assert "What is `checkout` for customfield_50?" in q["question"]
+    assert len(q["context"]["scenarios"]) == 2
+    res, err = _apply(ctx, path)
+    assert not err and res["status"] == "needs_answer" and writes(ctx) == []
+    assert [x["id"] for x in res["questions"]] == ["tagValue.customfield_50.checkout"]
+    res, err = _apply(ctx, path, tagValueAnswers={"customfield_50": {"checkout": "team-7"}})
+    assert not err, res
+    assert [c["jira"]["fields"]["customfield_50"] for c in ctx.xray.calls_of("CreateTest")] \
+        == ["team-7", "team-7"]
+    prefs = ctx.preferences.get("global", "P")
+    assert prefs["tagRules"] == [{"tag": "team", "field": {"customfield_50": "{value}"}}]
+    assert prefs["tagValues"] == {"customfield_50": {"checkout": "team-7"}}
+    # the same value later: not asked; a new value: asked
+    path = feature_file(tmp_path, "Feature: F\n  @team=Checkout\n  Scenario: C\n    Given c\n"
+                                  "  @team=search\n  Scenario: D\n    Given d\n", "b.feature")
+    assert qids(preview(ctx, path, **ans(createTestSet=False))) == [
+        "tagValue.customfield_50.search"]
+
+
+def test_custom_field_without_the_jira_token_is_asked_not_sent_as_text(tmp_path):
+    ctx = ctx_for(tmp_path)
+    path = feature_file(tmp_path, KV)
+    res = preview(ctx, path, tagRuleAnswers={"suite": {"action": "field",
+                                                       "field": "customfield_44"}},
+                  **ans(createTestSet=False))
+    assert qids(res) == ["tagValue.customfield_44.regression"]
+    assert "unknown without the Jira API token" in res["questions"][0]["context"]["reason"]
+    res, err = _apply(ctx, path, tagRuleAnswers={"suite": {"action": "field",
+                                                           "field": "customfield_44"}},
+                      tagValueAnswers={"customfield_44": {"regression": '{"value": "Reg"}'}})
+    assert not err, res
+    assert ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]["customfield_44"] == {
+        "value": "Reg"}
+    prefs = ctx.preferences.get("global", "P")
+    assert prefs["tagRules"] == [{"tag": "suite", "field": {"customfield_44": "{value}"}}]
+    assert prefs["tagValues"] == {"customfield_44": {"regression": {"value": "Reg"}}}
+
+
+def test_option_without_a_matching_name_is_asked(tmp_path):
+    ctx = ctx_for(tmp_path)
+    ctx.jira = TeamMetaJira()
+    _team_rules(ctx, {"tag": "sev", "field": {"customfield_44": "{value}"}})
+    path = feature_file(tmp_path, "Feature: F\n  @sev=urgent\n  Scenario: A\n    Given a\n")
+    res = preview(ctx, path, **ans(createTestSet=False))
+    assert qids(res) == ["tagValue.customfield_44.urgent"]
+    assert "no option named 'urgent'" in res["questions"][0]["context"]["reason"]
+
+
+def test_field_answer_then_value_question_follow_in_the_form_before_any_write(tmp_path):
+    ctx = ctx_for(tmp_path)
+    ctx.jira = TeamMetaJira()
+
+    class TwoForms(FormChannel):
+        def elicit(self, message, schema):
+            self.asked.append(schema)
+            return ({"tagRule.team": "field", "tagRule.team.field": "customfield_50"}
+                    if len(self.asked) == 1 else {"tagValue.customfield_50.checkout": "t-1"})
+    ctx.channel = TwoForms(None)
+    path = feature_file(tmp_path, "Feature: F\n  @team=checkout\n  Scenario: A\n    Given a\n")
+    res, err = _apply(ctx, path)
+    assert not err, res
+    assert len(ctx.channel.asked) == 2
+    assert ctx.channel.asked[1]["required"] == ["tagValue.customfield_50.checkout"]
+    assert ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]["customfield_50"] == "t-1"
+    prefs = ctx.preferences.get("global", "P")
+    assert prefs["tagRules"] == [{"tag": "team", "field": {"customfield_50": "{value}"}}]
+    assert prefs["tagValues"] == {"customfield_50": {"checkout": "t-1"}}
+
+
+def test_value_question_joins_the_tag_questions_in_one_form(tmp_path):
+    ctx = ctx_for(tmp_path)
+    ctx.jira = TeamMetaJira()
+    _team_rules(ctx, {"tag": "team", "field": {"customfield_50": "{value}"}})
+    ctx.channel = FormChannel({"tagRule.suite": "skip",
+                               "tagValue.customfield_50.checkout": "t-2"})
+    path = feature_file(tmp_path, "Feature: F\n  @team=checkout @suite=x\n  Scenario: A\n"
+                                  "    Given a\n")
+    res, err = _apply(ctx, path)
+    assert not err, res
+    assert len(ctx.channel.asked) == 1
+    assert ctx.channel.asked[0]["required"] == ["tagRule.suite",
+                                                "tagValue.customfield_50.checkout"]
+
+
+SETTINGS_TEAM = """
+projects:
+  P:
+    fields:
+      test:
+        Owner: {id: customfield_60, type: user}
+    featureImport:
+      tagRules:
+        - tag: owner
+          field: {Owner: "{value}"}
+"""
+
+
+def test_settings_rule_value_is_asked_once_then_remembered_for_the_project(tmp_path):
+    ctx = ctx_for(tmp_path, yaml=SETTINGS_TEAM)
+    path = feature_file(tmp_path, "Feature: F\n  @owner=alice\n  Scenario: A\n    Given a\n")
+    res = preview(ctx, path, **ans(createTestSet=False))
+    assert qids(res) == ["tagValue.Owner.alice"]
+    res, err = _apply(ctx, path, tagValueAnswers={"Owner": {"alice": "acc-1"}})
+    assert not err, res
+    assert ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]["customfield_60"] == {
+        "accountId": "acc-1"}
+    prefs = ctx.preferences.get("global", "P")
+    assert "tagRules" not in prefs and prefs["tagValues"] == {"Owner": {"alice": "acc-1"}}
+    # a second import with the same value: silent, the remembered answer is sent
+    path = feature_file(tmp_path, "Feature: F\n  @owner=Alice\n  Scenario: B\n    Given b\n",
+                        "b.feature")
+    assert qids(preview(ctx, path, **ans(createTestSet=False))) == []
+    res, err = _apply(ctx, path)
+    assert not err, res
+    assert ctx.xray.calls_of("CreateTest")[-1]["jira"]["fields"]["customfield_60"] == {
+        "accountId": "acc-1"}
+
+
+def test_settings_rule_with_a_value_map_asks_nothing(tmp_path):
+    yaml = SETTINGS_TEAM + "          values: {alice: acc-9}\n"
+    ctx = ctx_for(tmp_path, yaml=yaml)
+    path = feature_file(tmp_path, "Feature: F\n  @owner=Alice\n  Scenario: A\n    Given a\n")
+    assert qids(preview(ctx, path, **ans(createTestSet=False))) == []
+    res, err = _apply(ctx, path)
+    assert not err, res
+    assert ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]["customfield_60"] == {
+        "accountId": "acc-9"}
+
+
+def test_call_field_skips_the_value_question(tmp_path):
+    ctx = ctx_for(tmp_path, yaml=SETTINGS_TEAM)
+    path = feature_file(tmp_path, "Feature: F\n  @owner=alice\n  Scenario: A\n    Given a\n")
+    res = preview(ctx, path, fields={"Owner": "acc-3"}, **ans(createTestSet=False))
+    assert qids(res) == []
+    res, err = _apply(ctx, path, fields={"Owner": "acc-3"})
+    assert not err, res
+    assert ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]["customfield_60"] == {
+        "accountId": "acc-3"}
+
+
+@pytest.mark.parametrize("answers,msg", [
+    ("x", "expected object"),
+    ({"Owner": "x"}, "must be an object {tag value"),
+    ({"Owner": {"alice": " "}}, "non-empty string"),
+])
+def test_invalid_tag_value_answers_are_refused(tmp_path, answers, msg):
+    ctx = ctx_for(tmp_path, yaml=SETTINGS_TEAM)
+    path = feature_file(tmp_path, "Feature: F\n  @owner=alice\n  Scenario: A\n    Given a\n")
+    res, err = _apply(ctx, path, tagValueAnswers=answers)
+    assert err and msg in res["error"] and writes(ctx) == []
+
+
+@pytest.mark.parametrize("field,expected_id,sent", [
+    ("Priority", "priority", {"name": "high"}),
+    ("components", "components", [{"name": "high"}]),
+    ("Fix versions", "fixVersions", [{"name": "high"}]),
+])
+def test_system_fields_are_tag_rule_targets_without_the_jira_token(tmp_path, field, expected_id,
+                                                                   sent):
+    ctx = ctx_for(tmp_path)
+    path = feature_file(tmp_path, "Feature: F\n  @prio:high\n  Scenario: A\n    Given a\n")
+    res, err = _apply(ctx, path, tagRuleAnswers={"prio": {"action": "field", "field": field}})
+    assert not err, res
+    assert ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"][expected_id] == sent
+    assert ctx.preferences.get("global", "P")["tagRules"] == [
+        {"tag": "prio", "field": {expected_id: "{value}"}}]
+
+
+def test_system_field_in_a_settings_rule_is_accepted(tmp_path):
+    yaml = ("projects:\n  P:\n    featureImport:\n      tagRules:\n        - tag: prio\n"
+            "          field: {priority: \"{value}\"}\n")
+    ctx = ctx_for(tmp_path, yaml=yaml)
+    path = feature_file(tmp_path, "Feature: F\n  @prio:Low\n  Scenario: A\n    Given a\n")
+    res, err = _apply(ctx, path)
+    assert not err, res
+    assert ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]["priority"] == {"name": "Low"}
+
+
+def test_repeated_scenario_names_are_told_apart_only_when_they_collide(tmp_path):
+    ctx = ctx_for(tmp_path)
+    path = feature_file(tmp_path, "Feature: F\n  Scenario: Sign in\n    Given a\n"
+                                  "  Scenario: sign  in\n    Given b\n"
+                                  "  Scenario: Other\n    Given c\n"
+                                  "  Rule: R\n    Scenario: Other\n      Given d\n"
+                                  "    Scenario: Other\n      Given e\n")
+    res = preview(ctx, path, **ans(createTestSet=False))
+    assert [a["summary"] for a in res["actions"]] == [
+        "F: Sign in", "F: sign  in (2)", "F: Other", "R: Other", "R: Other (2)"]
+    assert res["perTest"][0]["scenarioName"] == "Sign in"
+    res, err = _apply(ctx, path)
+    assert not err, res
+    assert [c["jira"]["fields"]["summary"] for c in ctx.xray.calls_of("CreateTest")][:2] == [
+        "F: Sign in", "F: sign  in (2)"]
+
+
+def test_summaries_rename_created_tests_and_are_ignored_for_existing_ones(tmp_path):
+    world = FakeXrayWorld(existing=_existing())
+    world.existing["P-5"]["gherkin"] = "Given x"
+    ctx = ctx_for(tmp_path, world)
+    path = feature_file(tmp_path, "Feature: F\n  @TEST_P-5\n  Scenario: A\n    Given x\n"
+                                  "  Scenario: B\n    Given b\n  Scenario: C\n    Given c\n")
+    renames = {"0": "Renamed A", "B": "Better B", "2": "Third"}
+    res = preview(ctx, path, summaries=renames, **ans(createTestSet=False))
+    assert [a["summary"] for a in res["actions"]] == ["A", "Better B", "Third"]
+    assert any("summaries[0]" in w and "P-5" in w for w in res["warnings"])
+    res, err = _apply(ctx, path, summaries=renames)
+    assert not err, res
+    assert [c["jira"]["fields"]["summary"] for c in ctx.xray.calls_of("CreateTest")] == [
+        "Better B", "Third"]
+
+
+@pytest.mark.parametrize("renames,msg", [
+    ([1], "expected object"),
+    ({"9": "X"}, "out of range"),
+    ({"Nope": "X"}, "no scenario has this name"),
+    ({"Sign in": "X"}, "use the index"),
+    ({"0": " "}, "non-empty single-line"),
+    ({"0": "a\nb"}, "non-empty single-line"),
+    ({"0": "x" * 256}, "longer than 255"),
+    ({"0": "Other"}, "also the summary of scenario 2"),
+    ({"0": "X", "F: Sign in": "Y"}, "renamed twice"),
+])
+def test_invalid_summaries_are_refused_before_calls(tmp_path, renames, msg):
+    ctx = ctx_for(tmp_path)
+    path = feature_file(tmp_path, "Feature: F\n  Scenario: Sign in\n    Given a\n"
+                                  "  Scenario: Sign in\n    Given b\n"
+                                  "  Scenario: Other\n    Given c\n")
+    res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
+                    summaries=renames, **ans(createTestSet=False))
+    assert err and msg in res["error"], res
+    assert ctx.xray.calls == []
+
+
+def _named_world(gherkin="Given old", test_type="Cucumber"):
+    world = FakeXrayWorld(dup_summaries=["A"], existing={"P-1": {
+        "issueId": "1", "testType": {"name": test_type}, "gherkin": gherkin,
+        "jira": {"key": "P-1", "summary": "A", "labels": []}}})
+    return world
+
+
+NAMED = "Feature: F\n  Scenario: A\n    Given a\n"
+
+
+def test_scenario_matching_an_existing_test_by_name_is_asked_like_an_existing_test(tmp_path):
+    ctx = ctx_for(tmp_path, _named_world())
+    path = feature_file(tmp_path, NAMED)
+    res = preview(ctx, path, **ans(createTestSet=False))
+    assert qids(res) == ["existingTests"] and "possibleDuplicates" not in res
+    assert res["existingTests"] == [{
+        "key": "P-1", "scenarioIndex": 0, "scenario": "A", "stepsChanged": True,
+        "matchedBy": "name",
+        "stepsDiff": {"added": 1, "removed": 1, "lines": ["- Given old", "+ Given a"]}}]
+    q = res["questions"][0]
+    assert q["choices"] == ["update", "keep", "create", "skip"]
+    assert "P-1 (A): matched by name; steps changed (+1/-1 line(s))" in q["question"]
+    res, err = _apply(ctx, path)
+    assert not err and res["status"] == "needs_answer" and writes(ctx) == []
+
+    def run(**answers):
+        c = ctx_for(tmp_path, _named_world())
+        r, e = _apply(c, path, **answers)
+        assert not e, r
+        return c, r
+    c, r = run(existingTests="update")
+    assert r["updated"] == ["P-1"] and "CreateTest" not in writes(c)
+    assert c.xray.calls_of("UpdateGherkin")[0]["issueId"] == "1"
+    c, r = run(existingTests="keep")
+    assert r["unchanged"] == ["P-1"] and writes(c) == []
+    for answers in ({"existingTests": "create"}, {"existingTestOverrides": {"P-1": "create"}},
+                    {"createDuplicates": [0]}):
+        c, r = run(**answers)
+        assert [x["jira"]["fields"]["summary"] for x in c.xray.calls_of("CreateTest")] == ["A"]
+        assert "skippedDuplicates" not in r and r["updated"] == []
+    c, r = run(existingTests="skip")
+    assert writes(c) == [] and r["tests"] == []
+
+
+def test_name_match_with_nothing_to_change_is_only_mapped(tmp_path):
+    ctx = ctx_for(tmp_path, _named_world(gherkin="Given a"))
+    path = feature_file(tmp_path, NAMED)
+    res = preview(ctx, path, **ans(createTestSet=False, aiLabel="ai"))
+    assert qids(res) == [] and res["actions"][0]["kind"] == "keep_test"
+    res, err = _apply(ctx, path, aiLabel="ai")
+    assert not err, res
+    assert writes(ctx) == [] and res["unchanged"] == ["P-1"]
+
+
+def test_name_match_of_a_non_cucumber_test_stays_a_possible_duplicate(tmp_path):
+    ctx = ctx_for(tmp_path, _named_world(test_type="Manual"))
+    path = feature_file(tmp_path, NAMED)
+    res = preview(ctx, path, **ans(createTestSet=False))
+    assert qids(res) == [] and [d["index"] for d in res["possibleDuplicates"]] == [0]
+
+
+def test_create_is_refused_for_a_test_named_by_a_key_tag(tmp_path):
+    ctx = ctx_for(tmp_path, _two_world())
+    path = feature_file(tmp_path, TWO_EXISTING)
+    res, err = _apply(ctx, path, existingTestOverrides={"P-6": "create"})
+    assert err and "only applies to tests matched by name" in res["error"]
+    assert writes(ctx) == []
+    # a general "create" leaves key-tagged tests unanswered: asked, nothing written
+    res, err = _apply(ctx, path, existingTests="create")
+    assert not err and res["status"] == "needs_answer" and writes(ctx) == []
+    assert res["questions"][-1]["choices"] == ["update", "keep", "skip"]
+
+
+def test_team_value_on_an_existing_test_is_asked_with_jira_then_written_when_empty(tmp_path):
+    world = FakeXrayWorld(existing=_existing_with("customfield_50"))
+    world.existing["P-5"]["gherkin"] = "Given x"
+    ctx = ctx_for(tmp_path, world)
+    ctx.jira = TeamMetaJira()
+    ctx.channel = NoFormChannel()
+    _team_rules(ctx, {"tag": "team", "field": {"customfield_50": "{value}"}})
+    path = feature_file(tmp_path, "Feature: F\n  @TEST_P-5 @team=checkout\n  Scenario: A\n"
+                                  "    Given x\n")
+    res = preview(ctx, path, **ans(createTestSet=False))
+    assert qids(res) == ["tagValue.customfield_50.checkout"]
+    res, err = _apply(ctx, path, existingTests="update")
+    assert not err and res["status"] == "needs_answer" and ctx.jira.edits == []
+    res, err = _apply(ctx, path, existingTests="update",
+                      tagValueAnswers={"customfield_50": {"checkout": "t-5"}})
+    assert not err, res
+    assert ctx.jira.edits == [("P-5", {"customfield_50": "t-5"})]
+
+
+def test_apply_with_open_choices_lists_value_questions_in_the_same_refusal(tmp_path):
+    ctx = ctx_for(tmp_path, yaml=SETTINGS_TEAM)
+    path = feature_file(tmp_path, "Feature: F\n  @owner=alice\n  Scenario: A\n    Given a\n")
+    res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
+                    apply=True)
+    assert err and res["error"].startswith("Answer these first")
+    assert "tagValue.Owner.alice" in qids(res) and writes(ctx) == []
+
+
+def test_settings_values_map_beats_a_remembered_answer(tmp_path):
+    ctx = ctx_for(tmp_path, yaml=SETTINGS_TEAM + "          values: {alice: acc-9}\n")
+    ctx.preferences.update("global", "P", {"tagValues": {"Owner": {"alice": "acc-old"}}})
+    path = feature_file(tmp_path, "Feature: F\n  @owner=alice\n  Scenario: A\n    Given a\n")
+    res, err = _apply(ctx, path)
+    assert not err, res
+    assert ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]["customfield_60"] == {
+        "accountId": "acc-9"}
+
+
+def test_name_match_is_asked_on_a_direct_apply_in_the_first_round(tmp_path):
+    ctx = ctx_for(tmp_path, _named_world())
+    path = feature_file(tmp_path, NAMED)
+    res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
+                    apply=True)
+    assert err and res["error"].startswith("Answer these first")
+    assert qids(res)[-1] == "existingTests" and writes(ctx) == []
+
+
+def test_call_field_on_a_name_matched_existing_test_is_reported_not_dropped(tmp_path):
+    world = _named_world()
+    world.existing["P-1"]["jira"]["customfield_60"] = None
+    ctx = ctx_for(tmp_path, world, yaml=SETTINGS_TEAM)
+    ctx.jira = RecJira()
+    path = feature_file(tmp_path, "Feature: F\n  @owner=alice\n  Scenario: A\n    Given a\n")
+    res, err = _apply(ctx, path, fields={"Owner": "acc-3"}, existingTests="update")
+    assert not err, res
+    assert ctx.jira.edits == []
+    assert [n["what"] for n in res["notDone"]] == ["field Owner"]
+    assert "created tests only" in res["notDone"][0]["reason"]
+
+
+@pytest.mark.parametrize("answer", [None, {}, {"tagValue.customfield_50.checkout": " "}])
+def test_declined_tag_value_form_writes_and_remembers_nothing(tmp_path, answer):
+    ctx = ctx_for(tmp_path)
+    ctx.jira = TeamMetaJira()
+    _team_rules(ctx, {"tag": "team", "field": {"customfield_50": "{value}"}})
+    ctx.channel = FormChannel(answer)
+    path = feature_file(tmp_path, "Feature: F\n  @team=checkout\n  Scenario: A\n    Given a\n")
+    res, err = _apply(ctx, path)
+    assert err and writes(ctx) == [], res
+    prefs = ctx.preferences.get("global", "P")
+    assert "tagValues" not in prefs and prefs["tagRules"] == [
+        {"tag": "team", "field": {"customfield_50": "{value}"}}]

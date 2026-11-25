@@ -2,7 +2,7 @@
 
 Xray tells tests (getTests) and the requirements it covers (getCoverableIssues) apart; for any
 other key-shaped tag (`@ISO-8601`, a bug or task key, a key of no issue at all) its JQL simply
-returns nothing, so the import cannot know whether the issue exists. Such a tag is never turned
+returns nothing, so the import cannot tell what the key is. Such a tag is never turned
 into anything silently: the import asks, once per key, whether to link it (as a related /
 requirement issue), keep it as a label, or ignore it. Nothing is remembered."""
 from __future__ import annotations
@@ -46,12 +46,12 @@ def _where(places: List[Dict[str, str]]) -> str:
 def question(key: str, places: List[Dict[str, str]]) -> Dict[str, Any]:
     return {
         "id": "keyTag.%s" % key, "key": key, "param": PARAM,
-        "question": ("The tag @%s (on %s) looks like an issue key, but Xray knows no test or "
-                     "requirement %s, and cannot tell whether such an issue exists. link = "
-                     "link the tests to %s as a related/requirement issue (if Jira refuses "
-                     "the link, the test is created without it and the link is listed in "
-                     "notDone); label = keep @%s as a label; ignore = drop the tag. Not "
-                     "remembered." % (key, _where(places), key, key, key)),
+        "question": ("The tag @%s (on %s) looks like an issue key, but Xray doesn't know %s "
+                     "as a test or a requirement (it may be another kind of issue, or not an "
+                     "issue key at all). link = link the tests to %s as a related/requirement "
+                     "issue (if Jira refuses the link, the test is created without it and the "
+                     "link is listed in notDone); label = keep @%s as a label; ignore = drop "
+                     "the tag. Not remembered." % (key, _where(places), key, key, key)),
         "choices": list(KEY_ANSWERS),
         "context": {"key": key, "where": [dict(p) for p in places]}}
 
@@ -63,8 +63,9 @@ def questions(asked: Dict[str, List[Dict[str, str]]]) -> List[Dict[str, Any]]:
 def form(asked: Dict[str, List[Dict[str, str]]]) -> Dict[str, Any]:
     return {"keyTag.%s" % k: {
         "type": "string", "enum": list(KEY_ANSWERS), "title": "Tag @%s (%s)" % (k, _where(p)),
-        "description": "Xray knows no test or requirement %s. link = link as a related/"
-                       "requirement issue; label = keep as a label; ignore = drop it" % k}
+        "description": "Xray doesn't know %s as a test or a requirement. link = link as a "
+                       "related/requirement issue; label = keep as a label; ignore = drop it"
+                       % k}
         for k, p in asked.items()}
 
 

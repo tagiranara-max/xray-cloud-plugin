@@ -111,6 +111,33 @@ def add_tag_rules(ctx: ServerContext, project_key: str, rules: list) -> None:
                            {"tagRules": list(current) + list(rules)}, ctx.site)
 
 
+TAG_VALUES = "tagValues"
+
+
+def tag_values(ctx: ServerContext, project_key: str) -> Dict[str, Dict[str, Any]]:
+    """Remembered answers to tagValue questions: {field: {tag value: value for Jira}}."""
+    raw = ctx.preferences.get(region_of(ctx), project_key, ctx.site).get(TAG_VALUES)
+    if not isinstance(raw, dict):
+        return {}
+    return {str(f): dict(v) for f, v in raw.items() if isinstance(v, dict)}
+
+
+def add_tag_values(ctx: ServerContext, project_key: str,
+                   values: Dict[str, Dict[str, Any]]) -> None:
+    """Remember tagValue answers for the project (merged per field)."""
+    if not values:
+        return
+    current = tag_values(ctx, project_key)
+    for f, vals in values.items():
+        current[f] = dict(current.get(f) or {}, **vals)
+    ctx.preferences.update(region_of(ctx), project_key, {TAG_VALUES: current}, ctx.site)
+
+
+def set_tag_rules(ctx: ServerContext, project_key: str, rules: list) -> None:
+    """Replace the project's remembered tagRules (raw rules)."""
+    ctx.preferences.update(region_of(ctx), project_key, {"tagRules": list(rules)}, ctx.site)
+
+
 def _remembered_problem(name: str, value: Any) -> Optional[str]:
     """The settings-file checks, applied to a (possibly hand-edited) remembered value. The
     aiLabel follows the call parameter's rule: "" (don't mark) or a label without whitespace.

@@ -69,7 +69,7 @@ def analyze_feature_tags(ctx, args):
         capped = extra["capped"]
     if len(paths) > MAX_FILES:
         paths, capped = paths[:MAX_FILES], True
-    rules, source = _rules(ctx, pk, project)
+    rules, source = _rules(ctx, pk, project)[:2]
     features: List[ParsedFeature] = []
     files: List[str] = []
     errors: List[Dict[str, str]] = []

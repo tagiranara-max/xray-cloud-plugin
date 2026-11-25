@@ -42,6 +42,11 @@ duplicateCheck: true
 #     - tag: team
 #       field: { component: "{value}" }   # friendly name from projects.<KEY>.fields.test
 #       label: "team-{value}"
+#     - tag: owner
+#       field: { customfield_12345: "{value}" }   # e.g. a Team field: values need ids
+#       values: { backend: "<id>" }  # tag value -> id or exact value (asked and remembered if absent)
+#     - tag: prio
+#       field: { priority: "{value}" }  # system fields: priority, components, fixVersions ...
 #     - match: "(wip|draft)"       # regex form: the whole tag must match
 #       label: "to-review"
 #     - tag: internal

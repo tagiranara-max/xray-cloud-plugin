@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .config import ProjectSettings
 from .errors import NeedsAnswer, ToolError
-from .gherkin.tagrules import FIELD_ID
+from .gherkin.tagrules import FIELD_ID, SYSTEM_FIELD_IDS
 
 PARAM = "tagRuleAnswers"
 ACTIONS = ("label_as_is", "label_value", "test_set", "field", "skip")
@@ -52,10 +52,11 @@ def question(key: str, tags: List[str], project: ProjectSettings) -> Dict[str, A
         "question": ("The tag key %r (e.g. %s) has no tag rule. What should tags with this key "
                      "become? label_as_is = label %r; label_value = label %r; test_set = a "
                      "Test Set named by a template (default %r); field = a Jira field set to "
-                     "the value (a fields.test name of the settings file, or a customfield_<n> "
-                     "id: without the Jira token such an id is sent as text, so prefer a "
-                     "fields.test name for option, user or list fields); skip = ignore the "
-                     "tag. The answer is remembered for this project."
+                     "the value (a fields.test name of the settings file, a customfield_<n> id, "
+                     "or a system field: priority, components, fixVersions ...; a value the "
+                     "plugin cannot convert itself, e.g. for a Team or user field, is asked "
+                     "next as tagValue.<field>.<value>); skip = ignore the tag. The answer "
+                     "is remembered for this project."
                      % (key, _example(tags), tag, value, suggested_test_set(tags))),
         "choices": list(ACTIONS),
         "context": {"key": key, "examples": ["@" + t for t in tags[:MAX_EXAMPLES]],
@@ -104,7 +105,7 @@ def parse_answers(raw: Any) -> Dict[str, Dict[str, str]]:
             clean[extra] = v.strip()
         if action == "field" and "field" not in clean:
             raise ToolError("%s: action field needs `field` (a fields.test name of the settings "
-                            "file or a customfield_<n> id)" % where)
+                            "file, a customfield_<n> id or a system field id)" % where)
         out[k] = clean
     return out
 
@@ -118,10 +119,24 @@ def _field_name(value: str, project: ProjectSettings, where: str) -> str:
             return name
     if FIELD_ID.fullmatch(value):
         return value
+    system = system_field(value)
+    if system:
+        return system
     known = ", ".join(sorted(specs)) or "none defined"
     raise ToolError("%s.field: unknown field %r; use a fields.test name of the settings file "
-                    "(%s) or a customfield_<n> id; nothing was written" % (where, value, known),
-                    field=value)
+                    "(%s), a customfield_<n> id or a system field id (%s); nothing was written"
+                    % (where, value, known, ", ".join(sorted(SYSTEM_FIELD_IDS))), field=value)
+
+
+def system_field(value: str) -> Optional[str]:
+    """A system field id for an id or a Jira field name (case-insensitive): "Priority" ->
+    priority, "Fix versions" -> fixVersions; else None."""
+    from .requiredfields import _SYSTEM_NAMES
+    folded = value.strip().casefold()
+    for fid in SYSTEM_FIELD_IDS:
+        if fid.casefold() == folded:
+            return fid
+    return _SYSTEM_NAMES.get(folded)
 
 
 def to_rule(key: str, answer: Dict[str, str], tags: List[str],
@@ -156,25 +171,29 @@ def _form(uncovered: Dict[str, List[str]]) -> dict:
                            % suggested_test_set(tags)}
         props["tagRule.%s.field" % key] = {
             "type": "string", "title": "Jira field for %s (field only)" % _example(tags),
-            "description": "A fields.test name of the settings file, or a customfield_<n> "
-                           "id (sent as text without the Jira token; prefer a fields.test "
-                           "name for option, user or list fields)"}
+            "description": "A fields.test name of the settings file, a customfield_<n> id, "
+                           "or a system field (priority, components, fixVersions); values "
+                           "the plugin cannot convert are asked next"}
     return {"type": "object", "properties": props,
             "required": ["tagRule.%s" % k for k in uncovered]}
 
 
 def ask(ctx: Any, uncovered: Dict[str, List[str]], project: ProjectSettings,
         changes: Optional[List[Dict[str, Any]]] = None,
-        key_tags: Optional[Dict[str, List[Dict[str, str]]]] = None
-        ) -> Tuple[Dict[str, Dict[str, str]], Optional[Dict[str, Any]], Dict[str, str]]:
-    """Ask the user about every uncovered key, issue-key tags Xray cannot place (key_tags)
-    and existing tests the import would change (changes), at once: one elicitation form when
-    the client supports it (answers returned, validated: (tag answers, existing-test answers
-    or None, key-tag answers)), else NeedsAnswer. Declined or incomplete: ToolError; nothing
-    is written or remembered."""
-    from . import existingtests, keytags
+        key_tags: Optional[Dict[str, List[Dict[str, str]]]] = None,
+        values: Optional[Dict[Tuple[str, str], Dict[str, Any]]] = None
+        ) -> Tuple[Dict[str, Dict[str, str]], Optional[Dict[str, Any]], Dict[str, str],
+                   Dict[str, Dict[str, Any]]]:
+    """Ask the user about every uncovered key, issue-key tags Xray cannot place (key_tags),
+    existing tests the import would change (changes) and tag values the plugin cannot convert
+    (values), at once: one elicitation form when the client supports it (answers returned,
+    validated: (tag answers, existing-test answers or None, key-tag answers, tag-value
+    answers)), else NeedsAnswer. Declined or incomplete: ToolError; nothing is written or
+    remembered."""
+    from . import existingtests, keytags, tagvalues
     changes = changes or []
     key_tags = key_tags or {}
+    values = values or {}
     keys = ", ".join("@%s" % t[0] for t in uncovered.values() if t)
     parts = []
     if uncovered:
@@ -183,8 +202,11 @@ def ask(ctx: Any, uncovered: Dict[str, List[str]], project: ProjectSettings,
         parts.append("Tags look like issue keys Xray cannot place (%s)."
                      % ", ".join("@" + k for k in key_tags))
     if changes:
-        parts.append("Scenarios name existing tests the import would change (%s)."
+        parts.append("Scenarios name or match existing tests the import would change (%s)."
                      % ", ".join(c["key"] for c in changes))
+    if values:
+        parts.append("Tag values need the value Jira expects (%s)."
+                     % ", ".join("`%s` for %s" % (v, n) for n, v in values))
     channel = getattr(ctx, "channel", None)
     if channel is not None and channel.supports_elicitation:
         schema = _form(uncovered)
@@ -192,18 +214,23 @@ def ask(ctx: Any, uncovered: Dict[str, List[str]], project: ProjectSettings,
         schema["required"] = schema["required"] + ["keyTag.%s" % k for k in key_tags]
         if changes:
             schema["properties"].update(existingtests.form(changes))
+        vprops = tagvalues.form(values)
+        schema["properties"].update(vprops)
+        schema["required"] = schema["required"] + list(vprops)
         content = channel.elicit(
             " ".join(parts) + (" Choose what each key means; the answers are remembered as "
                                "tag rules of project %s." % project.key if uncovered else "")
             + (" Choose whether to link each key, keep it as a label or ignore it (not "
                "remembered)." if key_tags else "")
-            + (" Choose whether to update those tests, keep them unchanged or skip their "
-               "scenarios (not remembered)." if changes else ""), schema)
+            + (" Choose whether to update those tests, keep them unchanged, create new tests "
+               "or skip their scenarios (not remembered)." if changes else "")
+            + (" Give the id or exact value for each tag value (remembered for this project)."
+               if values else ""), schema)
         if not isinstance(content, dict):
             raise ToolError("The %s questions were not answered; nothing was written and "
                             "nothing was remembered."
-                            % ("tag" if not (changes or key_tags) else "import"), projectKey=project.key,
-                            tagKeys=list(uncovered))
+                            % ("tag" if not (changes or key_tags or values) else "import"),
+                            projectKey=project.key, tagKeys=list(uncovered))
         raw: Dict[str, Dict[str, Any]] = {}
         for key in uncovered:
             action = content.get("tagRule.%s" % key)
@@ -224,7 +251,7 @@ def ask(ctx: Any, uncovered: Dict[str, List[str]], project: ProjectSettings,
             raw[key] = ans
         return (parse_answers(raw),
                 (existingtests.from_form(content, changes) if changes else None),
-                keytags.from_form(content, key_tags))
+                keytags.from_form(content, key_tags), tagvalues.from_form(content, values))
     asks = []
     if uncovered:
         asks.append("what each tag key means (%s set to {key: {action, testSet?, field?}})"
@@ -232,13 +259,17 @@ def ask(ctx: Any, uncovered: Dict[str, List[str]], project: ProjectSettings,
     if key_tags:
         asks.append("whether to link, label or ignore each issue-key tag (%s)" % keytags.PARAM)
     if changes:
-        asks.append("whether to update, keep or skip the existing tests (%s, optionally %s)"
-                    % (existingtests.PARAM, existingtests.OVERRIDES))
+        asks.append("whether to update, keep, create anew or skip the existing tests (%s, "
+                    "optionally %s)" % (existingtests.PARAM, existingtests.OVERRIDES))
+    if values:
+        asks.append("the id or exact value Jira expects for each tag value (%s set to "
+                    "{field: {tag value: answer}})" % tagvalues.PARAM)
     raise NeedsAnswer(
         "%s Ask the user %s, then call again with the answers; never answer them yourself. "
         "Nothing was written." % (" ".join(parts), " and ".join(asks)),
         questions(uncovered, project) + keytags.questions(key_tags)
-        + ([existingtests.question(changes)] if changes else []),
+        + ([existingtests.question(changes)] if changes else [])
+        + tagvalues.questions(values),
         projectKey=project.key)
 
 

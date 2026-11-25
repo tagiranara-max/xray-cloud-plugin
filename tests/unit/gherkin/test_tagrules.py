@@ -245,3 +245,41 @@ def test_parsed_rule_shape():
     assert r[0].keys == ["suite", "area"] and r[0].regex is None and r[0].split == ","
     assert r[0].labels == ["{value}"] and r[0].test_sets == [] and r[0].fields == {}
     assert r[1].keys is None and r[1].regex.pattern == "wip" and r[1].skip is True
+
+
+# --- value maps and system fields (round 3) -------------------------------
+
+def test_rule_field_accepts_system_field_ids():
+    o = run(["prio=high", "comp=ui"], {"tag": "prio", "field": {"priority": "{value}"}},
+            {"tag": "comp", "field": {"components": "{value}"}})
+    assert o.fields == {"priority": "high", "components": "ui"}
+
+
+def test_system_field_ids_match_the_required_field_shapes():
+    from xray_cloud.gherkin.tagrules import SYSTEM_FIELD_IDS
+    from xray_cloud.requiredfields import _SYSTEM_SHAPES
+    assert SYSTEM_FIELD_IDS == frozenset(_SYSTEM_SHAPES)
+
+
+def test_value_map_gives_the_mapped_value_and_keeps_the_tag_value():
+    rule = {"tag": "team", "field": {"area": "{value}"}, "values": {"checkout": "id-7"}}
+    o = run(["team=Checkout"], rule)
+    assert o.fields == {"area": "id-7"} and o.raw == {"area": "Checkout"}
+    assert o.mapped == {"area": "rule"} and o.rules == {"area": 0}
+    o = run(["team=other"], rule)
+    assert o.fields == {"area": "other"} and o.mapped == {}
+    merged = merge_outcomes(TagOutcome(), run(["team=checkout"], rule))
+    assert merged.fields == {"area": "id-7"} and merged.mapped == {"area": "rule"}
+    assert merged.raw == {"area": "checkout"} and merged.rules == {"area": 0}
+
+
+@pytest.mark.parametrize("raw,needle", [
+    ({"tag": "team", "label": "x", "values": {"a": "b"}}, "only goes with `field`"),
+    ({"tag": "team", "field": {"area": "{value}"}, "values": ["a"]}, "must be a mapping"),
+    ({"tag": "team", "field": {"area": "{value}"}, "values": {"a": ""}}, "non-empty"),
+    ({"tag": "team", "field": {"area": "{value}"}, "values": {"a": 3}}, "non-empty"),
+])
+def test_invalid_value_maps_are_refused(raw, needle):
+    with pytest.raises(ToolError) as e:
+        rules(raw)
+    assert needle in e.value.message

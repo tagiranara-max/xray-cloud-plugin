@@ -7,17 +7,37 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Pattern, Set
+from typing import Any, Dict, List, Optional, Pattern, Set, Tuple
 
 from ..errors import ToolError
 
-RULE_KEYS = ("tag", "match", "split", "label", "testSet", "field", "skip")
+RULE_KEYS = ("tag", "match", "split", "label", "testSet", "field", "values", "skip")
 _PLACEHOLDER = re.compile(r"\{(value|key|tag)\}|\$([1-9])")
 _BRACES = re.compile(r"\{([^{}]*)\}")
 _SEPARATED = re.compile(r"([^=:]+)[=:](.*)", re.DOTALL)
 _WHITESPACE = re.compile(r"\s")
 # a Jira custom field id: accepted in a rule's `field` without a settings entry
 FIELD_ID = re.compile(r"customfield_\d+")
+# Jira system field ids a rule's `field` may name (the shapes are in
+# requiredfields._SYSTEM_SHAPES; a unit test keeps both in step)
+SYSTEM_FIELD_IDS = frozenset({"components", "fixVersions", "versions", "labels", "priority",
+                              "duedate", "environment", "assignee", "reporter"})
+
+
+def is_field_id(name: str) -> bool:
+    """A customfield_<n> id or a system field id: accepted without a settings entry."""
+    return bool(FIELD_ID.fullmatch(str(name))) or name in SYSTEM_FIELD_IDS
+
+
+def mapped_value(values: Dict[str, Any], value: str) -> Tuple[bool, Any]:
+    """(found, mapped) for a value in a value map: exact key first, then case-insensitive
+    (only when one key matches)."""
+    if value in values:
+        return True, values[value]
+    folded = [k for k in values if k.casefold() == value.casefold()]
+    if len(folded) == 1:
+        return True, values[folded[0]]
+    return False, None
 
 
 def kv_key(tag: str) -> Optional[str]:
@@ -41,6 +61,8 @@ class TagRule:
     test_sets: List[str] = field(default_factory=list)    # Test Set name templates
     fields: Dict[str, str] = field(default_factory=dict)  # friendly field name -> template
     skip: bool = False
+    # tag value (rendered field template) -> value sent to Jira (an id, or the exact value)
+    values: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -52,6 +74,11 @@ class TagOutcome:
     unmatched: List[str] = field(default_factory=list)
     problems: List[str] = field(default_factory=list)
     sources: Dict[str, str] = field(default_factory=dict)  # field name -> "tag (rule n)"
+    raw: Dict[str, str] = field(default_factory=dict)      # field name -> rendered tag value
+    rules: Dict[str, int] = field(default_factory=dict)    # field name -> rule index
+    # field name -> "rule" (the rule's value map gave the value) or "answer" (the call's
+    # tagValueAnswers did); such values are sent as given (shaped by the field's type)
+    mapped: Dict[str, str] = field(default_factory=dict)
 
 
 def _templates(raw: Any, where: str) -> List[str]:
@@ -123,11 +150,27 @@ def _parse_rule(raw: Any, field_names: Set[str], where: str) -> TagRule:
         for name, tpl in f.items():
             if not isinstance(tpl, str):
                 raise TagRuleError("%s.field.%s must be a template string" % (where, name))
-            if name not in field_names and not FIELD_ID.fullmatch(str(name)):
+            if name not in field_names and not is_field_id(str(name)):
                 known = ", ".join(sorted(field_names)) or "none defined"
                 raise TagRuleError("%s.field: unknown field name %r (fields.test has: %s; a "
-                                   "customfield_<n> id also works)" % (where, name, known))
+                                   "customfield_<n> id or a system field id such as priority, "
+                                   "components or fixVersions also works)"
+                                   % (where, name, known))
             fields[str(name)] = tpl
+    values: Dict[str, Any] = {}
+    if "values" in raw:
+        v = raw["values"]
+        if not fields:
+            raise TagRuleError("%s.values only goes with `field`" % where)
+        if not isinstance(v, dict) or not all(isinstance(k, str) and k.strip() for k in v):
+            raise TagRuleError("%s.values must be a mapping of tag value to the value Jira "
+                               "expects (an id or the exact value)" % where)
+        for k, val in v.items():
+            if not isinstance(val, (str, dict, list)) or (isinstance(val, str)
+                                                          and not val.strip()):
+                raise TagRuleError("%s.values.%s must be a non-empty string (or a JSON object "
+                                   "or list in the shape Jira expects)" % (where, k))
+        values = dict(v)
     has_action = bool(labels or test_sets or fields)
     if skip and has_action:
         raise TagRuleError("%s: `skip: true` cannot be combined with label, testSet or field"
@@ -136,7 +179,7 @@ def _parse_rule(raw: Any, field_names: Set[str], where: str) -> TagRule:
         raise TagRuleError("%s has no action; add label, testSet, field or skip: true" % where)
     for tpl in labels + test_sets + list(fields.values()):
         _check_template(tpl, regex, where)
-    return TagRule(keys, regex, split, labels, test_sets, fields, skip)
+    return TagRule(keys, regex, split, labels, test_sets, fields, skip, values)
 
 
 def parse_rules(raw: List[Any], field_names: Set[str], where: str) -> List[TagRule]:
@@ -222,17 +265,26 @@ def apply_rules(tags: List[str], rules: List[TagRule], tags_as_labels: bool,
                 else:
                     out.problems.append("%s: Test Set name result %r is empty" % (who, r(t)))
             for fname, t in rule.fields.items():
-                _set_field(out, fname, r(t), who)
+                raw = r(t)
+                found, value_ = mapped_value(rule.values, raw)
+                _set_field(out, fname, value_ if found else raw, who, raw, index,
+                           "rule" if found else None)
     return out
 
 
-def _set_field(out: TagOutcome, name: str, value: str, who: str) -> None:
+def _set_field(out: TagOutcome, name: str, value: Any, who: str, raw: Optional[str] = None,
+               index: Optional[int] = None, mapped: Optional[str] = None) -> None:
     if name in out.fields and out.fields[name] != value:
         out.problems.append("field %r gets conflicting values %r (%s) and %r (%s)"
                             % (name, out.fields[name], out.sources.get(name, "?"), value, who))
     elif name not in out.fields:
         out.fields[name] = value
         out.sources[name] = who
+        out.raw[name] = raw if raw is not None else str(value)
+        if index is not None:
+            out.rules[name] = index
+        if mapped:
+            out.mapped[name] = mapped
 
 
 def merge_outcomes(*outcomes: TagOutcome) -> TagOutcome:
@@ -250,5 +302,6 @@ def merge_outcomes(*outcomes: TagOutcome) -> TagOutcome:
         for p in o.problems:
             _add(merged.problems, p)
         for name, value in o.fields.items():
-            _set_field(merged, name, value, o.sources.get(name, "?"))
+            _set_field(merged, name, value, o.sources.get(name, "?"), o.raw.get(name),
+                       o.rules.get(name), o.mapped.get(name))
     return merged
