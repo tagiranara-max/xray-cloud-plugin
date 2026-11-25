@@ -18,7 +18,8 @@ YAML = "projects:\n  P: {}\n"
 def empty_reads(**over):
     r = {"SearchTests": {"getTests": {"total": 0, "results": []}},
          "GetPreconditions": {"getPreconditions": {"results": []}},
-         "FindTestSets": {"getTestSets": {"results": []}}}
+         "FindTestSets": {"getTestSets": {"results": []}},
+         "FindCoverableIssues": {"getCoverableIssues": {"results": []}}}
     r.update(over)
     return r
 
@@ -113,8 +114,7 @@ Feature: F
 def test_classify_tag_shapes():
     assert classify_tag("@P-5") == ("key", "P-5")
     assert classify_tag("@TEST_smoke") == ("label", "TEST_smoke")
-    with pytest.raises(ToolError, match="Invalid issue key"):
-        classify_tag("@TEST_p-5")
+    assert classify_tag("@TEST_p-5") == ("invalid", "TEST_p-5")
 
 
 KEYS_TEXT = """@ISO-1 @R-1
@@ -150,8 +150,9 @@ def _xray_tests(*keys):
         jql = v["jql"]
         if not jql.startswith("issue"):
             return {"getTests": {"total": 0, "results": []}}
-        if "ISO-" in jql:
-            raise ToolError("Xray GraphQL error: The issue key 'ISO-8601' does not exist")
+        iso = re.findall(r"ISO-\d+", jql)
+        if iso:
+            raise ToolError("Xray GraphQL error: The issue key '%s' does not exist" % iso[0])
         rows = [{"issueId": k.split("-")[1], "testType": {"name": "Cucumber"},
                  "jira": {"key": k, "summary": k, "labels": []}} for k in keys
                 if re.search(r"\b%s\b" % k, jql)]
@@ -174,14 +175,15 @@ def test_key_tags_are_looked_up_and_never_refuse_the_file():
     assert by["Explicit elsewhere"].kind == "skip_test"
     assert "Q-6 is a test of project Q" in by["Explicit elsewhere"].reason
     assert by["Explicit missing"].kind == "skip_test"
-    assert "P-404 is a Bug, not a test" in by["Explicit missing"].reason
+    assert "Xray does not know P-404 as a test (it is a Jira Bug)" in by["Explicit missing"].reason
     assert by["Missing requirement"].requirement_keys == ["R-1"]
     assert by["Missing requirement"].not_done[0]["what"] == "requirement link R-404"
     # one batched read failed (ISO-*): key by key, the failing keys are no tests
     jqls = [v["jql"] for op, v in ctx.xray.calls if op == "SearchTests"]
     assert jqls[0] == "issue in (ISO-1, R-1, P-5, Q-5, R-2, ISO-8601, Q-6, P-404)"
     assert "issue = ISO-8601" in jqls and "issue = Q-6" in jqls
-    assert sorted(ctx.jira.asked) == ["ISO-1", "ISO-8601", "P-404", "R-1", "R-2", "R-404"]
+    # ISO-* were reported as no such issue by the key-by-key reads: Jira is not asked
+    assert sorted(ctx.jira.asked) == ["P-404", "R-1", "R-2", "R-404"]
 
 
 def test_without_jira_a_key_that_is_no_test_is_a_plain_tag():
@@ -191,7 +193,7 @@ def test_without_jira_a_key_that_is_no_test_is_a_plain_tag():
     plan = plan_import(ctx, "P", feat, "f", False)
     assert plan[0].kind == "update_test" and plan[0].labels == ["R-1", "ISO-8601"]
     assert plan[0].requirement_keys == []
-    assert plan[1].kind == "skip_test" and "no test P-6 was found" in plan[1].reason
+    assert plan[1].kind == "skip_test" and "no Xray test P-6 was found" in plan[1].reason
 
 
 def test_key_tag_analysis_reports_meanings():
@@ -216,8 +218,82 @@ def test_key_tagged_test_must_be_cucumber():
                                                    "jira": {"key": "P-5"}}]}}
     ctx = make_context(YAML, responses=empty_reads(SearchTests=manual))
     feat = parse_feature("Feature: F\n  @TEST_P-5\n  Scenario: A\n    Given a\n", "f")
-    with pytest.raises(ToolError, match="Manual test"):
-        plan_import(ctx, "P", feat, "f", False)
+    plan = plan_import(ctx, "P", feat, "f", False)
+    assert plan[0].kind == "skip_test" and "P-5 is a Manual test" in plan[0].reason
+    assert plan[0].not_done[0]["what"] == "scenario not imported"
+
+
+@pytest.mark.parametrize("error", [
+    ToolError("Xray API error: HTTP 500", status=500),
+    ToolError("Xray rate limit: HTTP 429", status=429),
+    ToolError("Xray authentication failed", status=401),
+    ToolError("Network error contacting xray.cloud.getxray.app (URLError)")])
+def test_key_lookup_failures_stop_before_anything_is_planned(error):
+    """A failed read is never taken as "not a test": that would create a duplicate."""
+    def search(v):
+        raise error
+    for text in ("Feature: F\n  @P-5\n  Scenario: A\n    Given a\n",
+                 "Feature: F\n  @P-5 @Q-1\n  Scenario: A\n    Given a\n"):
+        ctx = make_context(YAML, responses=empty_reads(SearchTests=search))
+        with pytest.raises(ToolError) as e:
+            plan_import(ctx, "P", parse_feature(text, "f"), "f", False)
+        assert e.value is error
+        assert [op for op, _ in ctx.xray.calls] == ["SearchTests"]
+
+
+def test_no_such_issue_refusal_is_retried_key_by_key_even_for_one_key():
+    calls = []
+
+    def search(v):
+        if not v["jql"].startswith("issue"):
+            return {"getTests": {"total": 0, "results": []}}
+        calls.append(v["jql"])
+        raise ToolError("Xray GraphQL error: The issue key 'ISO-8601' does not exist")
+    ctx = make_context(YAML, responses=empty_reads(SearchTests=search))
+    feat = parse_feature("Feature: F\n  @ISO-8601\n  Scenario: A\n    Given a\n", "f")
+    plan = plan_import(ctx, "P", feat, "f", False)
+    assert plan[0].kind == "create_test" and plan[0].labels == ["ISO-8601"]
+    assert calls[:2] == ["issue = ISO-8601", "issue = ISO-8601"]
+
+
+def test_jira_issue_xray_does_not_know_as_a_test_is_a_requirement():
+    """Xray is the authority for tests: an issue Jira types "Test" that Xray does not return
+    is linked like any other issue."""
+    ctx = make_context(YAML, responses=empty_reads())
+    ctx.jira = TypeJira({"Q-3": "Test"})
+    feat = parse_feature("Feature: F\n  @Q-3\n  Scenario: A\n    Given a\n", "f")
+    plan = plan_import(ctx, "P", feat, "f", False)
+    assert plan[0].kind == "create_test" and plan[0].requirement_keys == ["Q-3"]
+
+
+def test_without_jira_requirements_xray_knows_are_linked():
+    cov = {"getCoverableIssues": {"results": [
+        {"issueId": "9", "jira": {"key": "R-1", "issuetype": {"name": "Story"}}}]}}
+    ctx = make_context(YAML, responses=empty_reads(FindCoverableIssues=lambda v: cov))
+    feat = parse_feature("@R-1\nFeature: F\n  @REQ_R-2 @R-3\n  Scenario: A\n    Given a\n", "f")
+    plan = plan_import(ctx, "P", feat, "f", False)
+    assert plan[0].requirement_keys == ["R-1"] and plan[0].labels == ["R-3"]
+    assert plan[0].not_done[0]["what"] == "requirement link R-2"
+    assert [v["jql"] for op, v in ctx.xray.calls if op == "FindCoverableIssues"] == [
+        "issue in (R-1, R-3, R-2)"]
+
+
+def test_unusable_tags_leave_one_scenario_out_never_the_file():
+    text = ("@TEST_P-9 @PRECOND_P-8\nFeature: F\n"
+            "  @TEST_P-5 @P-6\n  Scenario: Two keys\n    Given a\n"
+            "  @TEST_P-5\n  Scenario: First\n    Given b\n"
+            "  @P-5\n  Scenario: Second\n    Given c\n"
+            "  @TEST_p-1 @PRECOND_P-8\n  Scenario: Odd tags\n    Given d\n")
+    from xray_cloud.gherkin.plan import KeyInfo
+    info = {k: KeyInfo("test") for k in ("P-5", "P-6", "P-9")}
+    a = analyze_tags(parse_feature(text, "f"), "P", ImportOptions(key_info=info))
+    assert [bool(st.blocked) for st in a.scenarios] == [True, False, True, False]
+    assert [st.test_key for st in a.scenarios] == [None, "P-5", None, None]
+    assert "more than one test key tag" in a.scenarios[0].blocked
+    assert "already named by scenario 'First'" in a.scenarios[2].blocked
+    assert [n["what"] for n in a.notes] == ["tag @TEST_P-9 (ignored)", "tag @PRECOND_P-8 (ignored)"]
+    assert [n["what"] for n in a.scenarios[3].notes] == ["tag @TEST_p-1",
+                                                         "tag @PRECOND_P-8 (ignored)"]
 
 
 def _pre(key, summary, labels, definition, issue_id="9", ptype="Cucumber"):
@@ -233,8 +309,12 @@ def test_precondition_reused_by_key_comment():
     plan = plan_import(ctx, "P", parse_feature(text, "f"), "f.feature", False)
     pre = plan[1]
     assert pre.kind == "reuse_precondition" and pre.key == "P-7" and not pre.update_definition
-    with pytest.raises(ToolError, match="does not belong"):
-        plan_import(ctx, "P", parse_feature(text.replace("P-7", "Q-7"), "f"), "f", False)
+    # a Pre-Condition of another project is ignored with a note, never a refusal
+    plan = plan_import(ctx, "P", parse_feature(text.replace("P-7", "Q-7"), "f"), "f", False)
+    assert plan[1].kind == "create_precondition"
+    from xray_cloud.gherkin.plan import analyze_tags as _an
+    notes = _an(parse_feature(text.replace("P-7", "Q-7"), "f"), "P").notes
+    assert notes[0]["what"] == "#@PRECOND_Q-7 (ignored)"
 
 
 def test_precondition_reused_by_path_label_then_summary():
@@ -308,8 +388,8 @@ def test_rule_tags_classified_per_rule_even_when_names_repeat(first, second):
     plan = plan_import(ctx, "P", feat, "f", False)
     assert plan[0].labels == ["a"] and plan[1].labels == ["b", "c"]
     feat = parse_feature(TWO_RULES % (first, "@TEST_Q-1", second), "f")
-    with pytest.raises(ToolError, match="not allowed on a Rule"):
-        plan_import(ctx, "P", feat, "f", False)
+    a = analyze_tags(feat, "P", ImportOptions(key_info={}))
+    assert a.notes[0]["what"] == "tag @TEST_Q-1 (ignored)"  # ignored, never a refusal
 
 
 # -- import choices: inline Backgrounds, tag rules (spec 6.2, 6.4, 8) -------------------------

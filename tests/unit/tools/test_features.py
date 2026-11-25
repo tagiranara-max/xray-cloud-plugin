@@ -26,7 +26,7 @@ projects:
         Area: {id: customfield_3, type: option, required: true}
 """
 READS = ("SearchTests", "GetPreconditions", "FindTestSets", "GetProjectId",
-         "GetProjectSettings")
+         "GetProjectSettings", "FindCoverableIssues")
 
 
 ANSWERS = {"createTestSet": True, "backgrounds": "preconditions", "tagsAsLabels": True,
@@ -56,7 +56,8 @@ def project(tmp_path):
 class FakeXrayWorld:
     """Responses for a whole import: empty project unless told otherwise; creates count up."""
 
-    def __init__(self, dup_summaries=(), existing=None, fail_on=None):
+    def __init__(self, dup_summaries=(), existing=None, fail_on=None, coverable=()):
+        self.coverable = list(coverable)  # requirement keys Xray knows (getCoverableIssues)
         self.n = 100
         self.dup_summaries = set(dup_summaries)
         self.existing = existing or {}
@@ -86,7 +87,15 @@ class FakeXrayWorld:
                 return {wrap: {node: {"issueId": iid, "jira": {"key": key}}, "warnings": []}}
             return fn
 
+        def coverable(v):
+            m = re.fullmatch(r"issue = (\S+)|issue in \((.*)\)", v["jql"])
+            keys = [m.group(1)] if m.group(1) else m.group(2).split(", ")
+            return {"getCoverableIssues": {"results": [
+                {"issueId": "9", "jira": {"key": k, "issuetype": {"name": "Story"}}}
+                for k in keys if k in self.coverable]}}
+
         return {
+            "FindCoverableIssues": coverable,
             "SearchTests": search,
             "GetPreconditions": {"getPreconditions": {"results": []}},
             "FindTestSets": {"getTestSets": {"results": []}},
@@ -159,7 +168,7 @@ def test_apply_creates_tests_precondition_and_set_in_order(project):
 def test_create_test_set_false_and_requirement_links_on_new_tests(tmp_path):
     f = tmp_path / "a.feature"
     f.write_text("@REQ_Q-9 @team\nFeature: F\n  @ui\n  Scenario: A\n    Given a\n", encoding="utf-8")
-    ctx = ctx_for(tmp_path, yaml=YAML_REQ)
+    ctx = ctx_for(tmp_path, FakeXrayWorld(coverable=["Q-9"]), yaml=YAML_REQ)
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath="a.feature",
                     apply=True, **ans(createTestSet=False), fields={"Severity": "High"},
                     rawFields={"labels": ["extra"], "customfield_7": 1})
@@ -498,7 +507,9 @@ def test_key_tag_update_with_jira_applies_labels_and_links(tmp_path):
 def test_key_tag_update_without_jira_warns_about_links(tmp_path):
     f = tmp_path / "a.feature"
     f.write_text("Feature: F\n  @TEST_P-5 @REQ_R-1\n  Scenario: A\n    Given x\n", encoding="utf-8")
-    ctx = ctx_for(tmp_path, _existing_world())
+    world = _existing_world()
+    world.coverable = ["R-1"]
+    ctx = ctx_for(tmp_path, world)
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath="a.feature",
                     apply=True, existingTests="update", **ans(createTestSet=False))
     assert not err, res
@@ -788,7 +799,7 @@ def test_rule_field_on_existing_test_never_overwrites(tmp_path):
 
 
 def test_not_done_items_for_existing_test_without_jira(tmp_path):
-    ctx = ctx_for(tmp_path, FakeXrayWorld(existing=_existing(labels=["old"])), yaml=RULES_YAML)
+    ctx = ctx_for(tmp_path, FakeXrayWorld(existing=_existing(labels=["old"]), coverable=["R-1"]), yaml=RULES_YAML)
     path = feature_file(tmp_path, "Feature: F\n  @TEST_P-5 @new @REQ_R-1 @comp=backend\n"
                                   "  Scenario: A\n    Given x\n")
     expected = [dict(item="P-5", what="labels new", **NO_JIRA),
@@ -1176,7 +1187,7 @@ def test_scenario_description_wins_and_is_only_asked_for_scenarios_without(tmp_p
 
 
 def test_partial_jira_config_names_missing_parts_in_not_done(tmp_path):
-    ctx = ctx_for(tmp_path, FakeXrayWorld(existing=_existing(labels=["old"])), yaml=RULES_YAML)
+    ctx = ctx_for(tmp_path, FakeXrayWorld(existing=_existing(labels=["old"]), coverable=["R-1"]), yaml=RULES_YAML)
     ctx.env["JIRA_API_TOKEN"] = "tok"
     path = feature_file(tmp_path, "Feature: F\n  @TEST_P-5 @new @REQ_R-1 @comp=backend\n"
                                   "  Scenario: A\n    Given x\n")
@@ -1449,7 +1460,7 @@ def test_key_shaped_tag_of_no_issue_is_a_plain_tag_in_preview_and_apply(tmp_path
     res = preview(ctx, path, **ans(createTestSet=False))
     assert res["tagSummary"]["keyTags"] == [
         {"tag": "ISO-8601", "meaning": "plain",
-         "note": "not an issue (Jira has no ISO-8601): an ordinary tag"}]
+         "note": "not an issue (there is no ISO-8601): an ordinary tag"}]
     assert "ISO-8601" in res["tagSummary"]["plain"] and res["tagSummary"]["issueKeys"] == []
     assert res["perTest"][0]["labels"] == ["ISO-8601", "smoke"]
     res, err = _apply(ctx, path)
@@ -1622,3 +1633,39 @@ def test_existing_tests_question_joins_the_elicitation_form(tmp_path):
     assert "existingTests.P-6" in props and "existingTests.P-5" not in props
     assert res["updated"] == ["P-6"] and res["unchanged"] == ["P-5"]
     assert len(ctx.channel.asked) == 1
+
+
+def test_apply_with_open_choices_asks_existing_tests_in_the_same_round(tmp_path):
+    ctx = ctx_for(tmp_path, _two_world())
+    path = feature_file(tmp_path, TWO_EXISTING)
+    res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
+                    apply=True)
+    assert err and "existingTests" in res["error"]
+    assert [q["id"] for q in res["questions"]][-1] == "existingTests"
+    assert writes(ctx) == []
+
+
+def test_steps_differing_only_in_line_endings_or_trailing_spaces_are_unchanged(tmp_path):
+    ctx = ctx_for(tmp_path, _two_world(gherkin_b="Given b   \r\n"))
+    path = feature_file(tmp_path, "Feature: F\n  @P-6\n  Scenario: B\n    Given b\n")
+    res = preview(ctx, path, **ans(createTestSet=False))
+    assert "existingTests" not in res and res["actions"][0]["kind"] == "keep_test"
+
+
+@pytest.mark.parametrize("status", [500, 429])
+def test_failed_key_lookup_stops_the_import_before_any_write(tmp_path, status):
+    world = FakeXrayWorld()
+    base = world.responses()
+    plain = base["SearchTests"]
+
+    def search(v):
+        if v["jql"].startswith("issue"):
+            raise ToolError("Xray request failed with HTTP %d" % status, status=status)
+        return plain(v)
+    base["SearchTests"] = search
+    ctx = make_context(YAML, responses=base)
+    ctx.env["CLAUDE_PROJECT_DIR"] = str(tmp_path)
+    path = feature_file(tmp_path, "Feature: F\n  @P-5\n  Scenario: A\n    Given a\n")
+    res, err = _apply(ctx, path)
+    assert err and ("HTTP %d" % status) in res["error"]
+    assert writes(ctx) == []

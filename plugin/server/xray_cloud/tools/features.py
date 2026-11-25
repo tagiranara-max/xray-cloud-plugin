@@ -367,7 +367,8 @@ def _applicable(feature: ParsedFeature, analysis: TagAnalysis, values: Dict[str,
 
 def _contexts(feature: ParsedFeature, analysis: TagAnalysis, rel: str,
               plan: Optional[List[ImportAction]], skip: set) -> Dict[str, dict]:
-    """Facts for each question. Without a plan (apply refusal: no calls) only file facts."""
+    """Facts for each question. Without a plan (the apply refusal for unanswered choices)
+    only file facts."""
     ctx_set: Dict[str, Any] = {"testSetName": feature_set_name(feature, rel)}
     out = {"createTestSet": ctx_set,
            "backgrounds": {"backgrounds": [
@@ -550,13 +551,6 @@ def create_tests_from_feature(ctx, args):
         analysis = analyze()
     applicable = _applicable(feature, analysis, values)
     unanswered = [n for n in QUESTION_IDS if applicable[n] and values[n] is None]
-    if apply and unanswered:
-        contexts = _contexts(feature, analysis, rel, None, set())
-        raise ToolError("Answer these first: %s (ask the user, then call again with the "
-                        "answers; nothing was written)"
-                        % ", ".join(unanswered + ["tagRule.%s" % k for k in analysis.uncovered]),
-                        questions=[choices.question(n, contexts[n]) for n in unanswered]
-                        + tagquestions.questions(analysis.uncovered, project))
     def make_plan():
         """(plan, changes to existing tests). Planned this early (it only reads) only when a
         scenario maps to an existing test, so that question joins the tag ones; otherwise
@@ -570,6 +564,15 @@ def create_tests_from_feature(ctx, args):
 
     plan, changes = make_plan()
     ask_changes = existingtests.unanswered(changes, exist_answers)
+    if apply and unanswered:  # every open question in one round; nothing was written
+        contexts = _contexts(feature, analysis, rel, None, set())
+        raise ToolError("Answer these first: %s (ask the user, then call again with the "
+                        "answers; nothing was written)"
+                        % ", ".join(unanswered + ["tagRule.%s" % k for k in analysis.uncovered]
+                                    + ([existingtests.QUESTION_ID] if ask_changes else [])),
+                        questions=[choices.question(n, contexts[n]) for n in unanswered]
+                        + tagquestions.questions(analysis.uncovered, project)
+                        + ([existingtests.question(ask_changes)] if ask_changes else []))
     if apply and (analysis.uncovered or ask_changes):  # elicitation form, else needs_answer
         asked, ex = tagquestions.ask(ctx, analysis.uncovered, project, ask_changes)
         if ex is not None:
