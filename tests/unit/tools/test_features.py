@@ -598,12 +598,18 @@ def test_not_applicable_questions_are_never_asked(tmp_path, text, args, expected
         assert not err, res
 
 
-def test_rule_without_label_action_makes_tags_as_labels_not_applicable(tmp_path):
+def test_tags_as_labels_is_asked_for_plain_tags_only(tmp_path):
     ctx = ctx_for(tmp_path, yaml=RULES_YAML)
     path = feature_file(tmp_path, "Feature: F\n  @area=ui @comp=x\n  Scenario: A\n    Given a\n")
     assert "tagsAsLabels" not in qids(preview(ctx, path))
+    # a rule's label action is the rule's own answer, not a tagsAsLabels question
     path = feature_file(tmp_path, "Feature: F\n  @suite=s\n  Scenario: A\n    Given a\n", "b.feature")
-    assert "tagsAsLabels" in qids(preview(ctx, path))
+    assert "tagsAsLabels" not in qids(preview(ctx, path))
+    path = feature_file(tmp_path, "Feature: F\n  @suite=s @smoke\n  Scenario: A\n    Given a\n",
+                        "c.feature")
+    res = preview(ctx, path)
+    assert "tagsAsLabels" in qids(res)
+    assert res["questions"][qids(res).index("tagsAsLabels")]["context"]["tags"] == ["smoke"]
 
 
 def test_inline_backgrounds_create_no_preconditions_and_ignore_precond_tags(tmp_path):
@@ -1141,3 +1147,186 @@ def test_partial_jira_config_names_missing_parts_in_not_done(tmp_path):
     for nd in res["notDone"]:
         assert nd["reason"] == "Jira access not configured: site URL, email missing", nd
         assert "the email of the account the token belongs to" in nd["fix"]
+
+
+# -- questions about key:value tags no rule covers -------------------------------------------
+
+KV = "Feature: F\n  @suite:regression\n  Scenario: A\n    Given a\n"
+FIELD_YAML = """
+projects:
+  P:
+    fields:
+      test:
+        Component: {id: customfield_9, type: option}
+"""
+
+
+def _apply(ctx, path, **args):
+    return call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
+                apply=True, **dict(ans(createTestSet=False), **args))
+
+
+def test_uncovered_key_value_tag_is_a_preview_question_and_apply_asks(tmp_path):
+    ctx = ctx_for(tmp_path)
+    path = feature_file(tmp_path, KV)
+    res = preview(ctx, path, **ans(createTestSet=False))
+    assert qids(res) == ["tagRule.suite"]
+    q = res["questions"][0]
+    assert q["choices"] == ["label_as_is", "label_value", "test_set", "field", "skip"]
+    assert q["param"] == "tagRuleAnswers" and "default" not in q
+    assert q["context"]["examples"] == ["@suite:regression"]
+    assert q["context"]["suggestedTestSet"] == "Suite {value}"
+    assert res["perTest"][0]["labels"] == []  # never a label silently
+    res, err = _apply(ctx, path)
+    assert not err and res["status"] == "needs_answer", res
+    assert [x["id"] for x in res["questions"]] == ["tagRule.suite"]
+    assert writes(ctx) == [] and ctx.preferences.get("global", "P").get("tagRules") is None
+
+
+def test_both_separators_share_one_question_per_key(tmp_path):
+    ctx = ctx_for(tmp_path)
+    path = feature_file(tmp_path, "Feature: F\n  @suite:smoke\n  Scenario: A\n    Given a\n"
+                                  "  @Suite=regression @area=ui\n  Scenario: B\n    Given b\n")
+    res = preview(ctx, path, **ans(createTestSet=False))
+    assert qids(res) == ["tagRule.suite", "tagRule.area"]
+    assert res["questions"][0]["context"]["examples"] == ["@suite:smoke", "@Suite=regression"]
+    res, err = _apply(ctx, path, tagRuleAnswers={"suite": {"action": "label_value"},
+                                                 "area": {"action": "skip"}})
+    assert not err, res
+    labels = [c["jira"]["fields"].get("labels") for c in ctx.xray.calls_of("CreateTest")]
+    assert labels == [["smoke"], ["regression"]]
+
+
+@pytest.mark.parametrize("form", ["@suite:regression", "@suite=regression"])
+@pytest.mark.parametrize("answer,labels,sets,field,rule", [
+    ({"action": "label_as_is"}, ["{tag}"], [], None, {"tag": "suite", "label": "{tag}"}),
+    ({"action": "label_value"}, ["regression"], [], None, {"tag": "suite", "label": "{value}"}),
+    ({"action": "test_set"}, None, ["Suite regression"], None,
+     {"tag": "suite", "testSet": "Suite {value}"}),
+    ({"action": "test_set", "testSet": "Run {value}"}, None, ["Run regression"], None,
+     {"tag": "suite", "testSet": "Run {value}"}),
+    ({"action": "field", "field": "Component"}, None, [], ("customfield_9", {"value": "regression"}),
+     {"tag": "suite", "field": {"Component": "{value}"}}),
+    ({"action": "field", "field": "customfield_9"}, None, [],
+     ("customfield_9", {"value": "regression"}), {"tag": "suite", "field": {"Component": "{value}"}}),
+    ({"action": "field", "field": "customfield_44"}, None, [], ("customfield_44", "regression"),
+     {"tag": "suite", "field": {"customfield_44": "{value}"}}),
+    ({"action": "skip"}, None, [], None, {"tag": "suite", "skip": True}),
+])
+def test_each_answer_gives_its_rule_outcome_and_is_remembered(tmp_path, form, answer, labels,
+                                                              sets, field, rule):
+    ctx = ctx_for(tmp_path, yaml=FIELD_YAML)
+    path = feature_file(tmp_path, "Feature: F\n  %s\n  Scenario: A\n    Given a\n" % form)
+    res, err = _apply(ctx, path, tagRuleAnswers={"suite": answer})
+    assert not err, res
+    sent = ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]
+    if labels == ["{tag}"]:
+        labels = [form[1:]]
+    assert sent.get("labels") == labels
+    assert [c["jira"]["fields"]["summary"] for c in ctx.xray.calls_of("CreateTestSet")] == sets
+    if field:
+        assert sent[field[0]] == field[1]
+    assert ctx.preferences.get("global", "P")["tagRules"] == [rule]
+    # another value of the same key later: no question, the rule applies
+    path = feature_file(tmp_path, "Feature: F\n  @suite=smoke\n  Scenario: B\n    Given b\n",
+                        "b.feature")
+    assert qids(preview(ctx, path, **ans(createTestSet=False))) == []
+
+
+def test_existing_test_is_asked_too_then_labelled(tmp_path):
+    ctx = ctx_for(tmp_path, FakeXrayWorld(existing=_existing(labels=["old"])))
+    ctx.jira = RecJira()
+    path = feature_file(tmp_path, "Feature: F\n  @TEST_P-5 @suite:regression\n  Scenario: A\n"
+                                  "    Given x\n")
+    res = preview(ctx, path, **ans(createTestSet=False))
+    assert qids(res) == ["tagRule.suite"]
+    res, err = _apply(ctx, path)
+    assert not err and res["status"] == "needs_answer"
+    assert writes(ctx) == [] and ctx.jira.edits == []
+    res, err = _apply(ctx, path, tagRuleAnswers={"suite": {"action": "label_as_is"}})
+    assert not err, res
+    assert ctx.jira.edits == [("P-5", {"labels": ["old", "suite:regression"]})]
+
+
+def test_settings_or_remembered_rule_covering_the_key_asks_nothing(tmp_path):
+    ctx = ctx_for(tmp_path, yaml=RULES_YAML)
+    path = feature_file(tmp_path, "Feature: F\n  @suite=x @Area:ui\n  Scenario: A\n    Given a\n")
+    assert qids(preview(ctx, path, **ans(createTestSet=False))) == []
+    # settings rules and remembered ones both count; settings rules come first
+    ctx.preferences.update("global", "P", {"tagRules": [{"tag": "env", "skip": True},
+                                                        {"tag": "suite", "skip": True}]})
+    path = feature_file(tmp_path, "Feature: F\n  @suite=x @env=dev @os=mac\n  Scenario: A\n"
+                                  "    Given a\n", "b.feature")
+    res = preview(ctx, path, **ans(createTestSet=False))
+    assert qids(res) == ["tagRule.os"]
+    assert res["perTest"][0]["labels"] == ["x"]
+    assert res["choices"]["tagRules"] == {"count": 5, "source": "settings+remembered"}
+
+
+def test_unmatched_tags_skip_means_no_question(tmp_path):
+    ctx = ctx_for(tmp_path)
+    ctx.preferences.update("global", "P", {"unmatchedTags": "skip"})
+    path = feature_file(tmp_path, KV)
+    assert qids(preview(ctx, path, **ans(createTestSet=False))) == []
+
+
+def test_plain_tags_still_go_through_tags_as_labels(tmp_path):
+    ctx = ctx_for(tmp_path)
+    path = feature_file(tmp_path, "Feature: F\n  @smoke @suite:x\n  Scenario: A\n    Given a\n")
+    res = preview(ctx, path, createTestSet=False, aiLabel="")
+    assert qids(res) == ["tagsAsLabels", "tagRule.suite"]
+    ctx.xray.calls.clear()
+    res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
+                    apply=True, createTestSet=False, aiLabel="")
+    assert err and qids(res) == ["tagsAsLabels", "tagRule.suite"]
+    assert "tagRule.suite" in res["error"] and ctx.xray.calls == []
+    res, err = _apply(ctx, path, tagsAsLabels=False, tagRuleAnswers={"suite": {"action": "label_as_is"}})
+    assert not err, res
+    assert ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]["labels"] == ["suite:x"]
+
+
+def test_elicitation_form_asks_every_key_without_default_and_remembers(tmp_path):
+    ctx = ctx_for(tmp_path)
+    ctx.channel = FormChannel({"tagRule.suite": "test_set", "tagRule.suite.testSet": "",
+                               "tagRule.area": "label_value"})
+    path = feature_file(tmp_path, "Feature: F\n  @suite:regression @area=ui\n  Scenario: A\n"
+                                  "    Given a\n")
+    res, err = _apply(ctx, path)
+    assert not err, res
+    schema = ctx.channel.asked[0]
+    assert schema["required"] == ["tagRule.suite", "tagRule.area"]
+    assert schema["properties"]["tagRule.suite"]["enum"] == [
+        "label_as_is", "label_value", "test_set", "field", "skip"]
+    assert all("default" not in p for p in schema["properties"].values())
+    assert all(p["type"] == "string" for p in schema["properties"].values())
+    assert [c["jira"]["fields"]["summary"] for c in ctx.xray.calls_of("CreateTestSet")] == [
+        "Suite regression"]
+    assert ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]["labels"] == ["ui"]
+    assert ctx.preferences.get("global", "P")["tagRules"] == [
+        {"tag": "suite", "testSet": "Suite {value}"}, {"tag": "area", "label": "{value}"}]
+
+
+@pytest.mark.parametrize("answer", [None, {"tagRule.suite": "field"}, {"tagRule.suite": "x"}])
+def test_declined_or_incomplete_form_writes_and_remembers_nothing(tmp_path, answer):
+    ctx = ctx_for(tmp_path)
+    ctx.channel = FormChannel(answer)
+    res, err = _apply(ctx, feature_file(tmp_path, KV))
+    assert err and writes(ctx) == [], res
+    assert "tagRules" not in ctx.preferences.get("global", "P")
+
+
+@pytest.mark.parametrize("answers,msg", [
+    ("label", "expected object"),
+    ({"suite": "skip"}, "must be an object"),
+    ({"suite": {"action": "nope"}}, "action must be one of"),
+    ({"suite": {"action": "field"}}, "needs `field`"),
+    ({"suite": {"action": "skip", "testSet": "X"}}, "only goes with action test_set"),
+    ({"suite": {"action": "skip", "extra": "1"}}, "unknown key"),
+    ({"suite": {"action": "field", "field": "Nope"}}, "unknown field"),
+    ({"suite": {"action": "test_set", "testSet": "{bad}"}}, "unknown placeholder"),
+])
+def test_invalid_tag_rule_answers_are_refused_before_calls(tmp_path, answers, msg):
+    ctx = ctx_for(tmp_path)
+    res, err = _apply(ctx, feature_file(tmp_path, KV), tagRuleAnswers=answers)
+    assert err and msg in res["error"], res
+    assert writes(ctx) == [] and "tagRules" not in ctx.preferences.get("global", "P")

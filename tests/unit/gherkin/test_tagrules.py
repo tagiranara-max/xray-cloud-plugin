@@ -97,17 +97,32 @@ def test_skip_consumes_without_output():
 
 
 def test_unmatched_keep_vs_skip():
-    keep = run(["a", "b=c"], {"tag": "x", "label": "l"}, unmatched="keep")
-    assert keep.labels == ["a", "b=c"] and keep.unmatched == ["a", "b=c"] and keep.consumed == []
+    # an uncovered key:value tag is never kept as a label (the import asks about its key)
+    keep = run(["a", "b=c", "d:e", "f:"], {"tag": "x", "label": "l"}, unmatched="keep")
+    assert keep.labels == ["a", "f:"] and keep.unmatched == ["a", "b=c", "d:e", "f:"]
+    assert keep.consumed == []
     skip = run(["a", "b=c"], {"tag": "x", "label": "l"}, unmatched="skip")
     assert skip.labels == [] and skip.unmatched == ["a", "b=c"]
 
 
-def test_tags_as_labels_false_drops_labels_and_unmatched_but_keeps_sets_and_fields():
+def test_tags_as_labels_false_drops_unmatched_plain_tags_only():
     o = run(["suite=p", "plain"], {"tag": "suite", "label": "{value}", "testSet": "{value}",
                                     "field": {"component": "{value}"}}, labels=False)
-    assert o.labels == [] and o.test_sets == ["p"] and o.fields == {"component": "p"}
+    assert o.labels == ["p"] and o.test_sets == ["p"] and o.fields == {"component": "p"}
     assert o.consumed == ["suite=p"] and o.unmatched == ["plain"]
+
+
+def test_kv_key_covers_both_separators_and_needs_a_value():
+    from xray_cloud.gherkin.tagrules import kv_key
+    assert kv_key("Suite:smoke") == "suite" and kv_key("suite=regression") == "suite"
+    assert kv_key("suite:") is None and kv_key("plain") is None
+
+
+def test_rule_field_accepts_a_custom_field_id():
+    rules = parse_rules([{"tag": "x", "field": {"customfield_77": "{value}"}}], set(), "r")
+    assert apply_rules(["x:1"], rules, True).fields == {"customfield_77": "1"}
+    with pytest.raises(ToolError):
+        parse_rules([{"tag": "x", "field": {"Nope": "{value}"}}], set(), "r")
 
 
 def test_no_rules_behaves_per_flags():

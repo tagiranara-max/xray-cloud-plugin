@@ -76,19 +76,39 @@ def resolve(ctx: ServerContext, project_key: str, name: str,
     found, value = _from_settings(ctx, project_key, name)
     if found:
         return value, "settings"
+    found, value = _remembered(ctx, project_key, name)
+    return (value, "remembered") if found else (None, None)
+
+
+def remembered_value(ctx: ServerContext, project_key: str, name: str) -> Any:
+    """The remembered (checked) value of a choice, else None."""
+    return _remembered(ctx, project_key, name)[1]
+
+
+def _remembered(ctx: ServerContext, project_key: str, name: str) -> Tuple[bool, Any]:
     region = region_of(ctx)
     remembered = ctx.preferences.get(region, project_key, ctx.site)
-    if name in remembered:
-        value = remembered[name]
-        problem = _remembered_problem(name, value)
-        if problem:
-            path = ctx.preferences.path
-            raise ToolError("The preferences file %s has an invalid remembered %s for %s/%s: "
-                            "%s; fix or delete that entry, or set it with set_preferences"
-                            % (path, name, region, project_key, problem),
-                            file=str(path), key="%s/%s" % (region, project_key), choice=name)
-        return value, "remembered"
-    return None, None
+    if name not in remembered:
+        return False, None
+    value = remembered[name]
+    problem = _remembered_problem(name, value)
+    if problem:
+        path = ctx.preferences.path
+        raise ToolError("The preferences file %s has an invalid remembered %s for %s/%s: "
+                        "%s; fix or delete that entry, or set it with set_preferences"
+                        % (path, name, region, project_key, problem),
+                        file=str(path), key="%s/%s" % (region, project_key), choice=name)
+    return True, value
+
+
+def add_tag_rules(ctx: ServerContext, project_key: str, rules: list) -> None:
+    """Append raw tag rules (answers to the import's tag questions) to the project's
+    remembered tagRules."""
+    if not rules:
+        return
+    current = remembered_value(ctx, project_key, "tagRules") or []
+    ctx.preferences.update(region_of(ctx), project_key,
+                           {"tagRules": list(current) + list(rules)}, ctx.site)
 
 
 def _remembered_problem(name: str, value: Any) -> Optional[str]:

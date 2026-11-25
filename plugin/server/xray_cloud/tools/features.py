@@ -4,14 +4,14 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-from .. import choices
+from .. import choices, tagquestions
 from ..config import ProjectSettings, project_dir
 from ..context import (ServerContext, dedupe, is_permission_error, partial_failure,
                        permission_denied, require_project, require_write)
 from ..errors import ToolError
 from .. import requiredfields
 from ..gherkin.parse import ParsedFeature, parse_feature
-from ..gherkin.tagrules import TagRule, parse_rules
+from ..gherkin.tagrules import FIELD_ID, TagRule, kv_key, parse_rules
 from ..jira_client import LINK_TYPE
 from ..localfiles import PATH_NOTE, read_local_file
 from ..gherkin.plan import (CUCUMBER, UNNAMED_PREFIX, ImportAction, ImportOptions, TagAnalysis,
@@ -303,22 +303,28 @@ _BOOL = {"type": "boolean"}
 
 
 def _rules(ctx: ServerContext, pk: str, project: ProjectSettings) -> Tuple[List[TagRule], Any]:
-    """Resolved tag rules for the project (settings rules are parsed already; remembered ones
-    are raw JSON and parsed here). A settings rule naming a field this project lacks is refused
-    (top-level rules are checked against the union of all projects at load)."""
+    """Resolved tag rules for the project: settings rules (parsed already) first, then the
+    remembered ones (raw JSON, parsed here; answers to the import's tag questions land there).
+    A settings rule naming a field this project lacks is refused (top-level rules are checked
+    against the union of all projects at load)."""
     value, source = choices.resolve(ctx, pk, "tagRules", None)
     names = set((project.fields.get("test") or {}))
     if value is None:
         return [], None
-    if all(isinstance(r, TagRule) for r in value):
-        for i, r in enumerate(value):
-            unknown = sorted(n for n in r.fields if n not in names)
-            if unknown:
-                raise ToolError("featureImport.tagRules[%d] sets field(s) %s, which project %s "
-                                "does not define in fields.test; nothing was imported"
-                                % (i, ", ".join(unknown), pk), unknownFields=unknown)
-        return list(value), source
-    return parse_rules(value, names, "remembered tagRules of %s" % pk), source
+    if source != "settings":
+        return parse_rules(value, names, "remembered tagRules of %s" % pk), source
+    for i, r in enumerate(value):
+        unknown = sorted(n for n in r.fields if n not in names and not FIELD_ID.fullmatch(n))
+        if unknown:
+            raise ToolError("featureImport.tagRules[%d] sets field(s) %s, which project %s "
+                            "does not define in fields.test; nothing was imported"
+                            % (i, ", ".join(unknown), pk), unknownFields=unknown)
+    rules = list(value)
+    remembered = choices.remembered_value(ctx, pk, "tagRules")
+    if remembered:
+        rules += parse_rules(remembered, names, "remembered tagRules of %s" % pk)
+        source = "settings+remembered"
+    return rules, source
 
 
 def _applicable(feature: ParsedFeature, analysis: TagAnalysis, values: Dict[str, Any]) -> Dict[str, bool]:
@@ -346,7 +352,7 @@ def _contexts(feature: ParsedFeature, analysis: TagAnalysis, rel: str,
            "backgrounds": {"backgrounds": [
                dict({"name": b.name, "scope": b.scope, "line": b.line, "steps": len(b.steps)},
                     **({"rule": b.rule} if b.rule else {})) for b in feature.backgrounds]},
-           "tagsAsLabels": {"tags": list(analysis.plain_tags)},
+           "tagsAsLabels": {"tags": [t for t in analysis.plain_tags if kv_key(t) is None]},
            "aiLabel": {}, "aiLabelScope": {}}
     if plan is not None:
         fs = next((a for a in plan if a.feature_set), None)
@@ -442,17 +448,17 @@ def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: 
 @REGISTRY.tool(
     "create_tests_from_feature",
     "Import a .feature file the Xray way: each Scenario/Outline becomes a Cucumber test. "
-    "Backgrounds become Pre-Conditions (or inline steps with backgrounds=inline); the Feature"
-    " can become a Test Set. Tags go through the project's tag rules (settings or remembered;"
-    " none built in) into labels, Test Sets and fields; @TEST_<KEY> or @<KEY> updates that "
-    "test, @REQ_<KEY> links a requirement. Choices (createTestSet, backgrounds, tagsAsLabels,"
-    " aiLabel, aiLabelScope) come from the call, settings or remembered answers. If the "
-    "preview has non-empty `questions`, ask the user once and call again with the answers; "
-    "apply=true with unanswered questions is refused. apply=false (default) previews the "
-    "plan; apply=true executes it, skipping possible duplicates unless indexed in "
-    "createDuplicates. Anything not doable is in notDone {item, what, reason, fix}: if the "
-    "reason says Jira access is missing or not configured and Atlassian MCP tools are available, "
-    "offer to complete them with those. fields/rawFields apply to created tests.",
+    "Backgrounds become Pre-Conditions (or inline steps); the Feature can become a Test Set. Tags go through the project's tag rules (settings or remembered)"
+    " into labels, Test Sets and fields; @TEST_<KEY> or @<KEY> updates that test, @REQ_<KEY> "
+    "links a requirement. A key:value tag no rule covers is asked about per key (tagRule.<key>"
+    ", answered in tagRuleAnswers, remembered as a rule). Choices (createTestSet, backgrounds,"
+    " tagsAsLabels, aiLabel, aiLabelScope) come from the call, settings or remembered answers."
+    " If the preview has non-empty `questions`, ask the user once and call again with the "
+    "answers. apply=false (default) previews; apply=true executes, skipping possible "
+    "duplicates unless indexed in createDuplicates. Anything not doable is in notDone {item, "
+    "what, reason, fix}: if the reason says Jira access is missing and Atlassian MCP tools "
+    "are available, offer to complete them with those. fields/rawFields "
+    "apply to created tests.",
     _schema({"featureFilePath": {"type": "string", "description":
                                  "Local .feature file. " + PATH_NOTE},
              "apply": {"type": "boolean"},
@@ -467,6 +473,7 @@ def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: 
                           "Answers are remembered for the project on apply when nothing is "
                           "remembered yet. Default false: a differing answer applies to this "
                           "call only; true makes it replace the remembered one."},
+             "tagRuleAnswers": tagquestions.PARAM_SCHEMA,
              "createDuplicates": {"type": "array", "items": {"type": "integer", "minimum": 0}},
              "fields": _OBJ, "rawFields": _OBJ,
              "preconditionFields": {"type": "object", "description":
@@ -502,16 +509,35 @@ def create_tests_from_feature(ctx, args):
         unmatched_tags=values["unmatchedTags"] or "keep",
         rules=rules, ai_label=values["aiLabel"] or "",
         ai_scope=values["aiLabelScope"] or "tests", project=project)
+    # key:value tags no rule covers: answered rules are added (remembered on apply)
+    tag_answers = tagquestions.parse_answers(args.get(tagquestions.PARAM))
+    names = set(project.fields.get("test") or {})
+    new_rules: List[dict] = []
+
+    def analyze():
+        opts.rules = rules + parse_rules(new_rules, names, tagquestions.PARAM)
+        return analyze_tags(feature, pk, opts)
+
     analysis = analyze_tags(feature, pk, opts)
+    new_rules = tagquestions.pending(tag_answers, analysis.uncovered, project)
+    if new_rules:
+        analysis = analyze()
     applicable = _applicable(feature, analysis, values)
-    if not applicable["aiLabel"]:
-        opts.ai_label = ""
     unanswered = [n for n in QUESTION_IDS if applicable[n] and values[n] is None]
     if apply and unanswered:
         contexts = _contexts(feature, analysis, rel, None, set())
         raise ToolError("Answer these first: %s (ask the user, then call again with the "
-                        "answers; nothing was written)" % ", ".join(unanswered),
-                        questions=[choices.question(n, contexts[n]) for n in unanswered])
+                        "answers; nothing was written)"
+                        % ", ".join(unanswered + ["tagRule.%s" % k for k in analysis.uncovered]),
+                        questions=[choices.question(n, contexts[n]) for n in unanswered]
+                        + tagquestions.questions(analysis.uncovered, project))
+    if apply and analysis.uncovered:  # elicitation form, else needs_answer
+        asked = tagquestions.ask(ctx, analysis.uncovered, project)
+        new_rules = new_rules + tagquestions.pending(asked, analysis.uncovered, project)
+        analysis = analyze()
+        applicable = _applicable(feature, analysis, values)
+    if not applicable["aiLabel"]:
+        opts.ai_label = ""
 
     # -- fields for every item type that may be created: refuse the whole file first
     def build(c):
@@ -553,7 +579,9 @@ def create_tests_from_feature(ctx, args):
         shown["tagRules"] = {"count": len(rules), "source": rules_source}
         out: Dict[str, Any] = {"preview": True, "feature": feature.name, "path": rel,
                                "questions": [choices.question(n, contexts[n])
-                                             for n in unanswered] + field_questions,
+                                             for n in unanswered]
+                               + tagquestions.questions(analysis.uncovered, project)
+                               + field_questions,
                                "choices": shown,
                                "actions": [a.to_dict() for a in plan],
                                "perTest": _per_test(plan), "testSets": _preview_sets(plan),
@@ -563,10 +591,12 @@ def create_tests_from_feature(ctx, args):
                                "notDone": not_done}
         if analysis.warnings:
             out["warnings"] = list(analysis.warnings)
-        if unanswered:
+        if unanswered or analysis.uncovered:
             out["hint"] = ("answer the questions (ask the user once), then call again with the "
-                           "answers; until then the actions assume createTestSet=true, "
-                           "backgrounds=preconditions, tagsAsLabels=true and no AI label")
+                           "answers (tagRule.<key> ones in tagRuleAnswers); until then the "
+                           "actions assume createTestSet=true, backgrounds=preconditions, "
+                           "tagsAsLabels=true, no AI label and nothing from unanswered "
+                           "key:value tags")
         elif field_questions:
             out["hint"] = ("required fields have no value: ask the user, then call again with "
                            "each answer in the question's `param` ({field id: value})")
@@ -581,6 +611,7 @@ def create_tests_from_feature(ctx, args):
     # All validation passed: remember the call's answers, then write (ruling R5).
     choices.remember(ctx, pk, {n: args.get(n) for n in QUESTION_IDS},
                      bool(args.get("remember", False)))
+    choices.add_tag_rules(ctx, pk, new_rules)
     run = _Run(ctx, pk, plan, skip, test_extras, pre_extra, set_extra)
     result = run.run()
     out = {"feature": feature.name, "path": rel, "created": run.created, "updated": run.updated,

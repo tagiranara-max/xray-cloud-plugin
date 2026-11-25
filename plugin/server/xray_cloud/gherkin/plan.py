@@ -14,13 +14,13 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from ..context import (ISSUE_KEY_RE, ServerContext, check_issue_in_project, dedupe, jql_str,
                        jql_text)
-from ..config import ProjectSettings
+from ..config import FieldSpec, ProjectSettings
 from ..errors import ToolError
 from ..notdone import (NEVER_OVERWRITE_FIX, NO_JIRA_FIX, NO_JIRA_REASON,  # noqa: F401
                        UNREADABLE_FIX, UNREADABLE_REASON, jira_reason_fix, not_done)
 from .parse import ParsedBackground, ParsedFeature, ParsedScenario
 from .serialize import background_definition, scenario_definition
-from .tagrules import TagOutcome, TagRule, apply_rules, merge_outcomes
+from .tagrules import FIELD_ID, TagOutcome, TagRule, apply_rules, kv_key, merge_outcomes
 
 CUCUMBER = "Cucumber"
 UNNAMED_PREFIX = "Background for: "
@@ -238,8 +238,11 @@ class TagAnalysis:
     scenarios: List[ScenarioTags]
     bg_keys: List[Optional[str]]  # #@PRECOND_ key per Background (None when inline)
     plain_tags: List[str]      # distinct non-issue-key tags (without "@")
-    any_label: bool            # some tag would give a label with tagsAsLabels=true
+    any_label: bool            # some plain tag no rule covers would be kept as a label
     warnings: List[str]
+    # key:value tags no rule covers: lower-cased key -> distinct tags (without "@"), in
+    # first-seen order; the import asks what each key means (empty with unmatchedTags=skip)
+    uncovered: Dict[str, List[str]] = field(default_factory=dict)
 
     @property
     def tag_sets(self) -> List[str]:
@@ -259,7 +262,7 @@ def analyze_tags(feature: ParsedFeature, project_key: str,
     feat_plain, feat_reqs = _container_tags(feature.tags, "Feature")
     feat_out = _outcome(feat_plain, opts, opts.tags_as_labels)
     plain_all: List[str] = list(feat_plain)
-    any_label = bool(_outcome(feat_plain, opts, True).labels)
+    any_label = _keeps_label(feat_out, opts)
     scenarios: List[ScenarioTags] = []
     seen_keys: Dict[str, int] = {}
     problems: List[str] = []
@@ -273,9 +276,9 @@ def analyze_tags(feature: ParsedFeature, project_key: str,
         if test_key:
             seen_keys[test_key] = i
         plain_all.extend(r_plain + plain)
-        any_label = any_label or bool(_outcome(r_plain + plain, opts, True).labels)
         merged = merge_outcomes(feat_out, _outcome(r_plain, opts, opts.tags_as_labels),
                                 _outcome(plain, opts, opts.tags_as_labels))
+        any_label = any_label or _keeps_label(merged, opts)
         problems.extend("scenario %r (line %d): %s" % (s.name, s.line, p)
                         for p in merged.problems if p not in feat_out.problems)
         scenarios.append(ScenarioTags(merged, dedupe(feat_reqs + r_reqs + reqs), test_key))
@@ -298,7 +301,19 @@ def analyze_tags(feature: ParsedFeature, project_key: str,
         if dup_bg:
             raise ToolError("Pre-Condition key %s is used by more than one Background"
                             % dup_bg[0])
-    return TagAnalysis(feat_out, scenarios, bg_keys, dedupe(plain_all), any_label, warnings)
+    uncovered: Dict[str, List[str]] = {}
+    if opts.unmatched_tags == "keep":
+        for tag in dedupe(plain_all):
+            key = kv_key(tag)
+            if key is not None and tag in _outcome([tag], opts, False).unmatched:
+                uncovered.setdefault(key, []).append(tag)
+    return TagAnalysis(feat_out, scenarios, bg_keys, dedupe(plain_all), any_label, warnings,
+                       uncovered)
+
+
+def _keeps_label(outcome: TagOutcome, opts: ImportOptions) -> bool:
+    """Whether a plain tag no rule covers would be kept as a label (tagsAsLabels=true)."""
+    return opts.unmatched_tags == "keep" and any(kv_key(t) is None for t in outcome.unmatched)
 
 
 def feature_set_name(feature: ParsedFeature, feature_path: str) -> str:
@@ -397,14 +412,27 @@ def _same_value(wanted: Any, current: Any) -> bool:
     return _show(wanted) == _show(current)
 
 
+def _rule_specs(opts: ImportOptions, names: Any) -> Dict[str, FieldSpec]:
+    """Field specs of rule field names: settings fields.test, plus a plain string spec for a
+    customfield_<n> id the settings do not name."""
+    specs = dict((opts.project.fields.get("test") or {}) if opts.project else {})
+    for n in names:
+        if n not in specs and FIELD_ID.fullmatch(n):
+            specs[n] = FieldSpec(n, n, None, "string", False, None)
+    return specs
+
+
 def _existing_test_fields(ctx: ServerContext, a: ImportAction, current: Dict[str, Any],
                           opts: ImportOptions, has_jira: bool) -> None:
     """Rule fields on an existing test: set via Jira only when empty; never overwritten. An
     equal value is left alone silently; a value that could not be read is never written."""
     from ..fields import build_jira_fields
     from ..tools.tests import _lenient
-    specs = (opts.project.fields.get("test") or {}) if opts.project else {}
+    specs = _rule_specs(opts, a.fields)
     lenient = _lenient(opts.project, "test") if opts.project else None
+    if lenient is not None:
+        extra = {n: s for n, s in specs.items() if n not in lenient.fields["test"]}
+        lenient.fields["test"].update(extra)
     todo: Dict[str, Any] = {}
     for name, value in a.fields.items():
         spec = specs.get(name)
@@ -446,7 +474,6 @@ def plan_import(ctx: ServerContext, project_key: str, feature: ParsedFeature, fe
     if analysis is None:
         analysis = analyze_tags(feature, project_key, opts)
     has_jira = ctx.jira is not None
-    specs = (opts.project.fields.get("test") or {}) if opts.project else {}
 
     # -- tests
     tests: List[ImportAction] = []
@@ -458,7 +485,8 @@ def plan_import(ctx: ServerContext, project_key: str, feature: ParsedFeature, fe
                          description=s.description, requirement_keys=list(st.requirement_keys),
                          test_sets=list(st.outcome.test_sets), fields=dict(st.outcome.fields))
         if st.test_key:
-            ids = [specs[n].id for n in a.fields if n in specs and specs[n].id]
+            ids = [s_.id for n, s_ in _rule_specs(opts, a.fields).items()
+                   if n in a.fields and s_.id]
             r = fetch_test(ctx, project_key, st.test_key, jira_fields=ids)
             tt = r.get("testType")
             tt = tt.get("name") if isinstance(tt, dict) else tt
