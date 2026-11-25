@@ -595,7 +595,7 @@ def test_first_import_asks_apply_refuses_with_zero_calls_then_remembered(project
                     apply=True)
     assert err and res["error"].startswith("Answer these first")
     assert qids(res) == ["createTestSet", "backgrounds", "aiLabel", "aiLabelScope"]
-    assert ctx.xray.calls == []
+    assert writes(ctx) == []  # planned (reads only) so every question is in this round
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=LOGIN,
                     apply=True, createTestSet=True, backgrounds="preconditions",
                     aiLabel="ai-made", aiLabelScope="tests")
@@ -1340,7 +1340,7 @@ def test_plain_tags_still_go_through_tags_as_labels(tmp_path):
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
                     apply=True, createTestSet=False, aiLabel="")
     assert err and qids(res) == ["tagsAsLabels", "tagRule.suite"]
-    assert "tagRule.suite" in res["error"] and ctx.xray.calls == []
+    assert "tagRule.suite" in res["error"] and writes(ctx) == []
     res, err = _apply(ctx, path, tagsAsLabels=False,
                       tagRuleAnswers={"suite": {"action": "label_as_is"}})
     assert not err, res
@@ -1819,7 +1819,7 @@ def test_option_values_are_matched_by_name_with_create_metadata(tmp_path):
     assert sent["priority"] == {"name": "High"}
 
 
-def test_team_value_is_asked_once_remembered_in_the_rule_and_asked_again_for_a_new_value(
+def test_team_value_is_asked_once_remembered_and_asked_again_for_a_new_value(
         tmp_path):
     ctx = ctx_for(tmp_path)
     ctx.jira = TeamMetaJira()
@@ -1840,8 +1840,9 @@ def test_team_value_is_asked_once_remembered_in_the_rule_and_asked_again_for_a_n
     assert not err, res
     assert [c["jira"]["fields"]["customfield_50"] for c in ctx.xray.calls_of("CreateTest")] \
         == ["team-7", "team-7"]
-    assert ctx.preferences.get("global", "P")["tagRules"] == [
-        {"tag": "team", "field": {"customfield_50": "{value}"}, "values": {"checkout": "team-7"}}]
+    prefs = ctx.preferences.get("global", "P")
+    assert prefs["tagRules"] == [{"tag": "team", "field": {"customfield_50": "{value}"}}]
+    assert prefs["tagValues"] == {"customfield_50": {"checkout": "team-7"}}
     # the same value later: not asked; a new value: asked
     path = feature_file(tmp_path, "Feature: F\n  @team=Checkout\n  Scenario: C\n    Given c\n"
                                   "  @team=search\n  Scenario: D\n    Given d\n", "b.feature")
@@ -1863,9 +1864,9 @@ def test_custom_field_without_the_jira_token_is_asked_not_sent_as_text(tmp_path)
     assert not err, res
     assert ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]["customfield_44"] == {
         "value": "Reg"}
-    assert ctx.preferences.get("global", "P")["tagRules"] == [
-        {"tag": "suite", "field": {"customfield_44": "{value}"},
-         "values": {"regression": {"value": "Reg"}}}]
+    prefs = ctx.preferences.get("global", "P")
+    assert prefs["tagRules"] == [{"tag": "suite", "field": {"customfield_44": "{value}"}}]
+    assert prefs["tagValues"] == {"customfield_44": {"regression": {"value": "Reg"}}}
 
 
 def test_option_without_a_matching_name_is_asked(tmp_path):
@@ -1894,8 +1895,9 @@ def test_field_answer_then_value_question_follow_in_the_form_before_any_write(tm
     assert len(ctx.channel.asked) == 2
     assert ctx.channel.asked[1]["required"] == ["tagValue.customfield_50.checkout"]
     assert ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]["customfield_50"] == "t-1"
-    assert ctx.preferences.get("global", "P")["tagRules"] == [
-        {"tag": "team", "field": {"customfield_50": "{value}"}, "values": {"checkout": "t-1"}}]
+    prefs = ctx.preferences.get("global", "P")
+    assert prefs["tagRules"] == [{"tag": "team", "field": {"customfield_50": "{value}"}}]
+    assert prefs["tagValues"] == {"customfield_50": {"checkout": "t-1"}}
 
 
 def test_value_question_joins_the_tag_questions_in_one_form(tmp_path):
@@ -1926,7 +1928,7 @@ projects:
 """
 
 
-def test_settings_rule_value_answer_is_used_but_not_stored(tmp_path):
+def test_settings_rule_value_is_asked_once_then_remembered_for_the_project(tmp_path):
     ctx = ctx_for(tmp_path, yaml=SETTINGS_TEAM)
     path = feature_file(tmp_path, "Feature: F\n  @owner=alice\n  Scenario: A\n    Given a\n")
     res = preview(ctx, path, **ans(createTestSet=False))
@@ -1935,8 +1937,16 @@ def test_settings_rule_value_answer_is_used_but_not_stored(tmp_path):
     assert not err, res
     assert ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]["customfield_60"] == {
         "accountId": "acc-1"}
-    assert any("settings file" in w and "values" in w for w in res["warnings"])
-    assert "tagRules" not in ctx.preferences.get("global", "P")
+    prefs = ctx.preferences.get("global", "P")
+    assert "tagRules" not in prefs and prefs["tagValues"] == {"Owner": {"alice": "acc-1"}}
+    # a second import with the same value: silent, the remembered answer is sent
+    path = feature_file(tmp_path, "Feature: F\n  @owner=Alice\n  Scenario: B\n    Given b\n",
+                        "b.feature")
+    assert qids(preview(ctx, path, **ans(createTestSet=False))) == []
+    res, err = _apply(ctx, path)
+    assert not err, res
+    assert ctx.xray.calls_of("CreateTest")[-1]["jira"]["fields"]["customfield_60"] == {
+        "accountId": "acc-1"}
 
 
 def test_settings_rule_with_a_value_map_asks_nothing(tmp_path):
@@ -2152,4 +2162,36 @@ def test_apply_with_open_choices_lists_value_questions_in_the_same_refusal(tmp_p
     res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
                     apply=True)
     assert err and res["error"].startswith("Answer these first")
-    assert "tagValue.Owner.alice" in qids(res) and ctx.xray.calls == []
+    assert "tagValue.Owner.alice" in qids(res) and writes(ctx) == []
+
+
+def test_settings_values_map_beats_a_remembered_answer(tmp_path):
+    ctx = ctx_for(tmp_path, yaml=SETTINGS_TEAM + "          values: {alice: acc-9}\n")
+    ctx.preferences.update("global", "P", {"tagValues": {"Owner": {"alice": "acc-old"}}})
+    path = feature_file(tmp_path, "Feature: F\n  @owner=alice\n  Scenario: A\n    Given a\n")
+    res, err = _apply(ctx, path)
+    assert not err, res
+    assert ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]["customfield_60"] == {
+        "accountId": "acc-9"}
+
+
+def test_name_match_is_asked_on_a_direct_apply_in_the_first_round(tmp_path):
+    ctx = ctx_for(tmp_path, _named_world())
+    path = feature_file(tmp_path, NAMED)
+    res, err = call(ctx, "create_tests_from_feature", projectKey="P", featureFilePath=path,
+                    apply=True)
+    assert err and res["error"].startswith("Answer these first")
+    assert qids(res)[-1] == "existingTests" and writes(ctx) == []
+
+
+def test_call_field_on_a_name_matched_existing_test_is_reported_not_dropped(tmp_path):
+    world = _named_world()
+    world.existing["P-1"]["jira"]["customfield_60"] = None
+    ctx = ctx_for(tmp_path, world, yaml=SETTINGS_TEAM)
+    ctx.jira = RecJira()
+    path = feature_file(tmp_path, "Feature: F\n  @owner=alice\n  Scenario: A\n    Given a\n")
+    res, err = _apply(ctx, path, fields={"Owner": "acc-3"}, existingTests="update")
+    assert not err, res
+    assert ctx.jira.edits == []
+    assert [n["what"] for n in res["notDone"]] == ["field Owner"]
+    assert "created tests only" in res["notDone"][0]["reason"]

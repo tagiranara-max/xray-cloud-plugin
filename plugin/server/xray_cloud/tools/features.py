@@ -1,7 +1,6 @@
 """create_tests_from_feature: import a .feature file with Xray-native semantics (spec 6.4a)."""
 from __future__ import annotations
 
-import copy
 import os
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -682,7 +681,7 @@ def create_tests_from_feature(ctx, args):
     resolved = {n: choices.resolve(ctx, pk, n, args.get(n)) for n in QUESTION_IDS}
     resolved["unmatchedTags"] = choices.resolve(ctx, pk, "unmatchedTags", None)
     values = {n: v for n, (v, _) in resolved.items()}
-    rules, rules_source, remembered_raw, offset = _rules(ctx, pk, project)
+    rules, rules_source = _rules(ctx, pk, project)[:2]
     opts = ImportOptions(
         # spec 8: never a Feature Test Set without a Feature name (whatever settings or
         # remembered answers say); unanswered with a name: preview as "yes"
@@ -696,10 +695,15 @@ def create_tests_from_feature(ctx, args):
     tag_answers = tagquestions.parse_answers(args.get(tagquestions.PARAM))
     exist_answers = existingtests.parse(args)
     opts.key_answers = keytags.parse(args.get(keytags.PARAM))
-    opts.value_answers = tagvalues.parse(args.get(tagvalues.PARAM))
+    call_values = tagvalues.parse(args.get(tagvalues.PARAM))
+    remembered_values = choices.tag_values(ctx, pk)
+    # remembered answers for the project, the call's win; a rule's own values map beats both
+    opts.value_answers = {f: dict(remembered_values.get(f) or {}, **(call_values.get(f) or {}))
+                          for f in set(remembered_values) | set(call_values)}
     names = set(project.fields.get("test") or {})
     has_jira = ctx.jira is not None
     overridden = _call_overrides(ctx, project, args)
+    opts.call_overrides = overridden
     new_rules: List[dict] = []
 
     def analyze():
@@ -721,13 +725,10 @@ def create_tests_from_feature(ctx, args):
     unanswered = [n for n in QUESTION_IDS if applicable[n] and values[n] is None]
     value_qs = open_values()
 
-    def make_plan(read: bool):
-        """(plan, changes to existing tests). Planned before the questions are asked (it only
-        reads), so the existing-tests question (key tags and name matches) joins the others;
-        while choices are open on apply only when a key tag names a test (that refusal makes
-        no Xray call otherwise)."""
-        if not read:
-            return None, []
+    def make_plan():
+        """(plan, changes to existing tests). Planned before any question is asked (it only
+        reads), so the existing-tests question (key tags and name matches) joins the others
+        in the first round."""
         if not applicable["aiLabel"]:
             opts.ai_label = ""
         p = plan_import(ctx, pk, feature, rel, opts, analysis)
@@ -736,8 +737,7 @@ def create_tests_from_feature(ctx, args):
         _alias_create_duplicates(c, exist_answers, create_dups)
         return p, c
 
-    plan, changes = make_plan(not (apply and unanswered)
-                              or any(st.test_key for st in analysis.scenarios))
+    plan, changes = make_plan()
     ask_changes = existingtests.unanswered(changes, exist_answers)
     if apply and unanswered:  # every open question in one round; nothing was written
         contexts = _contexts(feature, analysis, rel, None, set())
@@ -759,7 +759,12 @@ def create_tests_from_feature(ctx, args):
     while apply and (analysis.uncovered or analysis.key_questions or ask_changes or value_qs):
         rounds += 1
         if rounds > 3:
-            raise ToolError("Questions are still open after the answers; nothing was written")
+            still = (["tagRule.%s" % k for k in analysis.uncovered]
+                     + ["keyTag.%s" % k for k in analysis.key_questions]
+                     + [tagvalues.qid(*k) for k in value_qs]
+                     + ([existingtests.QUESTION_ID] if ask_changes else []))
+            raise ToolError("Questions are still open after the answers: %s; nothing was "
+                            "written" % ", ".join(still), questions=still)
         asked, ex, key_ans, val_ans = tagquestions.ask(ctx, analysis.uncovered, project,
                                                        ask_changes, analysis.key_questions,
                                                        value_qs)
@@ -767,13 +772,14 @@ def create_tests_from_feature(ctx, args):
             exist_answers = {"all": exist_answers["all"] or ex["all"],
                              "keys": dict(ex["keys"], **exist_answers["keys"])}
         for n, vals in val_ans.items():
+            call_values[n] = dict(call_values.get(n) or {}, **vals)
             opts.value_answers[n] = dict(opts.value_answers.get(n) or {}, **vals)
         if analysis.uncovered or key_ans or val_ans:
             new_rules = new_rules + tagquestions.pending(asked, analysis.uncovered, project)
             opts.key_answers = dict(opts.key_answers, **key_ans)
             analysis = analyze()
             applicable = _applicable(feature, analysis, values)
-            plan, changes = make_plan(True)
+            plan, changes = make_plan()
         value_qs = open_values()
         ask_changes = existingtests.unanswered(changes, exist_answers)
     if not applicable["aiLabel"]:
@@ -801,8 +807,6 @@ def create_tests_from_feature(ctx, args):
         collector = requiredfields.Collector(ctx, project)
         test_extras, pre_extra, set_extra = build(collector)
         field_questions = collector.questions()
-    if plan is None:
-        plan, changes = make_plan(True)
     created_anew = _apply_existing_answers(plan, changes, exist_answers, create_dups)
     skipped = _skipped(plan, set(create_dups) | created_anew)
     skip = {s["index"] for s in skipped}
@@ -860,8 +864,8 @@ def create_tests_from_feature(ctx, args):
     # All validation passed: remember the call's answers, then write (ruling R5).
     choices.remember(ctx, pk, {n: args.get(n) for n in QUESTION_IDS},
                      bool(args.get("remember", False)))
-    warnings += _remember_rules(ctx, pk, remembered_raw, offset, new_rules, analysis,
-                                opts.value_answers)
+    choices.add_tag_rules(ctx, pk, new_rules)
+    choices.add_tag_values(ctx, pk, tagvalues.used_answers(analysis, call_values))
     run = _Run(ctx, pk, plan, skip, test_extras, pre_extra, set_extra)
     result = run.run()
     kept = {a.index: a.key for a in plan if a.kind == "keep_test"}
@@ -899,20 +903,3 @@ def _ignored_summaries(plan: List[ImportAction], summaries: Dict[int, str]) -> L
             out.append("summaries[%d] (%r) ignored: the scenario is not imported"
                        % (a.index, summaries[a.index]))
     return out
-
-
-def _remember_rules(ctx: ServerContext, pk: str, remembered_raw: List[dict], offset: int,
-                    new_rules: List[dict], analysis: TagAnalysis,
-                    value_answers: Dict[str, Dict[str, Any]]) -> List[str]:
-    """Remember the tag rules answered in this call and the tag values answered (in the
-    value map of the rule they belong to). -> warnings for values of settings rules, which
-    the plugin never edits."""
-    rules_raw = copy.deepcopy(list(remembered_raw)) + copy.deepcopy(list(new_rules))
-    changed, not_stored = tagvalues.remember(rules_raw, offset, analysis, value_answers)
-    if changed:
-        choices.set_tag_rules(ctx, pk, rules_raw)
-    else:
-        choices.add_tag_rules(ctx, pk, new_rules)
-    return ["the answer for `%s` (%s) applies to this import only: its tag rule is in the "
-            "settings file; add `values: {%s: <answer>}` to that rule to keep it"
-            % (e["value"], e["field"], e["value"]) for e in not_stored]

@@ -119,7 +119,7 @@ Read-only tools for questions about test history and impact:
 | Feature | Test Set (reused by summary, if you choose so; see Choices and preferences); feature tags go through the tag rules, plain tags become labels |
 | Background (feature or rule level) | Pre-Condition (or inline steps, your choice) linked to every test it applies to; reused by `#@PRECOND_<KEY>` comment, then feature path label, then summary |
 | Rule | Its scenarios import normally; its Background combines with the feature's |
-| Scenario / Example | Cucumber test (Scenario) whose definition is its steps; its summary is the scenario name. Only when names collide within the file (for example "Sign in" under two Rules) the summary becomes `<Rule name>: <Scenario name>` (outside a Rule `<Feature name>: <Scenario name>`; still colliding: ` (2)`, ` (3)` ...). The summary of an existing test is never changed |
+| Scenario / Example | Cucumber test (Scenario) whose definition is its steps; its summary is the scenario name. Only when names collide within the file (for example "Sign in" under two Rules) the summary becomes `<Rule name>: <Scenario name>` (outside a Rule `<Feature name>: <Scenario name>`; still colliding: ` (2)`, ` (3)` ...). The summary of an existing test is never changed. Such names are also searched under the new summary, so a test imported earlier under the bare scenario name is not matched by name |
 | Scenario Outline / Template | Cucumber test (Scenario Outline) with its steps and all Examples blocks |
 | Plain tags | Labels |
 | `@<KEY>` on a scenario | Looked up in Xray first, read-only, before anything is written (the Jira token is not needed). A test of the import's project: the scenario maps to that test (a non-Cucumber test leaves the scenario out, with a `notDone` entry). A test of another project: the scenario becomes a new test, with a `notDone` note. A requirement Xray knows: a requirement link. Anything else (Xray cannot tell an issue that is not a test or requirement from a key of no issue, such as `@ISO-8601`): asked, see `keyTag.<KEY>` below |
@@ -140,7 +140,7 @@ A few import choices are yours to make, and the plugin asks about them instead o
 - `backgrounds`: Backgrounds as Pre-Conditions (`preconditions`) or copied into each test (`inline`)?
 - `tagsAsLabels`: turn plain tags (such as `@smoke`) into labels?
 - `tagRule.<key>`: what a `key:value` or `key=value` tag means when no tag rule covers its key (see "Tag rules").
-- `tagValue.<field>.<value>`: asked when a tag rule's `field` action would send a value the plugin cannot convert itself (see "Tag rules"): "What is `checkout` for Team?". Free text, nothing pre-selected: the id or the exact value Jira expects. Pass `tagValueAnswers: {"Team": {"checkout": "<id>"}}`. Remembered in the tag rule's `values` map.
+- `tagValue.<field>.<value>`: asked when a tag rule's `field` action would send a value the plugin cannot convert itself (see "Tag rules"): "What is `checkout` for Team?". Free text, nothing pre-selected: the id or the exact value Jira expects. Pass `tagValueAnswers: {"Team": {"checkout": "<id>"}}`. Remembered for the project (per field and tag value), for every rule.
 - `keyTag.<KEY>`: asked for an issue-key tag Xray knows neither as a test nor as a requirement (for example `@ISO-8601`, a bug's key, or a key of no issue). The question says where the tag sits (feature, rule or scenario, with names). Answers: `link` (link the tests to that issue as a related/requirement issue; if Jira refuses the link, the test is created without it and the link is in `notDone`), `label` (keep the tag as a label, through `tagsAsLabels` and the tag rules) or `ignore`. Pass `keyTagAnswers: {"PROJ-12": "link" | "label" | "ignore"}`. Asked in the same round as the other questions and never remembered.
 - `existingTests`: asked when a scenario maps to an existing test of the project (`@<KEY>`, `@TEST_<KEY>`, or the same summary as one existing test: `matchedBy: name`) and the import would change it. The question lists each such test with what would change (steps, with a short diff in `stepsDiff` {added, removed, lines}, labels added, fields, requirement links, Test Sets joined, Pre-Conditions, tags still awaiting a tag-rule answer); the preview has the same list in `existingTests`. Answers: `update` (change the test from the file), `keep` (the scenario only maps to the test; nothing is written to it, and it is not added to Test Sets or Pre-Conditions), `create` (tests matched by name only: create a new test after all; `createDuplicates` means the same) or `skip` (leave those scenarios out). `existingTestOverrides: {"PROJ-12": "skip"}` answers single tests; `create` is refused for a test named by a key tag. It is asked in the same round as the `tagRule.<key>` questions, is never remembered, and is not asked for a test the import would not change (that test is only mapped).
 - `aiLabel` and `aiLabelScope`: mark what the AI creates (see "AI label" below).
@@ -208,7 +208,7 @@ A rule's `field` action sends the tag's value; how depends on the field:
 
 - Text, number, date and `raw` fields: as written.
 - Select lists (single or multi), priority, components and versions: matched by name, ignoring case, against Jira's allowed values when the Jira token gives them (`@sev=high` becomes the option `High`), and sent in the shape Jira expects (`{"value": ...}`, `{"name": ...}`, lists for multi-value fields). Without the token they are shaped by the field's type (system fields need no token).
-- Anything the plugin cannot convert itself (an Atlassian Team, a user picker, a cascading select, a value no option has, or a `customfield_<n>` id whose type is unknown without the Jira token) is never guessed: the import asks once per field and value (`tagValue.<field>.<value>`), and the answer is remembered in the rule's `values` map. Later imports with the same value do not ask; a new value asks again.
+- Anything the plugin cannot convert itself (an Atlassian Team, a user picker, a cascading select, a value no option has, or a `customfield_<n>` id whose type is unknown without the Jira token) is never guessed: the import asks once per field and value (`tagValue.<field>.<value>`), and the answer is remembered for the project (`tagValues` in `preferences.json`, per field and tag value), consulted by every rule, from the settings file or remembered. Later imports with the same value do not ask; a new value asks again.
 
 ```yaml
 # EXAMPLE ONLY
@@ -219,7 +219,7 @@ featureImport:
       values: { backend: "<team id>" }          # tag value -> id or exact value (keys ignore case)
 ```
 
-`values` only goes with `field`; a value may also be a JSON object or list in the shape Jira expects. The plugin never edits your settings file: an answer for a settings rule applies to that import only, with a warning naming the `values` entry to add.
+`values` only goes with `field` and wins over a remembered answer; a value may also be a JSON object or list in the shape Jira expects. The plugin never edits your settings file.
 
 ### notDone
 

@@ -5,8 +5,9 @@ as they are; an option, priority, component or version is matched by name (case-
 against Jira's create metadata when the Jira token gives it, else shaped by the field's type.
 Anything else (an Atlassian Team, a user picker, a cascading select, a field whose type is
 unknown without the Jira token) is never guessed: the import asks once per (field, value) what
-to send, as free text (the id or the exact value). The answer is remembered in the tag rule's
-`values` map, so later imports with the same value do not ask again."""
+to send, as free text (the id or the exact value). The answer is remembered for the project
+(per site, keyed by field and tag value) and consulted by every rule, settings or remembered;
+a rule's own `values` map wins over it. Later imports with the same value do not ask again."""
 from __future__ import annotations
 
 import json
@@ -26,7 +27,7 @@ PARAM_SCHEMA: Dict[str, Any] = {
     "description": "Only after tagValue.<field>.<value> questions: the user's answer per field "
                    "and tag value, {field: {tag value: id or exact value}} (a JSON object or "
                    "list in the shape Jira expects also works). Never answer it yourself; ask "
-                   "the user. Remembered in the tag rule."}
+                   "the user. Remembered for the project."}
 
 _TEXT = frozenset({"string", "number", "date", "datetime", "raw"})
 _NAMED = frozenset({"priority", "component", "version", "securitylevel", "resolution"})
@@ -133,7 +134,7 @@ def collect(ctx: Any, project: ProjectSettings, feature: Any, analysis: Any,
             continue
         _, asked = rule_fields(ctx, project, st.outcome)
         for name, why in asked.items():
-            if not st.test_key and overridden(name):
+            if overridden(name):  # the call's value is used (new) or reported (existing)
                 continue
             raw = st.outcome.raw.get(name, str(st.outcome.fields[name]))
             entry = out.setdefault((name, raw), {"field": name, "value": raw, "why": why,
@@ -150,8 +151,8 @@ def question(entry: Dict[str, Any]) -> Dict[str, Any]:
         "id": qid(name, value), "field": name, "value": value, "param": PARAM,
         "question": ("What is `%s` for %s? The plugin cannot convert it itself (%s). Give the "
                      "id or the exact value Jira expects for %s (for an Atlassian Team its "
-                     "id, for a user the account id). The answer is remembered in the tag "
-                     "rule, so later imports with %r do not ask again."
+                     "id, for a user the account id). The answer is remembered for this "
+                     "project, so later imports with %r do not ask again."
                      % (value, name, entry["why"], name, value)),
         "type": "text",
         "context": {"field": name, "value": value, "reason": entry["why"],
@@ -208,7 +209,7 @@ def unanswered(pending: Dict[Tuple[str, str], Dict[str, Any]],
 def form(pending: Dict[Tuple[str, str], Dict[str, Any]]) -> Dict[str, Any]:
     return {qid(n, v): {"type": "string", "title": "What is `%s` for %s?" % (v, n),
                         "description": "%s. The id or the exact value Jira expects; "
-                                       "remembered in the tag rule." % e["why"]}
+                                       "remembered for the project." % e["why"]}
             for (n, v), e in pending.items()}
 
 
@@ -224,32 +225,18 @@ def from_form(content: Dict[str, Any], pending: Dict[Tuple[str, str], Dict[str, 
     return out
 
 
-def remember(rules_raw: List[Dict[str, Any]], offset: int, analysis: Any,
-             answers: Dict[str, Dict[str, Any]]) -> Tuple[bool, List[Dict[str, str]]]:
-    """Write the answers the import used into the raw rules they belong to (rules_raw holds
-    the rules from index `offset` on: remembered ones, then this call's new ones). ->
-    (changed, settings-rule answers that could not be stored [{field, value}])."""
-    changed = False
-    not_stored: List[Dict[str, str]] = []
+def used_answers(analysis: Any, answers: Dict[str, Dict[str, Any]]
+                 ) -> Dict[str, Dict[str, Any]]:
+    """The answers (call or form) the import used: {field: {tag value: answer}}, to remember
+    for the project (choices.add_tag_values)."""
+    out: Dict[str, Dict[str, Any]] = {}
     for st in analysis.scenarios:
         o = st.outcome
         for name, how in o.mapped.items():
             if how != "answer":
                 continue
             raw = o.raw.get(name, "")
-            idx = o.rules.get(name)
             found, ans = answer_for(answers, name, raw)
-            if not found or idx is None:
-                continue
-            if idx < offset:
-                entry = {"field": name, "value": raw}
-                if entry not in not_stored:
-                    not_stored.append(entry)
-                continue
-            rule = rules_raw[idx - offset]
-            values = dict(rule.get("values") or {})
-            if values.get(raw) != ans:
-                values[raw] = ans
-                rule["values"] = values
-                changed = True
-    return changed, not_stored
+            if found:
+                out.setdefault(name, {})[raw] = ans
+    return out

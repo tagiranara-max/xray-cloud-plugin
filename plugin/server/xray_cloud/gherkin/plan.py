@@ -52,6 +52,8 @@ class ImportOptions:
     value_answers: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     # summaries parameter: scenario index -> summary of the test the import creates
     summaries: Dict[int, str] = field(default_factory=dict)
+    # whether the call's fields/rawFields set a rule field (name -> bool); None = never
+    call_overrides: Optional[Any] = None
 
     @property
     def inline(self) -> bool:
@@ -794,6 +796,12 @@ def _existing_test_fields(ctx: ServerContext, a: ImportAction, current: Dict[str
         if not fid:
             continue
         what = "field %s = %s" % (name, a.field_raw.get(name, value))
+        if opts.call_overrides is not None and opts.call_overrides(name):
+            a.not_done.append(not_done(
+                a.key, "field %s" % name, "the call's fields/rawFields set it, and they apply "
+                "to created tests only; the tag rule's value is not written either",
+                "set it on %s yourself (Jira) if wanted" % a.key))
+            continue
         if has_jira and opts.project and name not in a.mapped_fields:
             value, why = convert(ctx, opts.project, name, value)
             if why:  # a tagValue question (asked before anything is written)
