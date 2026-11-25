@@ -70,18 +70,13 @@ def test_rule_background_only_linked_to_rule_scenarios():
     assert plan[3].labels == ["feature"]
 
 
-class TypeJira:
-    """Jira stand-in for key lookups: issue type per key, None (missing) otherwise."""
-
-    def __init__(self, types=None):
-        self.types, self.asked = dict(types or {}), []
-
-    def issue_type(self, key):
-        self.asked.append(key)
-        return self.types.get(key)
-
-    def linked_keys(self, key):
-        return []
+def coverable(*keys):
+    """getCoverableIssues stand-in: the given keys are requirements Xray knows."""
+    def fn(v):
+        return {"getCoverableIssues": {"results": [
+            {"issueId": "9", "jira": {"key": k, "issuetype": {"name": "Story"}}}
+            for k in keys if re.search(r"\b%s\b" % k, v["jql"])]}}
+    return fn
 
 
 def test_tags_become_labels_except_issue_keys():
@@ -99,8 +94,8 @@ Feature: F
 
     def search(v):
         return test5 if "P-5" in v["jql"] else {"getTests": {"total": 0, "results": []}}
-    ctx = make_context(YAML, responses=empty_reads(SearchTests=search))
-    ctx.jira = TypeJira({"R-1": "Story", "Q-9": "Story", "Q-10": "Story"})
+    ctx = make_context(YAML, responses=empty_reads(
+        SearchTests=search, FindCoverableIssues=coverable("R-1", "Q-9", "Q-10")))
     plan = plan_import(ctx, "P", parse_feature(text, "f"), "f.feature", True)
     a, b = plan[0], plan[1]
     assert a.kind == "update_test" and a.key == "P-5" and a.issue_id == "55"
@@ -160,9 +155,9 @@ def _xray_tests(*keys):
     return search
 
 
-def test_key_tags_are_looked_up_and_never_refuse_the_file():
-    ctx = make_context(YAML, responses=empty_reads(SearchTests=_xray_tests("P-5", "Q-5", "Q-6")))
-    ctx.jira = TypeJira({"R-1": "Story", "R-2": "Story", "P-404": "Bug"})
+def test_key_tags_are_looked_up_in_xray_and_never_refuse_the_file():
+    ctx = make_context(YAML, responses=empty_reads(
+        SearchTests=_xray_tests("P-5", "Q-5", "Q-6"), FindCoverableIssues=coverable("R-1", "R-2")))
     plan = plan_import(ctx, "P", parse_feature(KEYS_TEXT, "f"), "f.feature", False)
     by = {a.summary: a for a in plan if a.index is not None}
     assert by["Mine"].kind == "update_test" and by["Mine"].key == "P-5"
@@ -175,25 +170,35 @@ def test_key_tags_are_looked_up_and_never_refuse_the_file():
     assert by["Explicit elsewhere"].kind == "skip_test"
     assert "Q-6 is a test of project Q" in by["Explicit elsewhere"].reason
     assert by["Explicit missing"].kind == "skip_test"
-    assert "Xray does not know P-404 as a test (it is a Jira Bug)" in by["Explicit missing"].reason
-    assert by["Missing requirement"].requirement_keys == ["R-1"]
-    assert by["Missing requirement"].not_done[0]["what"] == "requirement link R-404"
-    # one batched read failed (ISO-*): key by key, the failing keys are no tests
+    assert "Xray knows no test P-404" in by["Explicit missing"].reason
+    # @REQ_ of a key Xray cannot place: linked as the tag asks, but unverified
+    assert by["Missing requirement"].requirement_keys == ["R-1", "R-404"]
+    assert by["Missing requirement"].unverified_links == ["R-404"]
     jqls = [v["jql"] for op, v in ctx.xray.calls if op == "SearchTests"]
     assert jqls[0] == "issue in (ISO-1, R-1, P-5, Q-5, R-2, ISO-8601, Q-6, P-404)"
     assert "issue = ISO-8601" in jqls and "issue = Q-6" in jqls
-    # ISO-* were reported as no such issue by the key-by-key reads: Jira is not asked
-    assert sorted(ctx.jira.asked) == ["P-404", "R-1", "R-2", "R-404"]
+    assert [v["jql"] for op, v in ctx.xray.calls if op == "FindCoverableIssues"] == [
+        "issue in (R-1, R-2, P-404, R-404)"]
 
 
-def test_without_jira_a_key_that_is_no_test_is_a_plain_tag():
-    ctx = make_context(YAML, responses=empty_reads(SearchTests=_xray_tests("P-5")))
-    feat = parse_feature("@R-1\nFeature: F\n  @ISO-8601 @P-5\n  Scenario: A\n    Given a\n"
-                         "  @TEST_P-6\n  Scenario: B\n    Given b\n", "f")
-    plan = plan_import(ctx, "P", feat, "f", False)
-    assert plan[0].kind == "update_test" and plan[0].labels == ["R-1", "ISO-8601"]
-    assert plan[0].requirement_keys == []
-    assert plan[1].kind == "skip_test" and "no Xray test P-6 was found" in plan[1].reason
+def test_key_xray_cannot_place_is_asked_and_follows_the_answer():
+    text = "@R-9\nFeature: F\n  @ABC-1\n  Scenario: A\n    Given a\n"
+    feat = parse_feature(text, "f")
+    from xray_cloud.gherkin.plan import KeyInfo
+    info = {"R-9": KeyInfo("unknown"), "ABC-1": KeyInfo("unknown")}
+    a = analyze_tags(feat, "P", ImportOptions(key_info=info))
+    assert a.key_questions == {"R-9": [{"level": "feature", "name": "F"}],
+                               "ABC-1": [{"level": "scenario", "name": "A"}]}
+    assert a.scenarios[0].outcome.labels == [] and a.scenarios[0].requirement_keys == []
+    assert a.any_label  # a "label" answer is possible: tagsAsLabels is asked in the same round
+    for ans, labels, reqs in (("label", ["R-9", "ABC-1"], []), ("ignore", [], []),
+                              ("link", [], ["R-9", "ABC-1"])):
+        a = analyze_tags(feat, "P", ImportOptions(
+            key_info=info, key_answers={"R-9": ans, "ABC-1": ans}))
+        assert a.key_questions == {}
+        st = a.scenarios[0]
+        assert (st.outcome.labels, st.requirement_keys) == (labels, reqs), ans
+        assert st.unverified == reqs
 
 
 def test_key_tag_analysis_reports_meanings():
@@ -256,24 +261,12 @@ def test_no_such_issue_refusal_is_retried_key_by_key_even_for_one_key():
     assert calls[:2] == ["issue = ISO-8601", "issue = ISO-8601"]
 
 
-def test_jira_issue_xray_does_not_know_as_a_test_is_a_requirement():
-    """Xray is the authority for tests: an issue Jira types "Test" that Xray does not return
-    is linked like any other issue."""
-    ctx = make_context(YAML, responses=empty_reads())
-    ctx.jira = TypeJira({"Q-3": "Test"})
-    feat = parse_feature("Feature: F\n  @Q-3\n  Scenario: A\n    Given a\n", "f")
-    plan = plan_import(ctx, "P", feat, "f", False)
-    assert plan[0].kind == "create_test" and plan[0].requirement_keys == ["Q-3"]
-
-
-def test_without_jira_requirements_xray_knows_are_linked():
-    cov = {"getCoverableIssues": {"results": [
-        {"issueId": "9", "jira": {"key": "R-1", "issuetype": {"name": "Story"}}}]}}
-    ctx = make_context(YAML, responses=empty_reads(FindCoverableIssues=lambda v: cov))
+def test_requirements_xray_knows_are_linked_without_asking():
+    ctx = make_context(YAML, responses=empty_reads(FindCoverableIssues=coverable("R-1")))
     feat = parse_feature("@R-1\nFeature: F\n  @REQ_R-2 @R-3\n  Scenario: A\n    Given a\n", "f")
     plan = plan_import(ctx, "P", feat, "f", False)
-    assert plan[0].requirement_keys == ["R-1"] and plan[0].labels == ["R-3"]
-    assert plan[0].not_done[0]["what"] == "requirement link R-2"
+    assert plan[0].requirement_keys == ["R-1", "R-2"] and plan[0].labels == []
+    assert plan[0].unverified_links == ["R-2"]  # R-3 is asked about (keyTag.R-3)
     assert [v["jql"] for op, v in ctx.xray.calls if op == "FindCoverableIssues"] == [
         "issue in (R-1, R-3, R-2)"]
 

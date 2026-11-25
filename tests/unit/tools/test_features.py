@@ -433,9 +433,8 @@ def test_reused_unnamed_precondition_keeps_its_summary(project):
 
 
 class RecJira:
-    def __init__(self, linked=(), missing=(), types=None):
+    def __init__(self, linked=()):
         self.edits, self.links, self.linked = [], [], list(linked)
-        self.missing, self.types = set(missing), dict(types or {})
 
     def edit_issue(self, key, fields):
         self.edits.append((key, fields))
@@ -448,9 +447,6 @@ class RecJira:
 
     def create_meta(self, pk, issue_type):
         return []
-
-    def issue_type(self, key):
-        return None if key in self.missing else self.types.get(key, "Story")
 
 
 def test_similar_summaries_are_listed_but_never_skipped(tmp_path):
@@ -522,7 +518,9 @@ def test_partial_failure_reports_links_and_labels_already_applied(tmp_path):
     f = tmp_path / "a.feature"
     f.write_text("Feature: F\n  @TEST_P-5 @new @REQ_R-1 @REQ_R-2\n  Scenario: A\n    Given x\n",
                  encoding="utf-8")
-    ctx = ctx_for(tmp_path, _existing_world())
+    world = _existing_world()
+    world.coverable = ["R-1", "R-2"]  # requirements Xray knows: a failure is real
+    ctx = ctx_for(tmp_path, world)
 
     class Failing(RecJira):
         def link_requirement(self, key, req):
@@ -1453,20 +1451,67 @@ def test_answer_keys_colliding_case_insensitively_are_refused(tmp_path):
 
 # -- issue-key tags are looked up; the edge-case file previews without refusal ---------------
 
-def test_key_shaped_tag_of_no_issue_is_a_plain_tag_in_preview_and_apply(tmp_path):
+def test_key_shaped_tag_xray_cannot_place_is_asked_then_answered(tmp_path):
     path = feature_file(tmp_path, "Feature: F\n  @ISO-8601 @smoke\n  Scenario: A\n    Given a\n")
     ctx = ctx_for(tmp_path)
-    ctx.jira = RecJira(missing=["ISO-8601"])
     res = preview(ctx, path, **ans(createTestSet=False))
-    assert res["tagSummary"]["keyTags"] == [
-        {"tag": "ISO-8601", "meaning": "plain",
-         "note": "not an issue (there is no ISO-8601): an ordinary tag"}]
-    assert "ISO-8601" in res["tagSummary"]["plain"] and res["tagSummary"]["issueKeys"] == []
-    assert res["perTest"][0]["labels"] == ["ISO-8601", "smoke"]
+    assert qids(res) == ["keyTag.ISO-8601"]
+    q = res["questions"][0]
+    assert q["choices"] == ["link", "label", "ignore"] and "default" not in q
+    assert q["param"] == "keyTagAnswers"
+    assert q["context"]["where"] == [{"level": "scenario", "name": "A"}]
+    assert res["tagSummary"]["keyTags"][0]["meaning"] == "asked"
+    assert res["perTest"][0]["labels"] == ["smoke"]  # nothing from the open question
+    res, err = _apply(ctx, path)
+    assert not err and res["status"] == "needs_answer"
+    assert [x["id"] for x in res["questions"]] == ["keyTag.ISO-8601"] and writes(ctx) == []
+    res, err = _apply(ctx, path, keyTagAnswers={"ISO-8601": "label"})
+    assert not err, res
+    jira = ctx.xray.calls_of("CreateTest")[-1]["jira"]
+    assert jira["fields"]["labels"] == ["ISO-8601", "smoke"] and "update" not in jira
+    res, err = _apply(ctx, path, keyTagAnswers={"ISO-8601": "ignore"})
+    assert not err and ctx.xray.calls_of("CreateTest")[-1]["jira"]["fields"]["labels"] == ["smoke"]
+    res, err = _apply(ctx, path, keyTagAnswers={"ISO-8601": "maybe"})
+    assert err and "keyTagAnswers" in res["error"]
+    assert ctx.preferences.get("global", "P").get("keyTagAnswers") is None  # never remembered
+
+
+def test_link_answer_refused_by_jira_creates_the_test_without_it(tmp_path):
+    path = feature_file(tmp_path, "@R-1\nFeature: F\n  @ISO-8601\n  Scenario: A\n    Given a\n")
+    world = FakeXrayWorld(coverable=["R-1"])
+    base = world.responses()
+    create = base["CreateTest"]
+
+    def create_test(v):
+        links = [l["add"]["outwardIssue"]["key"] for l in
+                 (v["jira"].get("update") or {}).get("issuelinks", [])]
+        if "ISO-8601" in links:
+            raise ToolError("Xray GraphQL error: issuelinks: Issue 'ISO-8601' does not exist")
+        return create(v)
+    base["CreateTest"] = create_test
+    ctx = make_context(YAML, responses=base)
+    ctx.env["CLAUDE_PROJECT_DIR"] = str(tmp_path)
+    res, err = _apply(ctx, path, keyTagAnswers={"ISO-8601": "link"})
+    assert not err, res
+    first, second = ctx.xray.calls_of("CreateTest")
+    assert second["jira"]["update"] == {"issuelinks": [
+        {"add": {"type": {"name": "Test"}, "outwardIssue": {"key": "R-1"}}}]}
+    assert res["created"] == ["P-101"]
+    assert [n["what"] for n in res["notDone"]] == ["requirement link ISO-8601"]
+    assert "does not exist" in res["notDone"][0]["reason"]
+
+
+def test_key_tag_questions_join_the_elicitation_form(tmp_path):
+    ctx = ctx_for(tmp_path)
+    ctx.channel = FormChannel({"tagRule.suite": "label_value", "keyTag.ISO-8601": "label"})
+    path = feature_file(tmp_path, "Feature: F\n  @ISO-8601 @suite:x\n  Scenario: A\n    Given a\n")
     res, err = _apply(ctx, path)
     assert not err, res
-    jira = ctx.xray.calls_of("CreateTest")[0]["jira"]
-    assert jira["fields"]["labels"] == ["ISO-8601", "smoke"] and "update" not in jira
+    schema = ctx.channel.asked[0]
+    assert schema["required"] == ["tagRule.suite", "keyTag.ISO-8601"]
+    assert schema["properties"]["keyTag.ISO-8601"]["enum"] == ["link", "label", "ignore"]
+    assert ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]["labels"] == ["ISO-8601", "x"]
+    assert len(ctx.channel.asked) == 1
 
 
 def test_tag_naming_a_test_of_another_project_creates_a_new_test_with_a_note(tmp_path):
@@ -1486,45 +1531,40 @@ def test_tag_naming_a_test_of_another_project_creates_a_new_test_with_a_note(tmp
     assert writes(ctx) == ["CreateTest"] and len(res["notDone"]) == 2
 
 
-def test_requirement_tag_of_an_existing_issue_links_new_tests(tmp_path):
-    path = feature_file(tmp_path, "@R-1\nFeature: F\n  @REQ_R-404\n  Scenario: A\n    Given a\n")
-    ctx = ctx_for(tmp_path)
-    ctx.jira = RecJira(missing=["R-404"])
+def test_requirement_xray_knows_is_linked_without_asking(tmp_path):
+    path = feature_file(tmp_path, "@R-1\nFeature: F\n  Scenario: A\n    Given a\n")
+    ctx = ctx_for(tmp_path, FakeXrayWorld(coverable=["R-1"]))
+    res = preview(ctx, path, **ans(createTestSet=False))
+    assert qids(res) == []
     res, err = _apply(ctx, path)
     assert not err, res
     assert ctx.xray.calls_of("CreateTest")[0]["jira"]["update"] == {"issuelinks": [
         {"add": {"type": {"name": "Test"}, "outwardIssue": {"key": "R-1"}}}]}
-    assert res["notDone"][0]["what"] == "requirement link R-404"
 
 
 def test_edge_case_file_previews_without_refusal(tmp_path):
+    """The user's edge-case file: Xray returns no rows for ISO-8601 (verified live), so it is
+    asked about in the same round as the other questions."""
     shutil.copy(FIXTURES / "edge_cases.feature", tmp_path / "edge.feature")
-    world = FakeXrayWorld()
-    base = world.responses()
-    plain_search = base["SearchTests"]
-
-    def search(v):  # ISO-8601 names no project: Jira refuses a JQL with it
-        if "ISO-8601" in v["jql"]:
-            raise ToolError("Xray GraphQL error: The value 'ISO-8601' does not exist for the "
-                            "field 'issue'")
-        return plain_search(v)
-    base["SearchTests"] = search
-    ctx = make_context(YAML, responses=base)
-    ctx.env["CLAUDE_PROJECT_DIR"] = str(tmp_path)
+    ctx = ctx_for(tmp_path)
     res = preview(ctx, "edge.feature")
     assert qids(res) == ["createTestSet", "backgrounds", "tagsAsLabels", "aiLabel",
                          "aiLabelScope", "tagRule.suite", "tagRule.team", "tagRule.priority",
-                         "tagRule.area"]
-    assert res["tagSummary"]["keyTags"][0]["tag"] == "ISO-8601"
-    assert res["tagSummary"]["keyTags"][0]["meaning"] == "plain"
-    assert "ISO-8601" in res["tagSummary"]["plain"]
+                         "tagRule.area", "keyTag.ISO-8601"]
+    iso_q = res["questions"][-1]
+    assert iso_q["context"]["where"] == [
+        {"level": "scenario", "name": "Code expiry time is shown in ISO format"}]
+    assert res["tagSummary"]["keyTags"] == [{"tag": "ISO-8601", "meaning": "asked", "note": (
+        "Xray knows no test or requirement ISO-8601 (it may be another kind of issue, or no "
+        "issue at all); question keyTag.ISO-8601")}]
     tests = [a for a in res["actions"] if a["kind"] == "create_test"]
     assert [a["summary"] for a in tests].count("Sign in") == 2
     assert len(tests) == 8 and res["notDone"] == []
     assert "possibleDuplicates" not in res
-    iso = next(a for a in tests if a["summary"].startswith("Code expiry"))
-    assert "ISO-8601" in iso["labels"]
     assert writes(ctx) == []
+    res = preview(ctx, "edge.feature", keyTagAnswers={"ISO-8601": "label"})
+    iso = next(a for a in res["actions"] if a["summary"].startswith("Code expiry"))
+    assert "ISO-8601" in iso["labels"] and "keyTag.ISO-8601" not in qids(res)
 
 
 # -- existing tests the import would change are asked about first --------------------------
@@ -1669,3 +1709,19 @@ def test_failed_key_lookup_stops_the_import_before_any_write(tmp_path, status):
     res, err = _apply(ctx, path)
     assert err and ("HTTP %d" % status) in res["error"]
     assert writes(ctx) == []
+
+
+def test_refused_unverified_link_on_an_existing_test_is_not_done_not_a_failure(tmp_path):
+    path = feature_file(tmp_path, "Feature: F\n  @TEST_P-5 @REQ_R-404\n  Scenario: A\n"
+                                  "    Given a\n")
+    ctx = ctx_for(tmp_path, _existing_world())
+
+    class Refusing(RecJira):
+        def link_requirement(self, key, req):
+            raise ToolError("Jira request for link failed with HTTP 404: Issue does not exist",
+                            status=404)
+    ctx.jira = Refusing()
+    res, err = _apply(ctx, path, existingTests="update")
+    assert not err, res
+    assert res["updated"] == ["P-5"]
+    assert [n["what"] for n in res["notDone"]] == ["requirement link R-404"]

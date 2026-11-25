@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-from .. import choices, existingtests, tagquestions
+from .. import choices, existingtests, keytags, tagquestions
 from ..config import ProjectSettings, project_dir
 from ..context import (ServerContext, dedupe, is_permission_error, partial_failure,
                        permission_denied, require_project, require_write)
@@ -13,6 +13,7 @@ from .. import requiredfields
 from ..gherkin.parse import ParsedFeature, parse_feature
 from ..gherkin.tagrules import FIELD_ID, TagRule, kv_key, parse_rules
 from ..jira_client import LINK_TYPE
+from ..notdone import not_done
 from ..localfiles import PATH_NOTE, read_local_file
 from ..gherkin.plan import (CUCUMBER, UNNAMED_PREFIX, ImportAction, ImportOptions, TagAnalysis,
                             analyze_tags, existing_set_names, existing_test_changes,
@@ -92,6 +93,7 @@ class _Run:
         self.fields_applied: List[dict] = []
         self.sets_created: List[dict] = []
         self.memberships: List[dict] = []
+        self.not_done: List[Dict[str, str]] = []  # found while writing (refused links)
 
     def gql(self, query: str, variables: dict) -> dict:
         return self.ctx.xray.graphql(query, variables)
@@ -110,9 +112,28 @@ class _Run:
         jira: Dict[str, Any] = {"fields": fields}
         if a.requirement_keys:
             jira["update"] = {"issuelinks": _link_update(a.requirement_keys)}
-        with requiredfields.creating(self.ctx, self.pk, "test"):
-            data = self.gql(_CREATE_TEST, {"jira": jira, "testType": {"name": CUCUMBER},
-                                           "gherkin": a.definition})
+        variables = {"jira": jira, "testType": {"name": CUCUMBER}, "gherkin": a.definition}
+        try:
+            with requiredfields.creating(self.ctx, self.pk, "test"):
+                data = self.gql(_CREATE_TEST, variables)
+        except ToolError as e:
+            # A link Xray could not confirm (keyTag answered "link", or @REQ_) may name no
+            # issue, and Jira then refuses the create: create the test without those links.
+            if not a.unverified_links or is_permission_error(e) or requiredfields.is_refusal(e):
+                raise
+            keep = [k for k in a.requirement_keys if k not in a.unverified_links]
+            if keep:
+                jira["update"] = {"issuelinks": _link_update(keep)}
+            else:
+                jira.pop("update", None)
+            with requiredfields.creating(self.ctx, self.pk, "test"):
+                data = self.gql(_CREATE_TEST, variables)
+            for k in a.unverified_links:
+                self.not_done.append(not_done(
+                    "scenario %r (line %d)" % (a.summary, a.source_line),
+                    "requirement link %s" % k,
+                    "the test was created without it: Jira refused the link (%s may not "
+                    "exist): %s" % (k, e.message), "check the key, then link it yourself"))
         res = data.get("createTest") or {}
         test = res.get("test") or {}
         key = (test.get("jira") or {}).get("key")
@@ -148,7 +169,16 @@ class _Run:
             todo = [k for k in a.requirement_keys if k not in have]
             entry = None
             for k in todo:
-                jira.link_requirement(a.key, k)
+                try:
+                    jira.link_requirement(a.key, k)
+                except ToolError as e:
+                    if k not in a.unverified_links or is_permission_error(e):
+                        raise
+                    self.not_done.append(not_done(a.key, "requirement link %s" % k,
+                                                  "Jira refused the link (%s may not exist): "
+                                                  "%s" % (k, e.message),
+                                                  "check the key, then link it yourself"))
+                    continue
                 if entry is None:  # recorded as each link is made, for partial-failure reports
                     entry = {"test": a.key, "requirements": []}
                     self.result.setdefault("linkedRequirements", []).append(entry)
@@ -472,11 +502,11 @@ def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: 
     "create_tests_from_feature",
     "Import a .feature file: Scenario -> Cucumber test, Background -> Pre-Condition (or "
     "inline), Feature -> Test Set. Tags go through the project's tag rules into labels, Test "
-    "Sets and fields. Issue-key tags are looked up: @<KEY> of a test in this project maps the "
-    "scenario to it, of another issue links it, of no issue is a plain tag (tagSummary."
-    "keyTags); @REQ_<KEY> links. Unanswered choices (createTestSet, backgrounds, tagsAsLabels, "
-    "aiLabel, aiLabelScope, tagRule.<key> in tagRuleAnswers, existingTests for tests it would "
-    "change) are in a non-empty `questions`: ask the user "
+    "Sets and fields. Issue-key tags are looked up in Xray: @<KEY> of a test in this project "
+    "maps the scenario to it, of a requirement links it, others are asked (keyTag.<KEY>); "
+    "@REQ_<KEY> links. Unanswered choices (createTestSet, backgrounds, tagsAsLabels, aiLabel, "
+    "aiLabelScope, tagRule.<key> in tagRuleAnswers, keyTag.<KEY> in keyTagAnswers, "
+    "existingTests for tests it would change) are in a non-empty `questions`: ask the user "
     "once, call again with the answers. apply=false (default) previews; apply=true executes, "
     "skipping scenarios whose summary an existing test has unless indexed in "
     "createDuplicates (`similar` ones are only listed). Anything not doable is in notDone "
@@ -498,6 +528,7 @@ def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: 
                           "call only; true makes it replace the remembered one."},
              "tagRuleAnswers": tagquestions.PARAM_SCHEMA,
              **existingtests.PARAM_SCHEMAS,
+             keytags.PARAM: keytags.PARAM_SCHEMA,
              "createDuplicates": {"type": "array", "items": {"type": "integer", "minimum": 0}},
              "fields": _OBJ, "rawFields": _OBJ,
              "preconditionFields": {"type": "object", "description":
@@ -536,6 +567,7 @@ def create_tests_from_feature(ctx, args):
     # key:value tags no rule covers: answered rules are added (remembered on apply)
     tag_answers = tagquestions.parse_answers(args.get(tagquestions.PARAM))
     exist_answers = existingtests.parse(args)
+    opts.key_answers = keytags.parse(args.get(keytags.PARAM))
     names = set(project.fields.get("test") or {})
     new_rules: List[dict] = []
 
@@ -569,17 +601,22 @@ def create_tests_from_feature(ctx, args):
         raise ToolError("Answer these first: %s (ask the user, then call again with the "
                         "answers; nothing was written)"
                         % ", ".join(unanswered + ["tagRule.%s" % k for k in analysis.uncovered]
+                                    + ["keyTag.%s" % k for k in analysis.key_questions]
                                     + ([existingtests.QUESTION_ID] if ask_changes else [])),
                         questions=[choices.question(n, contexts[n]) for n in unanswered]
                         + tagquestions.questions(analysis.uncovered, project)
+                        + keytags.questions(analysis.key_questions)
                         + ([existingtests.question(ask_changes)] if ask_changes else []))
-    if apply and (analysis.uncovered or ask_changes):  # elicitation form, else needs_answer
-        asked, ex = tagquestions.ask(ctx, analysis.uncovered, project, ask_changes)
+    if apply and (analysis.uncovered or analysis.key_questions or ask_changes):
+        # one elicitation form, else needs_answer
+        asked, ex, key_ans = tagquestions.ask(ctx, analysis.uncovered, project, ask_changes,
+                                              analysis.key_questions)
         if ex is not None:
             exist_answers = {"all": exist_answers["all"] or ex["all"],
                              "keys": dict(ex["keys"], **exist_answers["keys"])}
-        if analysis.uncovered:
+        if analysis.uncovered or key_ans:
             new_rules = new_rules + tagquestions.pending(asked, analysis.uncovered, project)
+            opts.key_answers = dict(opts.key_answers, **key_ans)
             analysis = analyze()
             applicable = _applicable(feature, analysis, values)
             plan, changes = make_plan()
@@ -637,6 +674,7 @@ def create_tests_from_feature(ctx, args):
                                "questions": [choices.question(n, contexts[n])
                                              for n in unanswered]
                                + tagquestions.questions(analysis.uncovered, project)
+                               + keytags.questions(analysis.key_questions)
                                + ([existingtests.question(ask_changes)] if ask_changes else [])
                                + field_questions,
                                "choices": shown,
@@ -651,13 +689,14 @@ def create_tests_from_feature(ctx, args):
             out["warnings"] = list(analysis.warnings)
         if changes:
             out["existingTests"] = changes
-        if unanswered or analysis.uncovered or ask_changes:
+        if unanswered or analysis.uncovered or analysis.key_questions or ask_changes:
             out["hint"] = ("answer the questions (ask the user once), then call again with the "
-                           "answers (tagRule.<key> ones in tagRuleAnswers, existingTests in "
-                           "existingTests / existingTestOverrides); until then the "
+                           "answers (tagRule.<key> ones in tagRuleAnswers, keyTag.<KEY> ones "
+                           "in keyTagAnswers, existingTests in existingTests / "
+                           "existingTestOverrides); until then the "
                            "actions assume createTestSet=true, backgrounds=preconditions, "
                            "tagsAsLabels=true, no AI label and nothing from unanswered "
-                           "key:value tags")
+                           "key:value or issue-key tags")
         elif field_questions:
             out["hint"] = ("required fields have no value: ask the user, then call again with "
                            "each answer in the question's `param` ({field id: value})")
@@ -688,7 +727,7 @@ def create_tests_from_feature(ctx, args):
         out["fieldsApplied"] = run.fields_applied
     for item_type, applied in applied_defaults.items():
         requiredfields.add_applied(out, item_type, applied)
-    out["notDone"] = not_done
+    out["notDone"] = not_done + run.not_done
     if skipped:
         out["skippedDuplicates"] = skipped
         out["hint"] = "pass the skipped indexes in createDuplicates to create them anyway"

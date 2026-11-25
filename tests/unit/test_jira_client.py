@@ -143,17 +143,6 @@ def test_linked_keys():
     assert make(fake).linked_keys("P-1") == ["R-1"]
 
 
-def test_issue_type_none_when_not_found_other_errors_raised():
-    fake = FakeTransport().push(json_response({"fields": {"issuetype": {"name": "Story"}}}))
-    assert make(fake).issue_type("R-1") == "Story"
-    assert fake.calls[0].url == SITE + "/rest/api/3/issue/R-1?fields=issuetype"
-    fake = FakeTransport().push(json_response({"errorMessages": ["nope"]}, status=404))
-    assert make(fake).issue_type("ISO-8601") is None
-    fake = FakeTransport().push(json_response({}, status=401))
-    with pytest.raises(ToolError, match="authentication"):
-        make(fake).issue_type("R-1")
-
-
 def test_linked_keys_ignores_malformed_link_types():
     fake = FakeTransport().push(json_response({"fields": {"issuelinks": [
         {"type": "Test", "outwardIssue": {"key": "R-2"}},
