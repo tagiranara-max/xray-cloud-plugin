@@ -18,7 +18,7 @@ Pick the region of your Xray instance: `global` (US, the default), `eu` or `au`.
 
 ## Other MCP clients (manual setup)
 
-The server speaks plain MCP over stdio, so it also works without a plugin system. Codex, Cursor and Gemini CLI can install it as a plugin or extension (see the [README](../README.md#install)); use the manual setups below when you prefer to wire the server yourself, or for VS Code, Claude Desktop and other clients. It needs Python 3.9 or newer. In the examples below `/path/to/xray-cloud-plugin` is your clone of this repository (`git clone https://github.com/<owner>/xray-cloud-plugin`). On Windows the command is usually `python` or `py` instead of `python3`, and paths use backslashes (escape them in JSON and double-quoted TOML).
+The server speaks plain MCP over stdio, so it also works without a plugin system. Codex, Cursor and Gemini CLI can install it as a plugin or extension (see the [README](../README.md#install)); use the manual setups below when you prefer to wire the server yourself, or for VS Code, Claude Desktop and other clients. It needs Python 3.9 or newer. In the examples below `/path/to/xray-cloud-plugin` is your clone of this repository (`git clone https://github.com/tagiranara-max/xray-cloud-plugin`). On Windows the command is usually `python` or `py` instead of `python3`, and paths use backslashes (escape them in JSON and double-quoted TOML).
 
 Put credentials in your environment or your client's secret mechanism, never in a committed config file. The examples only reference variables.
 

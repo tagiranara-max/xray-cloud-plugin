@@ -5,12 +5,12 @@ One pure-Python MCP server (standard library only, Python 3.9+) plus four skills
 
 ## Install
 
-You need `python3` 3.9 or newer and an Xray Cloud API key (Jira: Apps, Xray, API Keys). `<owner>` is the GitHub owner of this repository.
+You need `python3` 3.9 or newer and an Xray Cloud API key (Jira: Apps, Xray, API Keys).
 
 ### Claude Code
 
 ```
-/plugin marketplace add <owner>/xray-cloud-plugin
+/plugin marketplace add tagiranara-max/xray-cloud-plugin
 /plugin install xray-cloud@xray-cloud-plugin
 ```
 
@@ -19,7 +19,7 @@ Enter your Xray client ID and secret when asked.
 ### Codex
 
 ```sh
-codex plugin marketplace add <owner>/xray-cloud-plugin
+codex plugin marketplace add tagiranara-max/xray-cloud-plugin
 ```
 
 Then type `/plugins` in Codex (or open Plugins in the ChatGPT desktop app), pick the Xray Cloud marketplace, install Xray Cloud and start a new session. Codex cannot ask for a local server's credentials, so set them once in your shell profile (for example `~/.zshrc`):
@@ -35,7 +35,7 @@ That reaches Codex started from a terminal. The ChatGPT desktop app does not rea
 Cursor installs plugins from its marketplace, a team marketplace or a local folder. Teams: an admin imports this repository under Dashboard, Plugins & MCPs, Add Marketplace, Import from Repo; then install Xray Cloud from Customize. On your own, copy the plugin folder into Cursor's local plugins (run the same lines again to update), then reload the window:
 
 ```sh
-git clone https://github.com/<owner>/xray-cloud-plugin ~/.xray-cloud-plugin 2>/dev/null || git -C ~/.xray-cloud-plugin pull
+git clone https://github.com/tagiranara-max/xray-cloud-plugin ~/.xray-cloud-plugin 2>/dev/null || git -C ~/.xray-cloud-plugin pull
 mkdir -p ~/.cursor/plugins/local && rm -rf ~/.cursor/plugins/local/xray-cloud
 cp -R ~/.xray-cloud-plugin/plugin ~/.cursor/plugins/local/xray-cloud
 ```
@@ -45,7 +45,7 @@ On Enterprise plans an admin must turn on Allow Local Plugin Imports first. Ente
 ### Gemini CLI
 
 ```sh
-gemini extensions install https://github.com/<owner>/xray-cloud-plugin
+gemini extensions install https://github.com/tagiranara-max/xray-cloud-plugin
 ```
 
 Enter your Xray client ID and secret when asked (they go to your system keychain).
