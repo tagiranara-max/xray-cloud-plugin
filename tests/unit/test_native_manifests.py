@@ -179,3 +179,24 @@ def test_manifests_never_map_a_user_value_onto_the_bare_env_name(env):
         if name == "XRAY_PROJECT_DIR":
             continue
         assert name.endswith("_SETTING"), (name, value)
+
+
+SERVER_READS = {"XRAY_CLIENT_ID", "XRAY_CLIENT_SECRET", "XRAY_REGION", "XRAY_SETTINGS_FILE",
+                "XRAY_READ_ONLY", "XRAY_TOOLS", "JIRA_SITE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"}
+
+
+@pytest.mark.parametrize("env", [load(CLAUDE_MANIFEST)["mcpServers"]["xray"]["env"],
+                                 load(CURSOR_MCP)["mcpServers"]["xray"]["env"]],
+                         ids=["claude", "cursor"])
+def test_every_setting_name_is_one_the_server_reads(env):
+    for name in env:
+        if name != "XRAY_PROJECT_DIR":
+            assert name[:-len("_SETTING")] in SERVER_READS, name
+
+
+def test_mapped_user_config_prompts_have_no_default():
+    """A default would arrive non-empty and override the environment variable."""
+    manifest = load(CLAUDE_MANIFEST)
+    for ref in manifest["mcpServers"]["xray"]["env"].values():
+        key = ref[len("${user_config."):-1]
+        assert "default" not in manifest["userConfig"][key], key

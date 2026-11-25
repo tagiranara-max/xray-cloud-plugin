@@ -116,7 +116,7 @@ In `claude_desktop_config.json` (Settings, Developer, Edit Config). Claude Deskt
 
 Run `python3 /path/to/xray-cloud-plugin/plugin/server/main.py` with these environment variables. A value that is entirely an unsubstituted `${...}` placeholder is ignored, so clients that leave unset variables unexpanded still work.
 
-Claude Code and Cursor hand their plugin prompts to the server as `NAME_SETTING` (for example `XRAY_CLIENT_ID_SETTING`). A non-empty prompt takes precedence over the environment variable `NAME`; an empty prompt falls back to the environment variable, so credentials exported in the shell that starts Claude Code keep working when you leave the prompts blank.
+Claude Code and Cursor hand their plugin prompts to the server as `NAME_SETTING` (for example `XRAY_CLIENT_ID_SETTING`). A non-empty prompt takes precedence over the environment variable `NAME`; an empty prompt falls back to the environment variable, so credentials exported in the shell that starts Claude Code keep working when you leave the prompts blank. The region and read-only prompts have no default for this reason: the server applies its own defaults (`global`, `false`). Gemini CLI keeps the bare variable names; its behavior for unset optional settings has not been verified.
 
 | Variable | Meaning | Claude Code prompt |
 | --- | --- | --- |

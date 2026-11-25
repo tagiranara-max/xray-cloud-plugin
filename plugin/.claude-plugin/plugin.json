@@ -22,9 +22,8 @@
     "xray_region": {
       "type": "string",
       "title": "Xray region",
-      "description": "Xray Cloud region: global, eu or au.",
+      "description": "Xray Cloud region: global, eu or au. Leave empty to use the XRAY_REGION environment variable (default global).",
       "options": ["global", "eu", "au"],
-      "default": "global",
       "required": false
     },
     "settings_file": {
@@ -55,8 +54,7 @@
     "read_only": {
       "type": "boolean",
       "title": "Read-only mode",
-      "description": "When true, every write tool refuses to run.",
-      "default": false,
+      "description": "When true, every write tool refuses to run. Leave empty to use the XRAY_READ_ONLY environment variable (default false).",
       "required": false
     }
   },

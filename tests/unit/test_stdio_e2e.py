@@ -96,3 +96,15 @@ def test_empty_plugin_prompts_do_not_hide_environment_credentials(tmp_path):
     assert proc.returncode == 0, proc.stderr
     _, status = _status(proc)
     assert status["credentials"]["configured"] is True
+
+
+def test_nonempty_prompts_with_blank_bare_names_are_configured(tmp_path):
+    proc, _, _ = _run(tmp_path, _msgs(), XRAY_CLIENT_ID="", XRAY_CLIENT_SECRET="",
+                      XRAY_CLIENT_ID_SETTING="p-id", XRAY_CLIENT_SECRET_SETTING="p-sec")
+    assert _status(proc)[1]["credentials"]["configured"] is True
+
+
+def test_nonempty_prompt_wins_over_shell_value(tmp_path):
+    proc, _, _ = _run(tmp_path, _msgs(), XRAY_READ_ONLY="false", XRAY_READ_ONLY_SETTING="true")
+    _, status = _status(proc)
+    assert json.dumps(status).lower().count("read") and status.get("readOnly") is True, status
