@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from ..context import (PartialFailure, ServerContext, check_issue_in_project,
                        require_project, with_permission_reason)
 from ..errors import ToolError
-from ..localfiles import read_local_file
+from ..localfiles import PATH_NOTE, read_local_file
 from ..registry import REGISTRY
 from ..stepcache import CachedTest
 from .tests import MAX_LIMIT, _schema
@@ -422,7 +422,7 @@ def _save_lost_attachments(lost_steps: List[Step]) -> Tuple[Optional[str], List[
 _TEST_KEY = {"type": "string", "description": "Test issue key, e.g. PROJ-12"}
 _STEP_NO = {"type": "integer", "minimum": 1}
 _PATHS = {"type": "array", "items": {"type": "string"},
-          "description": "Local file paths to attach"}
+          "description": "Local file paths to attach. " + PATH_NOTE}
 _STEP_IN = {"type": "object", "properties": {
     "action": {"type": "string"},
     "result": {"type": "string", "description": "Expected result (optional; Xray allows empty)"},

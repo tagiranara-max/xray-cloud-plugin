@@ -9,7 +9,7 @@ Parse the source, show a preview, get sign-off, then create. Nothing is written 
 
 ## 1. Find the source and the project
 
-Ask for the file path (or pasted content) if not given. Every call needs `projectKey`; choose it as described under "Choosing the project" below.
+Ask for the file path (or pasted content) if not given. Pass file paths to the tools as absolute paths: some clients (Codex, for example) start the server outside the project, and it then refuses relative paths (`get_status` shows `projectDir`). Every call needs `projectKey`; choose it as described under "Choosing the project" below.
 
 ## 2. `.feature` files: use `create_tests_from_feature`
 

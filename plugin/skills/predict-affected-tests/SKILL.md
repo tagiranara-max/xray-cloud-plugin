@@ -23,6 +23,8 @@ Show the user the files and keys you found, and let them correct either.
    - `terms`: words taken from changed path segments and module names, at most 10, most specific first (skip generic ones such as `src`, `index` or `test`);
    - `labels` and `components`: only those the user names.
 
+   Read the change yourself (diff, changed files); if a later step passes a local file to a tool, use an absolute path, because some clients start the server outside the project and relative paths are then refused.
+
    At least one criterion is required. If `find_related_tests` errors on an issue key, drop that key and call it again. Each test appears once, with `matchedBy` listing why it matched, its `lastStatus` and the `truncated` flag. If `truncated` is true, say so: the list is incomplete.
 2. For each issue key call `get_requirement_coverage`. It returns the covering `tests`, the `counts` (including `neverRun`) and `truncated`. A requirement with no covering tests is itself a finding: report it as a coverage gap.
 

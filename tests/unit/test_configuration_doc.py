@@ -98,6 +98,27 @@ def table_names_in(text):
     return set(re.findall(r"^\| `((?:XRAY|JIRA)_[A-Z_]+)`", text, re.M))
 
 
+def github_slug(heading):
+    """GitHub's heading anchor: lower-case, drop punctuation except - and _, spaces to -."""
+    return re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
+
+
+def anchors(path):
+    text = re.sub(r"```.*?```", "", path.read_text(encoding="utf-8"), flags=re.S)
+    return {github_slug(h) for h in re.findall(r"^#{1,6} (.+)$", text, re.M)}
+
+
+def test_github_slug():
+    assert github_slug("Other MCP clients (manual setup)") == "other-mcp-clients-manual-setup"
+    assert github_slug("Cursor (manual)") == "cursor-manual"
+    assert github_slug("Results and native feature import/export") == \
+        "results-and-native-feature-importexport"
+
+
 def test_readme_links_resolve():
-    for target in re.findall(r"\]\(((?:docs/|CLAUDE)[^)#]+)", readme()):
+    links = re.findall(r"\]\(((?:docs/|CLAUDE)[^)#]+)(?:#([^)]+))?\)", readme())
+    assert any(anchor for _, anchor in links)
+    for target, anchor in links:
         assert (REPO / target).is_file(), target
+        if anchor:
+            assert anchor in anchors(REPO / target), "%s#%s" % (target, anchor)

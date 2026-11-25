@@ -22,22 +22,25 @@ Enter your Xray client ID and secret when asked.
 codex plugin marketplace add <owner>/xray-cloud-plugin
 ```
 
-Then type `/plugins` in Codex (or open Plugins in the ChatGPT desktop app), pick the Xray Cloud marketplace, install Xray Cloud and start a new session. Codex cannot ask for a local server's credentials, so set them once in the shell profile you start Codex from:
+Then type `/plugins` in Codex (or open Plugins in the ChatGPT desktop app), pick the Xray Cloud marketplace, install Xray Cloud and start a new session. Codex cannot ask for a local server's credentials, so set them once in your shell profile (for example `~/.zshrc`):
 
 ```sh
 export XRAY_CLIENT_ID="<client id>" XRAY_CLIENT_SECRET="<client secret>"
 ```
 
+That reaches Codex started from a terminal. The ChatGPT desktop app does not read your shell profile: on macOS run `launchctl setenv XRAY_CLIENT_ID "<client id>"` and the same for `XRAY_CLIENT_SECRET`, then restart the app (this lasts until you log out). Give the agent absolute file paths in Codex; see [docs/configuration.md](docs/configuration.md#codex-and-cursor-plugin-notes).
+
 ### Cursor
 
-Cursor installs plugins from its marketplace, a team marketplace or a local folder. Teams: an admin imports this repository under Dashboard, Plugins & MCPs, Add Marketplace, Import from Repo; then install Xray Cloud from Customize. On your own, copy the plugin folder and reload the window:
+Cursor installs plugins from its marketplace, a team marketplace or a local folder. Teams: an admin imports this repository under Dashboard, Plugins & MCPs, Add Marketplace, Import from Repo; then install Xray Cloud from Customize. On your own, copy the plugin folder into Cursor's local plugins (run the same lines again to update), then reload the window:
 
 ```sh
-git clone https://github.com/<owner>/xray-cloud-plugin /tmp/xray-cloud-plugin
-mkdir -p ~/.cursor/plugins/local && cp -R /tmp/xray-cloud-plugin/plugin ~/.cursor/plugins/local/xray-cloud
+git clone https://github.com/<owner>/xray-cloud-plugin ~/.xray-cloud-plugin 2>/dev/null || git -C ~/.xray-cloud-plugin pull
+mkdir -p ~/.cursor/plugins/local && rm -rf ~/.cursor/plugins/local/xray-cloud
+cp -R ~/.xray-cloud-plugin/plugin ~/.cursor/plugins/local/xray-cloud
 ```
 
-Enter your Xray client ID and secret under Plugins, Configure. If your Cursor offers no Configure for a local plugin, use the manual setup in [docs/configuration.md](docs/configuration.md#cursor-manual) instead.
+On Enterprise plans an admin must turn on Allow Local Plugin Imports first. Enter your Xray client ID and secret under Plugins, Configure. If your Cursor offers no Configure for a local plugin, remove it (`rm -rf ~/.cursor/plugins/local/xray-cloud`) and use the manual setup in [docs/configuration.md](docs/configuration.md#cursor-manual) instead, so you do not run two servers.
 
 ### Gemini CLI
 

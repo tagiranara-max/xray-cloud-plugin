@@ -25,7 +25,7 @@ Then offer the settings file, and stop if the user declines it.
 `get_status` shows the settings file in use and the locations searched. The settings file is the user's own file, found in this order:
 
 1. the path from the plugin prompt in Claude Code, or the `XRAY_SETTINGS_FILE` environment variable in any other client;
-2. `.xray/settings.yml` in the project your agent is working in (Claude Code, Codex, Cursor or Gemini);
+2. `.xray/settings.yml` in the project folder, when the server knows it (`get_status` shows `projectDir`; Codex starts the server in its plugin folder, so there set `XRAY_PROJECT_DIR` or `XRAY_SETTINGS_FILE`);
 3. `~/.config/xray-cloud/settings.yml`.
 
 The plugin ships no settings. A file committed in the team's own project makes the choices team-wide. If none exists, propose `.xray/settings.yml` in the current project (team-wide) or the home-folder path (personal). Never put credentials in it. A minimal skeleton to start from:
@@ -75,7 +75,7 @@ Offer each one; skip what the user declines.
 
 - `featureImport`: `createTestSet`, `backgrounds` (preconditions or inline), `tagsAsLabels`, `unmatchedTags` (keep or skip) and `tagRules`. It can be set at the top level and overridden per project.
 - `aiCreated`: the user's own label for what the AI creates (`label`, or null for none) and its `scope` (tests or all). There is no default label; never invent one.
-- `tagRules`: if the user has `.feature` files, call `analyze_feature_tags` on them, explain each proposed rule in plain words with its effect on a few real scenarios, and add a rule only after the user agrees. No rules are built in.
+- `tagRules`: if the user has `.feature` files, call `analyze_feature_tags` on them (absolute paths), explain each proposed rule in plain words with its effect on a few real scenarios, and add a rule only after the user agrees. No rules are built in.
 
 ## 4. Team-wide settings or personal preferences
 

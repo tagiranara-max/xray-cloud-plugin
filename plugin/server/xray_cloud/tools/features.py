@@ -13,7 +13,7 @@ from .. import requiredfields
 from ..gherkin.parse import ParsedFeature, parse_feature
 from ..gherkin.tagrules import TagRule, parse_rules
 from ..jira_client import LINK_TYPE
-from ..localfiles import read_local_file
+from ..localfiles import PATH_NOTE, read_local_file
 from ..gherkin.plan import (CUCUMBER, UNNAMED_PREFIX, ImportAction, ImportOptions, TagAnalysis,
                             analyze_tags, existing_set_names, feature_set_name, plan_import)
 from ..gherkin.tagsummary import summarize_tags, tag_values
@@ -46,18 +46,19 @@ mutation AddTestsToPrecondition($issueId: String!, $testIssueIds: [String]) {
 
 def read_feature(env, path: str) -> tuple:
     """-> (text, label path). Relative paths resolve against the project dir
-    ($XRAY_PROJECT_DIR, else $CLAUDE_PROJECT_DIR, else cwd). The label path is relative to the project dir when the
+    ($XRAY_PROJECT_DIR, else $CLAUDE_PROJECT_DIR, else cwd; refused when unknown). The label path is relative to the project dir when the
     file is under it, else the basename."""
     if not isinstance(path, str) or not path.strip():
         raise ToolError("featureFilePath must be a non-empty path")
-    root = os.path.realpath(project_dir(env))
+    known = project_dir(env)
     full, data = read_local_file(env, path, "Feature file")
+    root = os.path.realpath(known) if known is not None else None
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as e:
         raise ToolError("Feature file is not valid UTF-8: %s (%s)" % (path, e.reason), path=full)
     rel = os.path.basename(full)
-    if os.path.commonpath([root, full]) == root:
+    if root is not None and os.path.commonpath([root, full]) == root:
         rel = os.path.relpath(full, root).replace(os.sep, "/")
     return text, rel
 
@@ -452,7 +453,9 @@ def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: 
     "createDuplicates. Anything not doable is in notDone {item, what, reason, fix}: if the "
     "reason is \"no Jira token or Atlassian MCP\" and Atlassian MCP tools are available, offer "
     "to complete them with those. fields/rawFields apply to created tests.",
-    _schema({"featureFilePath": {"type": "string"}, "apply": {"type": "boolean"},
+    _schema({"featureFilePath": {"type": "string", "description":
+                                 "Local .feature file. " + PATH_NOTE},
+             "apply": {"type": "boolean"},
              "createTestSet": _BOOL,
              "backgrounds": {"type": "string", "enum": ["preconditions", "inline"]},
              "tagsAsLabels": _BOOL,

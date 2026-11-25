@@ -123,7 +123,10 @@ def test_cursor_env_uses_declared_variables_only():
     variables = load(CURSOR_MANIFEST)["variables"]
     assert variables["type"] == "object"
     declared = set(variables["properties"])
-    env = cursor_server()["env"]
+    env = dict(cursor_server()["env"])
+    # Cursor's built-in ${workspaceFolder}; if a plugin's mcp.json leaves it unexpanded, the
+    # server ignores the literal placeholder and the project folder stays unknown.
+    assert env.pop("XRAY_PROJECT_DIR") == "${workspaceFolder}"
     assert claude_env_names() | {"XRAY_TOOLS"} <= set(env)
     for name, value in env.items():
         assert PLACEHOLDER.fullmatch(value), (name, value)

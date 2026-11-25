@@ -61,7 +61,7 @@ def _has_background(data: bytes) -> bool:
     "those. fields/rawFields apply to the tests and preconditionFields to the preconditions "
     "(project settings defaults and required checks apply, before upload). folder is an optional "
     "Test Repository folder path. Returns the test and precondition keys and any errors.",
-    _schema({"filePath": {"type": "string", "description": ".feature or .zip file (max 25 MB)"},
+    _schema({"filePath": {"type": "string", "description": ".feature or .zip file (max 25 MB). " + localfiles.PATH_NOTE},
              "fields": _OBJ, "rawFields": _OBJ, "preconditionFields": _OBJ,
              "folder": {"type": "string"}, "remember": _REMEMBER}, ["filePath"]),
     write=True)
@@ -183,7 +183,8 @@ def _plan(directory: str, body: bytes, overwrite: bool) -> Dict[str, bytes]:
     "is written, so a refusal writes nothing. A saved filter can hold tests of other projects: "
     "when any exported @TEST_<KEY> tag is outside projectKey, the export is refused (nothing "
     "written) naming those keys. Returns the directory and the relative file paths.",
-    _schema({"directory": {"type": "string"},
+    _schema({"directory": {"type": "string", "description":
+                           "Local target directory. " + localfiles.PATH_NOTE},
              "keys": {"type": "array", "items": {"type": "string"}},
              "filter": {"type": "string"},
              "overwrite": {"type": "boolean"}}, ["directory"]),

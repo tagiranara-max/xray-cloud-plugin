@@ -9,15 +9,28 @@ from .errors import ToolError
 
 MAX_FILE_BYTES = 25 * 1024 * 1024
 
+# Appended to the description of every tool parameter that takes a local path.
+PATH_NOTE = ("Use an absolute path; a relative path resolves against the project folder only "
+             "when the server knows it (XRAY_PROJECT_DIR, Claude Code's project, or the "
+             "directory the client started the server in).")
+
 
 def resolve_local_path(env: Mapping[str, str], path: str) -> str:
     """~ expanded; a relative path is resolved against the project dir ($XRAY_PROJECT_DIR, else
-    $CLAUDE_PROJECT_DIR, else cwd). Returns an absolute, symlink-resolved path."""
+    $CLAUDE_PROJECT_DIR, else cwd). Returns an absolute, symlink-resolved path. When the project
+    dir is unknown (server started in its own plugin folder), a relative path is refused."""
     if not isinstance(path, str) or not path.strip():
         raise ToolError("File path must be a non-empty string", path=path)
     full = os.path.expanduser(path)
     if not os.path.isabs(full):
-        full = os.path.join(project_dir(env), full)
+        root = project_dir(env)
+        if root is None:
+            raise ToolError(
+                "Relative path %r cannot be resolved: the project folder is unknown (this MCP "
+                "client starts the server in its plugin folder). Pass an absolute path (or set "
+                "XRAY_PROJECT_DIR)." % path,
+                reason="project_dir_unknown", path=path, setting="XRAY_PROJECT_DIR")
+        full = os.path.join(root, full)
     return os.path.realpath(full)
 
 

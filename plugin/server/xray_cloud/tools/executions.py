@@ -12,7 +12,7 @@ from ..context import (PartialFailure, ServerContext, check_issue_key, dedupe,
 from ..errors import ToolError
 from .. import requiredfields
 from ..fields import build_run_fields
-from ..localfiles import read_local_file
+from ..localfiles import PATH_NOTE, read_local_file
 from ..registry import REGISTRY
 from .containers import (_KEYS, _SEARCH, Kind, _add, _check_keys, _key, _REMOVE,
                          _DELETE, all_members, fetch_container, keys_for, resolve_test_id_map,
@@ -437,7 +437,8 @@ _UNASSIGN_STR = {"type": "string", "description":
     _schema({"testExecutionKey": {"type": "string"}, "testKey": {"type": "string"},
              "status": {"type": "string"}, "assigneeId": _UNASSIGN_STR,
              "executedById": _UNASSIGN_STR, "fields": _OBJ, "rawFields": _OBJ,
-             "steps": _RUN_STEPS, "attachments": {"type": "array", "items": {"type": "string"}},
+             "steps": _RUN_STEPS, "attachments": {"type": "array", "items": {"type": "string"},
+                             "description": "Local evidence file paths. " + PATH_NOTE},
              "defectKeys": _KEYS}, ["testExecutionKey", "testKey"]),
     write=True)
 def update_test_run(ctx, args):

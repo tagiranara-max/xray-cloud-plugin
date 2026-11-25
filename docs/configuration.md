@@ -138,8 +138,8 @@ Run `python3 /path/to/xray-cloud-plugin/plugin/server/main.py` with these enviro
 
 ## Codex and Cursor plugin notes
 
-- **Codex** starts the server with the plugin folder as its working directory and passes on only the variables the plugin lists (`env_vars` in `plugin/codex-mcp.json`: the variables in the table above). Export them in the shell you start Codex from (for example in `~/.zshrc`). Because the working directory is the plugin folder, set `XRAY_PROJECT_DIR` (or `XRAY_SETTINGS_FILE`) if you use a per-repository `.xray/settings.yml`, and give file paths to the import tools as absolute paths.
-- **Cursor** substitutes the plugin's variables (`${XRAY_CLIENT_ID}` and the others in `plugin/mcp.json`) with the values set under Plugins, Configure. An optional variable left empty is ignored by the server.
+- **Codex** starts the server with the plugin folder as its working directory and passes on only the variables the plugin lists (`env_vars` in `plugin/codex-mcp.json`: the variables in the table above). Export the credentials in your shell profile (for example `~/.zshrc`); the ChatGPT desktop app needs them too (see the README). Because the working directory is the plugin folder, the server does not know your project: it refuses relative file paths and reads no project `.xray/settings.yml`, and `get_status` reports `projectDir.known: false`. Give the agent absolute paths, or set the project per launch, not in your profile: `XRAY_PROJECT_DIR="$PWD" codex` (or point `XRAY_SETTINGS_FILE` at a settings file).
+- **Cursor** substitutes the plugin's variables (`${XRAY_CLIENT_ID}` and the others in `plugin/mcp.json`) with the values set under Plugins, Configure. An optional variable left empty is ignored by the server. The plugin sets `XRAY_PROJECT_DIR` to `${workspaceFolder}`; if Cursor leaves that unexpanded, the server ignores it.
 
 ## Settings
 

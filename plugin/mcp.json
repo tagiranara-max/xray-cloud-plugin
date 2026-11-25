@@ -12,7 +12,8 @@
         "XRAY_TOOLS": "${XRAY_TOOLS}",
         "JIRA_SITE_URL": "${JIRA_SITE_URL}",
         "JIRA_EMAIL": "${JIRA_EMAIL}",
-        "JIRA_API_TOKEN": "${JIRA_API_TOKEN}"
+        "JIRA_API_TOKEN": "${JIRA_API_TOKEN}",
+        "XRAY_PROJECT_DIR": "${workspaceFolder}"
       }
     }
   }

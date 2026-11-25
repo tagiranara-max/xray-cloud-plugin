@@ -9,7 +9,7 @@ A guide over `import_execution_results`. Collect everything first, then call the
 
 ## 1. Find the file and detect the format
 
-Ask for the result file path if not given. Read the start of the file to choose `format`:
+Ask for the result file path if not given. Pass file paths to the tools as absolute paths: some clients (Codex, for example) start the server outside the project, and it then refuses relative paths (`get_status` shows `projectDir`). Read the start of the file to choose `format`:
 
 - JUnit (`junit`): root `<testsuites>` or `<testsuite>`.
 - TestNG (`testng`): root `<testng-results>`.

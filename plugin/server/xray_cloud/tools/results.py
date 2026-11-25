@@ -607,7 +607,7 @@ def _exec_info(pk: str, summary: str, extra: Dict[str, Any], plan_key: Optional[
     "created, and runs by status; detail adds the raw response.",
     _schema({"format": {"type": "string", "enum": list(FORMATS)},
              "filePath": {"type": "string", "description":
-                          "Local results file; must not be empty."},
+                          "Local results file; must not be empty. " + localfiles.PATH_NOTE},
              "content": {"type": "string", "description":
                          "Inline results; must not be empty."},
              "testExecKey": {"type": "string"}, "testPlanKey": {"type": "string"},
