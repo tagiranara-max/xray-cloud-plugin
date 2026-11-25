@@ -125,8 +125,8 @@ def _parse_rule(raw: Any, field_names: Set[str], where: str) -> TagRule:
                 raise TagRuleError("%s.field.%s must be a template string" % (where, name))
             if name not in field_names and not FIELD_ID.fullmatch(str(name)):
                 known = ", ".join(sorted(field_names)) or "none defined"
-                raise TagRuleError("%s.field: unknown field name %r (fields.test has: %s; a customfield_<n> id also works)"
-                                   % (where, name, known))
+                raise TagRuleError("%s.field: unknown field name %r (fields.test has: %s; a "
+                                   "customfield_<n> id also works)" % (where, name, known))
             fields[str(name)] = tpl
     has_action = bool(labels or test_sets or fields)
     if skip and has_action:

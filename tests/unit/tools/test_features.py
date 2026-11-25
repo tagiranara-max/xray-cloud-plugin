@@ -1205,10 +1205,12 @@ def test_both_separators_share_one_question_per_key(tmp_path):
      {"tag": "suite", "testSet": "Suite {value}"}),
     ({"action": "test_set", "testSet": "Run {value}"}, None, ["Run regression"], None,
      {"tag": "suite", "testSet": "Run {value}"}),
-    ({"action": "field", "field": "Component"}, None, [], ("customfield_9", {"value": "regression"}),
+    ({"action": "field", "field": "Component"}, None, [],
+     ("customfield_9", {"value": "regression"}),
      {"tag": "suite", "field": {"Component": "{value}"}}),
     ({"action": "field", "field": "customfield_9"}, None, [],
-     ("customfield_9", {"value": "regression"}), {"tag": "suite", "field": {"Component": "{value}"}}),
+     ("customfield_9", {"value": "regression"}),
+     {"tag": "suite", "field": {"Component": "{value}"}}),
     ({"action": "field", "field": "customfield_44"}, None, [], ("customfield_44", "regression"),
      {"tag": "suite", "field": {"customfield_44": "{value}"}}),
     ({"action": "skip"}, None, [], None, {"tag": "suite", "skip": True}),
@@ -1280,7 +1282,8 @@ def test_plain_tags_still_go_through_tags_as_labels(tmp_path):
                     apply=True, createTestSet=False, aiLabel="")
     assert err and qids(res) == ["tagsAsLabels", "tagRule.suite"]
     assert "tagRule.suite" in res["error"] and ctx.xray.calls == []
-    res, err = _apply(ctx, path, tagsAsLabels=False, tagRuleAnswers={"suite": {"action": "label_as_is"}})
+    res, err = _apply(ctx, path, tagsAsLabels=False,
+                      tagRuleAnswers={"suite": {"action": "label_as_is"}})
     assert not err, res
     assert ctx.xray.calls_of("CreateTest")[0]["jira"]["fields"]["labels"] == ["suite:x"]
 
@@ -1330,3 +1333,62 @@ def test_invalid_tag_rule_answers_are_refused_before_calls(tmp_path, answers, ms
     res, err = _apply(ctx, feature_file(tmp_path, KV), tagRuleAnswers=answers)
     assert err and msg in res["error"], res
     assert writes(ctx) == [] and "tagRules" not in ctx.preferences.get("global", "P")
+
+
+class TypedMetaJira(RecJira):
+    def create_meta(self, pk, issue_type):
+        return [{"id": "customfield_44", "name": "Suite", "schemaType": "option"}]
+
+
+def _existing_with(field_id):
+    return {"P-5": {"issueId": "55", "testType": {"name": "Cucumber"},
+                    "jira": {"key": "P-5", "summary": "A", "labels": [], field_id: None}}}
+
+
+def test_field_id_on_existing_test_converts_by_create_metadata(tmp_path):
+    ctx = ctx_for(tmp_path, FakeXrayWorld(existing=_existing_with("customfield_44")))
+    ctx.jira = TypedMetaJira()
+    path = feature_file(tmp_path, "Feature: F\n  @TEST_P-5 @suite:regression\n  Scenario: A\n"
+                                  "    Given x\n")
+    res, err = _apply(ctx, path, tagRuleAnswers={"suite": {"action": "field",
+                                                           "field": "customfield_44"}})
+    assert not err, res
+    assert ctx.jira.edits == [("P-5", {"customfield_44": {"value": "regression"}})]
+    assert res["fieldsApplied"] == [{"test": "P-5", "fields": ["customfield_44"]}]
+
+
+def test_field_id_without_metadata_on_existing_test_is_not_done_never_written(tmp_path):
+    ctx = ctx_for(tmp_path, FakeXrayWorld(existing=_existing_with("customfield_44")))
+    ctx.jira = RecJira()  # create metadata without the field
+    path = feature_file(tmp_path, "Feature: F\n  @TEST_P-5 @suite:regression\n  Scenario: A\n"
+                                  "    Given x\n")
+    res, err = _apply(ctx, path, tagRuleAnswers={"suite": {"action": "field",
+                                                           "field": "customfield_44"}})
+    assert not err, res
+    assert ctx.jira.edits == []
+    assert [(n["what"], "type is unknown" in n["reason"]) for n in res["notDone"]] == [
+        ("field customfield_44 = regression", True)]
+
+
+def test_preview_counts_rules_answered_in_the_call(tmp_path):
+    ctx = ctx_for(tmp_path)
+    res = preview(ctx, feature_file(tmp_path, KV), tagRuleAnswers={"suite": {"action": "skip"}},
+                  **ans(createTestSet=False))
+    assert res["questions"] == [] and res["choices"]["tagRules"]["count"] == 1
+    assert res["tagSummary"]["handledByRules"] == ["suite:regression"]
+    assert "tagRules" not in ctx.preferences.get("global", "P")
+
+
+def test_form_field_without_a_name_is_refused_for_that_entry(tmp_path):
+    ctx = ctx_for(tmp_path)
+    ctx.channel = FormChannel({"tagRule.suite": "field", "tagRule.suite.field": " "})
+    res, err = _apply(ctx, feature_file(tmp_path, KV))
+    assert err and "@suite:regression" in res["error"] and "no Jira field" in res["error"]
+    assert res["tagKeys"] == ["suite"] and writes(ctx) == []
+
+
+def test_answer_keys_colliding_case_insensitively_are_refused(tmp_path):
+    ctx = ctx_for(tmp_path)
+    res, err = _apply(ctx, feature_file(tmp_path, KV),
+                      tagRuleAnswers={"suite": {"action": "skip"}, "Suite": {"action": "skip"}})
+    assert err and "answered twice" in res["error"] and writes(ctx) == []

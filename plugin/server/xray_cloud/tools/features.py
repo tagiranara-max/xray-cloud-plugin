@@ -448,7 +448,8 @@ def _test_extras(c: requiredfields.Collector, feature: ParsedFeature, analysis: 
 @REGISTRY.tool(
     "create_tests_from_feature",
     "Import a .feature file the Xray way: each Scenario/Outline becomes a Cucumber test. "
-    "Backgrounds become Pre-Conditions (or inline steps); the Feature can become a Test Set. Tags go through the project's tag rules (settings or remembered)"
+    "Backgrounds become Pre-Conditions (or inline steps); the Feature can become a Test Set. "
+    "Tags go through the project's tag rules (settings or remembered)"
     " into labels, Test Sets and fields; @TEST_<KEY> or @<KEY> updates that test, @REQ_<KEY> "
     "links a requirement. A key:value tag no rule covers is asked about per key (tagRule.<key>"
     ", answered in tagRuleAnswers, remembered as a rule). Choices (createTestSet, backgrounds,"
@@ -576,7 +577,7 @@ def create_tests_from_feature(ctx, args):
         for n in QUESTION_IDS:
             if not applicable[n]:
                 shown[n]["notApplicable"] = True
-        shown["tagRules"] = {"count": len(rules), "source": rules_source}
+        shown["tagRules"] = {"count": len(opts.rules), "source": rules_source}
         out: Dict[str, Any] = {"preview": True, "feature": feature.name, "path": rel,
                                "questions": [choices.question(n, contexts[n])
                                              for n in unanswered]
@@ -586,7 +587,7 @@ def create_tests_from_feature(ctx, args):
                                "actions": [a.to_dict() for a in plan],
                                "perTest": _per_test(plan), "testSets": _preview_sets(plan),
                                "tagSummary": summarize_tags(
-                                   [feature], rules,
+                                   [feature], opts.rules,
                                    existing_set_names(ctx, pk, tag_values([feature]))),
                                "notDone": not_done}
         if analysis.warnings:

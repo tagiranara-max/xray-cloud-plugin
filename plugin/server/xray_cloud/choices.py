@@ -132,7 +132,8 @@ def effective(ctx: ServerContext, project_key: str) -> Dict[str, Dict[str, Any]]
     """name -> {"value", "source"} for every choice of the project, resolved without a call
     value. Unresolved: the default with source "default" for unmatchedTags/tagRules, else
     {"source": "unanswered"} (no value). Settings tagRules are parsed TagRule objects, shown
-    as a count rather than serialised."""
+    as a count rather than serialised; remembered tagRules apply after them (source
+    "settings+remembered", value {"settings": count text, "remembered": [...]})."""
     out: Dict[str, Dict[str, Any]] = {}
     for name in CHOICES:
         value, source = resolve(ctx, project_key, name, None)
@@ -141,8 +142,12 @@ def effective(ctx: ServerContext, project_key: str) -> Dict[str, Dict[str, Any]]
         if source is None:
             out[name] = {"source": "unanswered"}
             continue
-        if name == "tagRules" and value and not isinstance(value[0], dict):
+        if name == "tagRules" and source == "settings":
             value = "%d rule(s) from the settings file" % len(value)
+            remembered = remembered_value(ctx, project_key, name)
+            if remembered:
+                value = {"settings": value, "remembered": remembered}
+                source = "settings+remembered"
         out[name] = {"value": value, "source": source}
     return out
 

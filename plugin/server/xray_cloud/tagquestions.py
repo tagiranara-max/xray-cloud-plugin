@@ -51,10 +51,12 @@ def question(key: str, tags: List[str], project: ProjectSettings) -> Dict[str, A
         "id": "tagRule.%s" % key, "key": key, "param": PARAM,
         "question": ("The tag key %r (e.g. %s) has no tag rule. What should tags with this key "
                      "become? label_as_is = label %r; label_value = label %r; test_set = a "
-                     "Test Set named by a template (default %r); field = a Jira field (name "
-                     "it) set to the value; skip = ignore the tag. The answer is remembered for "
-                     "this project." % (key, _example(tags), tag, value,
-                                        suggested_test_set(tags))),
+                     "Test Set named by a template (default %r); field = a Jira field set to "
+                     "the value (a fields.test name of the settings file, or a customfield_<n> "
+                     "id: without the Jira token such an id is sent as text, so prefer a "
+                     "fields.test name for option, user or list fields); skip = ignore the "
+                     "tag. The answer is remembered for this project."
+                     % (key, _example(tags), tag, value, suggested_test_set(tags))),
         "choices": list(ACTIONS),
         "context": {"key": key, "examples": ["@" + t for t in tags[:MAX_EXAMPLES]],
                     "moreExamples": max(0, len(tags) - MAX_EXAMPLES),
@@ -80,6 +82,9 @@ def parse_answers(raw: Any) -> Dict[str, Dict[str, str]]:
             raise ToolError("%s: a tag key must be non-empty, without whitespace, : or =" % where)
         if not isinstance(ans, dict):
             raise ToolError("%s must be an object {action, testSet?, field?}" % where)
+        if k in out:
+            raise ToolError("%s: the key %r is answered twice (keys are case-insensitive)"
+                            % (where, k))
         unknown = sorted(set(ans) - {"action", "testSet", "field"})
         if unknown:
             raise ToolError("%s: unknown key(s) %s; expected action, testSet, field"
@@ -151,7 +156,9 @@ def _form(uncovered: Dict[str, List[str]]) -> dict:
                            % suggested_test_set(tags)}
         props["tagRule.%s.field" % key] = {
             "type": "string", "title": "Jira field for %s (field only)" % _example(tags),
-            "description": "A fields.test name of the settings file or a customfield_<n> id"}
+            "description": "A fields.test name of the settings file, or a customfield_<n> "
+                           "id (sent as text without the Jira token; prefer a fields.test "
+                           "name for option, user or list fields)"}
     return {"type": "object", "properties": props,
             "required": ["tagRule.%s" % k for k in uncovered]}
 
@@ -183,6 +190,12 @@ def ask(ctx: Any, uncovered: Dict[str, List[str]],
             for extra, needs in _EXTRA.items():
                 if action == needs:
                     ans[extra] = content.get("tagRule.%s.%s" % (key, extra))
+            field = ans.get("field")
+            if action == "field" and (not isinstance(field, str) or not field.strip()):
+                raise ToolError("Tags %s: \"field\" was chosen but no Jira field was named in "
+                                "the form; nothing was written and nothing was remembered."
+                                % _example(uncovered[key]), projectKey=project.key,
+                                tagKeys=[key])
             raw[key] = ans
         return parse_answers(raw)
     raise NeedsAnswer(
