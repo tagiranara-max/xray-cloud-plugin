@@ -113,7 +113,8 @@ def test_questions_then_answers_then_none_and_ai_label_scope_all(fresh, results_
 
     prefs_file = Path(lv.env["CLAUDE_PLUGIN_DATA"]) / "preferences.json"
     stored = json.loads(prefs_file.read_text(encoding="utf-8"))
-    assert stored == {"%s/%s" % (region_of(lv.ctx), lv.project): answers}, stored
+    # remembered per Xray site: "<region>/<site>/<PROJECT>"
+    assert stored == {"%s/%s/%s" % (region_of(lv.ctx), lv.ctx.site, lv.project): answers}, stored
 
     second = lv.call("create_tests_from_feature", featureFilePath=rel)
     assert second["questions"] == [], second["questions"]
