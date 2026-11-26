@@ -10,6 +10,8 @@
     "displayName": "Xray Cloud",
     "shortDescription": "Manage Xray Cloud tests, sets, plans, executions and runs",
     "developerName": "Diana Andre",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/icon.png",
     "category": "Developer Tools"
   }
 }
