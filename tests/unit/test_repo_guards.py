@@ -114,3 +114,24 @@ def test_tokenizer_catches_subtokens(tmp_path):
     (tmp_path / "a.txt").write_text("see abc-123 and 11111111-2222-3333-4444-555555555555")
     toks = {t for _, t in iter_word_tokens(tmp_path)}
     assert {"abc-123", "abc", "123", "11111111-2222-3333-4444-555555555555"} <= toks
+
+
+def test_plugin_readme_has_enough_prose():
+    readme = REPO / "plugin" / "README.md"
+    assert readme.is_file()
+    prose = re.sub(r"```.*?```", "", readme.read_text(encoding="utf-8"), flags=re.S)
+    assert len(prose.split()) >= 40
+
+
+def test_listing_urls_are_https():
+    data = json.loads(PLUGIN_JSON.read_text(encoding="utf-8"))
+    for key in ("documentationUrl", "supportUrl", "privacyPolicyUrl", "termsOfServiceUrl",
+                "homepage", "repository"):
+        assert data[key].startswith("https://"), key
+    assert 0 < len(data["keywords"]) <= 10
+
+
+def test_no_stray_os_files_in_plugin():
+    stray = [p for p in (REPO / "plugin").rglob("*")
+             if p.name in {".DS_Store", "Thumbs.db"} or p.name.startswith("._")]
+    assert stray == []
