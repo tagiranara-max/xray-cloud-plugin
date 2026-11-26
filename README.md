@@ -89,3 +89,7 @@ python3 -m pytest -q
 ```
 
 See [CLAUDE.md](CLAUDE.md) for conventions and the server smoke test.
+
+---
+
+[Privacy](PRIVACY.md) | [License (MIT)](LICENSE)

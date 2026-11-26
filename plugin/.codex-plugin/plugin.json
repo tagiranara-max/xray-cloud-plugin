@@ -8,7 +8,7 @@
   "mcpServers": "./codex-mcp.json",
   "interface": {
     "displayName": "Xray Cloud",
-    "shortDescription": "Manage Xray Cloud tests, sets, plans, executions and runs",
+    "shortDescription": "Xray Cloud tests from chat",
     "developerName": "Diana Andre",
     "composerIcon": "./assets/icon.png",
     "logo": "./assets/icon.png",

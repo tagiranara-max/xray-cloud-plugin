@@ -246,3 +246,9 @@ def test_icon_is_square_png_inside_plugin(label, ref):
     assert path.is_file(), label
     width, height = _png_size(path)
     assert width == height >= 512, (label, width, height)
+
+
+def test_codex_listing_text_limits():
+    interface = load(CODEX_MANIFEST)["interface"]
+    assert len(interface["displayName"]) <= 30
+    assert len(interface["shortDescription"]) <= 30
