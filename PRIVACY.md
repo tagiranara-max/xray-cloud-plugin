@@ -15,7 +15,7 @@ Your Xray client ID and secret (and the optional Jira token) come from the clien
 
 ## What is stored locally
 
-One preferences file, `preferences.json`, in `XRAY_DATA_DIR` if set, else the client's plugin data directory (`CLAUDE_PLUGIN_DATA`), else `~/.config/xray-cloud/`. It holds your write approvals per project, and your remembered import answers (choices, tag rules and tag values). Entries are keyed by region, Jira site and project, and by a short hash of your client ID, never the ID itself. It holds no secrets.
+One preferences file, `preferences.json`, in `XRAY_DATA_DIR` if set, else the client's plugin data directory (`CLAUDE_PLUGIN_DATA`), else `~/.config/xray-cloud/`. It holds your write approvals per project, and your remembered import answers (choices, tag rules and tag values). Entries are keyed by region, project and a short hash of your Xray client ID (never the ID itself). It holds no secrets.
 
 To clear it, delete the file, or ask the agent to change your import preferences.
 
