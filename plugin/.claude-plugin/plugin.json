@@ -2,8 +2,27 @@
   "name": "xray-cloud",
   "displayName": "Xray Cloud",
   "description": "Manage Xray Cloud tests, test sets, plans, executions and runs from Claude Code through a zero-install Python MCP server.",
-  "author": { "name": "Diana Andre" },
+  "author": {
+    "name": "Diana Andre"
+  },
   "license": "MIT",
+  "homepage": "https://github.com/tagiranara-max/xray-cloud-plugin",
+  "repository": "https://github.com/tagiranara-max/xray-cloud-plugin",
+  "documentationUrl": "https://github.com/tagiranara-max/xray-cloud-plugin#readme",
+  "supportUrl": "https://github.com/tagiranara-max/xray-cloud-plugin/issues",
+  "privacyPolicyUrl": "https://github.com/tagiranara-max/xray-cloud-plugin/blob/main/PRIVACY.md",
+  "termsOfServiceUrl": "https://github.com/tagiranara-max/xray-cloud-plugin/blob/main/LICENSE",
+  "keywords": [
+    "xray",
+    "jira",
+    "test-management",
+    "qa",
+    "gherkin",
+    "cucumber",
+    "test-execution",
+    "mcp"
+  ],
+  "icon": "./assets/icon.png",
   "userConfig": {
     "xray_client_id": {
       "type": "string",
@@ -60,7 +79,9 @@
   "mcpServers": {
     "xray": {
       "command": "python3",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/server/main.py"],
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/server/main.py"
+      ],
       "env": {
         "XRAY_CLIENT_ID_SETTING": "${user_config.xray_client_id}",
         "XRAY_CLIENT_SECRET_SETTING": "${user_config.xray_client_secret}",

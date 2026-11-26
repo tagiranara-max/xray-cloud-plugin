@@ -2,6 +2,7 @@
 plugin/server/main.py, ship the four skills and carry no secret values."""
 import json
 import re
+import struct
 from pathlib import Path
 
 import pytest
@@ -216,3 +217,38 @@ def test_jira_prompts_say_all_three_are_needed():
     for t in texts:
         low = t.lower()
         assert "email" in low and "site url" in low and "token" in low, t
+
+
+# --- Icons -----------------------------------------------------------------------------
+
+def _png_size(path):
+    head = path.read_bytes()[:24]
+    assert head[:8] == b"\x89PNG\r\n\x1a\n", path
+    assert head[12:16] == b"IHDR", path
+    return struct.unpack(">II", head[16:24])
+
+
+def _icon_refs():
+    codex = load(CODEX_MANIFEST)["interface"]
+    return [
+        ("claude icon", load(CLAUDE_MANIFEST)["icon"]),
+        ("codex composerIcon", codex["composerIcon"]),
+        ("codex logo", codex["logo"]),
+        ("cursor logo", load(CURSOR_MANIFEST)["logo"]),
+    ]
+
+
+@pytest.mark.parametrize("label,ref", _icon_refs())
+def test_icon_is_square_png_inside_plugin(label, ref):
+    assert_relative(ref)
+    path = (PLUGIN / ref).resolve()
+    assert PLUGIN.resolve() in path.parents, label
+    assert path.is_file(), label
+    width, height = _png_size(path)
+    assert width == height >= 512, (label, width, height)
+
+
+def test_codex_listing_text_limits():
+    interface = load(CODEX_MANIFEST)["interface"]
+    assert len(interface["displayName"]) <= 30
+    assert len(interface["shortDescription"]) <= 30

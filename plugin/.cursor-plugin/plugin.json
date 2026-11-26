@@ -3,6 +3,7 @@
   "description": "Manage Xray Cloud tests, test sets, plans, executions and runs through a zero-install Python MCP server.",
   "author": { "name": "Diana Andre" },
   "license": "MIT",
+  "logo": "assets/icon.png",
   "keywords": ["xray", "jira", "testing", "test-management", "mcp"],
   "variables": {
     "type": "object",
