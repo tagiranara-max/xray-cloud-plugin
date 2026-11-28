@@ -1,3 +1,6 @@
+
+[![M8ven Score](https://m8ven.ai/badge/mcp/tagiranara-max-xray-cloud-plugin-68agu8?v=ede813394cbad8fd0e9b3f8758e4cc82)](https://m8ven.ai/mcp/tagiranara-max-xray-cloud-plugin-68agu8?s=readme)
+
 # xray-cloud-plugin
 
 Lets your coding agent manage Xray Cloud: tests and their steps, test sets, plans, executions, runs, folders, environments, Gherkin import and result import.
